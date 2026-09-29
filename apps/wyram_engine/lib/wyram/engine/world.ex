@@ -33,7 +33,7 @@ defmodule Wyram.Engine.World do
     region = {Integer.floor_div(cx, @region_side), Integer.floor_div(cz, @region_side)}
 
     case Registry.lookup(Wyram.Engine.RegionRegistry, region) do
-      [{pid, _}] -> pid
+      [{pid, _}] -> if(Process.alive?(pid), do: pid, else: start_region(region))
       [] -> start_region(region)
     end
   end
@@ -94,7 +94,7 @@ defmodule Wyram.Engine.World do
   defp load_world(path, versions) do
     with {:ok, bytes} <- File.read(path),
          {:ok, data} <- Jason.decode(bytes),
-         true <- data["plugins"] == versions,
+         true <- compatible_plugins?(data["plugins"], versions),
          true <- data["format"] == 1,
          {:ok, chunks} <- decode_chunks(data["chunks"] || %{}) do
       {:ok, %{seed: data["seed"], plugins: versions, edited: chunks}}
@@ -104,6 +104,12 @@ defmodule Wyram.Engine.World do
       _ -> {:error, :invalid_save}
     end
   end
+
+  defp compatible_plugins?(saved, active) when is_map(saved) do
+    Enum.all?(saved, fn {id, version} -> active[id] == version end)
+  end
+
+  defp compatible_plugins?(_, _), do: false
 
   defp decode_chunks(chunks) when is_map(chunks) do
     Enum.reduce_while(chunks, {:ok, %{}}, fn {name, value}, {:ok, acc} ->
@@ -125,6 +131,7 @@ defmodule Wyram.Engine.World do
       format: 1,
       seed: state.seed,
       plugins: state.plugins,
+      blocks: PluginManager.blocks(),
       chunks:
         Map.new(state.edited, fn {{cx, cy, cz}, chunk} ->
           {"#{cx},#{cy},#{cz}", %{revision: chunk.revision, data: Base.encode64(chunk.data)}}

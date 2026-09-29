@@ -15,6 +15,12 @@ defmodule Wyram.Engine.WorldTest do
     assert PluginManager.plugin_versions()["official"] == "0.1.0"
   end
 
+  test "a separately packaged plugin contributes a selectable block" do
+    id = Map.fetch!(PluginManager.blocks(), "example:amber")
+    assert PluginManager.block_colors()[id] == [232, 154, 44]
+    assert PluginManager.plugin_versions()["example"] == "0.1.0"
+  end
+
   test "chunk operations return binaries and preserve revisioned edits" do
     chunk = World.get_chunk(-100, 3, -100)
     assert is_binary(chunk.data)

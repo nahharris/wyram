@@ -3,6 +3,7 @@
     "{mix,.formatter}.exs",
     "apps/**/*.{ex,exs}",
     "plugins/**/*.{ex,exs}",
-    "bench/**/*.exs"
+    "bench/**/*.exs",
+    "scripts/**/*.exs"
   ]
 ]

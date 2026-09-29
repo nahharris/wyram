@@ -26,7 +26,7 @@ defmodule Wyram.Engine.PluginManager do
     with {:ok, packages} <- scan(directory),
          :ok <- validate_graph(packages),
          {:ok, plugins} <- load_packages(packages),
-         {:ok, state} <- registry(plugins) do
+         {:ok, state} <- registry(plugins, directory) do
       {:ok, state}
     else
       {:error, reason} -> {:stop, reason}
@@ -230,7 +230,7 @@ defmodule Wyram.Engine.PluginManager do
     end
   end
 
-  defp registry(plugins) do
+  defp registry(plugins, directory) do
     definitions =
       for {manifest, module} <- plugins, block <- module.blocks() do
         {manifest["id"] <> ":" <> block.name, block}
@@ -239,16 +239,14 @@ defmodule Wyram.Engine.PluginManager do
     case definitions == [] or
            length(Enum.uniq_by(definitions, &elem(&1, 0))) != length(definitions) do
       true -> {:error, :invalid_block_definitions}
-      false -> build_registry(plugins, definitions)
+      false -> build_registry(plugins, definitions, directory)
     end
   end
 
-  defp build_registry(plugins, definitions) do
+  defp build_registry(plugins, definitions, directory) do
     ordered = Enum.sort_by(definitions, &elem(&1, 0))
-    blocks = ordered |> Enum.with_index(1) |> Map.new(fn {{name, _}, id} -> {name, id} end)
-
-    colors =
-      ordered |> Enum.with_index(1) |> Map.new(fn {{_, block}, id} -> {id, block.color} end)
+    blocks = assign_block_ids(ordered, directory)
+    colors = Map.new(ordered, fn {name, block} -> {Map.fetch!(blocks, name), block.color} end)
 
     terrain =
       Enum.find_value(plugins, fn {_manifest, module} ->
@@ -270,6 +268,48 @@ defmodule Wyram.Engine.PluginManager do
     else
       _ -> {:error, :missing_terrain_profile}
     end
+  end
+
+  defp assign_block_ids(ordered, directory) do
+    existing = saved_block_ids(ordered, directory)
+    names = Enum.map(ordered, &elem(&1, 0))
+    next_id = existing |> Map.values() |> Enum.max(fn -> 0 end)
+
+    {ids, _next_id} =
+      Enum.reduce(names, {Map.take(existing, names), next_id}, fn name, {ids, id} ->
+        if Map.has_key?(ids, name) do
+          {ids, id}
+        else
+          {Map.put(ids, name, id + 1), id + 1}
+        end
+      end)
+
+    ids
+  end
+
+  defp saved_block_ids(ordered, directory) do
+    path = directory |> Path.dirname() |> Path.join("worlds/world.json")
+
+    with {:ok, bytes} <- File.read(path),
+         {:ok, data} <- Jason.decode(bytes),
+         true <- is_map(data["plugins"]) do
+      case data["blocks"] do
+        blocks when is_map(blocks) -> blocks
+        _ -> legacy_block_ids(ordered, data["plugins"])
+      end
+    else
+      _ -> %{}
+    end
+  end
+
+  defp legacy_block_ids(ordered, plugins) do
+    ordered
+    |> Enum.filter(fn {name, _} ->
+      [plugin_id | _] = String.split(name, ":", parts: 2)
+      Map.has_key?(plugins, plugin_id)
+    end)
+    |> Enum.with_index(1)
+    |> Map.new(fn {{name, _}, id} -> {name, id} end)
   end
 
   defp palette(blocks, names) do
