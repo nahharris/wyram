@@ -39,4 +39,17 @@ defmodule Wyram.Engine.WorldTest do
     assert {:ok, reloaded} = World.init(directory: Path.join(Paths.data_dir(), "worlds"))
     assert reloaded.edited[{-100, 3, -100}].revision == next_revision
   end
+
+  test "regions have separate owners and reload durable edits after a restart" do
+    left = World.region_pid(0, 0)
+    right = World.region_pid(4, 0)
+    assert left != right
+
+    original = World.get_block(64, 60, 0)
+    replacement = if original == 0, do: 1, else: 0
+    assert {:ok, _revision} = World.set_block(64, 60, 0, replacement)
+    assert :ok = DynamicSupervisor.terminate_child(Wyram.Engine.RegionSupervisor, right)
+    assert World.get_block(64, 60, 0) == replacement
+    assert World.region_pid(4, 0) != right
+  end
 end

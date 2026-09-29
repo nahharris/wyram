@@ -1,25 +1,48 @@
 defmodule Wyram.Engine.World do
-  @moduledoc "Authoritative voxel chunks and revisioned edits."
+  @moduledoc "Routes chunk operations to region actors and durably records edits."
   use GenServer
-  alias Wyram.Engine.{ClientPort, Native, PluginManager}
 
-  @seed 2026
+  alias Wyram.Engine.{PluginManager, Region}
+
+  @region_side 4
   @chunk_side 16
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options, name: __MODULE__)
 
-  @spec get_chunk(integer(), integer(), integer()) :: %{
-          data: binary(),
-          revision: non_neg_integer()
-        }
-  def get_chunk(cx, cy, cz), do: GenServer.call(__MODULE__, {:chunk, {cx, cy, cz}})
+  @spec get_chunk(integer(), integer(), integer()) ::
+          %{data: binary(), revision: non_neg_integer()}
+  def get_chunk(cx, cy, cz) do
+    GenServer.call(region_pid(cx, cz), {:chunk, {cx, cy, cz}})
+  end
 
   @spec get_block(integer(), integer(), integer()) :: non_neg_integer()
-  def get_block(x, y, z), do: GenServer.call(__MODULE__, {:block, {x, y, z}})
+  def get_block(x, y, z) do
+    {key, local} = address({x, y, z})
+    GenServer.call(region_pid(elem(key, 0), elem(key, 2)), {:block, key, local})
+  end
 
   @spec set_block(integer(), integer(), integer(), non_neg_integer()) ::
           {:ok, non_neg_integer()} | {:error, atom()}
-  def set_block(x, y, z, id), do: GenServer.call(__MODULE__, {:set, {x, y, z}, id})
+  def set_block(x, y, z, id) do
+    {key, local} = address({x, y, z})
+    GenServer.call(region_pid(elem(key, 0), elem(key, 2)), {:set, key, local, id})
+  end
+
+  @spec region_pid(integer(), integer()) :: pid()
+  def region_pid(cx, cz) do
+    region = {Integer.floor_div(cx, @region_side), Integer.floor_div(cz, @region_side)}
+
+    case Registry.lookup(Wyram.Engine.RegionRegistry, region) do
+      [{pid, _}] -> pid
+      [] -> start_region(region)
+    end
+  end
+
+  @spec saved_chunks({integer(), integer()}) :: map()
+  def saved_chunks(region), do: GenServer.call(__MODULE__, {:saved_chunks, region})
+
+  @spec persist_edit({integer(), integer(), integer()}, map()) :: :ok | {:error, atom()}
+  def persist_edit(key, chunk), do: GenServer.call(__MODULE__, {:persist_edit, key, chunk})
 
   @impl true
   def init(options) do
@@ -28,88 +51,45 @@ defmodule Wyram.Engine.World do
     versions = PluginManager.plugin_versions()
 
     case load_world(path, versions) do
-      {:ok, saved} ->
-        {:ok, Map.merge(%{path: path, chunks: %{}, edited: %{}, seed: @seed}, saved)}
-
-      {:error, :enoent} ->
-        {:ok, %{path: path, chunks: %{}, edited: %{}, seed: @seed, plugins: versions}}
-
-      {:error, reason} ->
-        {:stop, reason}
+      {:ok, saved} -> {:ok, Map.merge(%{path: path, edited: %{}, seed: 2026}, saved)}
+      {:error, :enoent} -> {:ok, %{path: path, edited: %{}, seed: 2026, plugins: versions}}
+      {:error, reason} -> {:stop, reason}
     end
   end
 
   @impl true
-  def handle_call({:chunk, key}, _from, state) do
-    {chunk, state} = ensure_chunk(state, key)
-    {:reply, chunk, state}
+  def handle_call({:saved_chunks, {rx, rz}}, _from, state) do
+    chunks =
+      Map.filter(state.edited, fn {{cx, _cy, cz}, _} ->
+        Integer.floor_div(cx, @region_side) == rx and
+          Integer.floor_div(cz, @region_side) == rz
+      end)
+
+    {:reply, chunks, state}
   end
 
-  def handle_call({:block, point}, _from, state) do
-    {key, local} = address(point)
-    {chunk, state} = ensure_chunk(state, key)
-    {:ok, id} = apply(Native, :read_block, [chunk.data | Tuple.to_list(local)])
-    {:reply, id, state}
-  end
-
-  def handle_call({:set, point, id}, _from, state) do
-    if Map.has_key?(PluginManager.block_colors(), id) or id == 0 do
-      edit_block(state, point, id)
-    else
-      {:reply, {:error, :unknown_block}, state}
-    end
-  end
-
-  defp edit_block(state, point, id) do
-    {key, local} = address(point)
-    {chunk, state} = ensure_chunk(state, key)
-
-    case apply(Native, :write_block, [chunk.data | Tuple.to_list(local)] ++ [id]) do
-      {:ok, data} -> save_edit(state, key, chunk.revision + 1, data)
-      {:error, _} -> {:reply, {:error, :invalid_block}, state}
-    end
-  end
-
-  defp save_edit(state, key, revision, data) do
-    changed = %{data: data, revision: revision}
-    next = state |> put_in([:chunks, key], changed) |> put_in([:edited, key], changed)
+  def handle_call({:persist_edit, key, chunk}, _from, state) do
+    next = put_in(state.edited[key], chunk)
 
     case persist(next) do
-      :ok ->
-        ClientPort.publish_chunk(key, revision, data)
-        {:reply, {:ok, revision}, next}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+      :ok -> {:reply, :ok, next}
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
-  defp ensure_chunk(state, key) do
-    case state.chunks do
-      %{^key => chunk} ->
-        {chunk, state}
-
-      _ ->
-        [cx, cy, cz] = Tuple.to_list(key)
-
-        data =
-          apply(
-            Native,
-            :generate_chunk,
-            [state.seed, cx, cy, cz] ++ PluginManager.terrain_palette()
-          )
-
-        chunk = %{data: data, revision: 0}
-        {chunk, put_in(state.chunks[key], chunk)}
+  defp start_region(region) do
+    case DynamicSupervisor.start_child(Wyram.Engine.RegionSupervisor, {Region, region}) do
+      {:ok, pid} -> pid
+      {:error, {:already_started, pid}} -> pid
+      {:error, reason} -> raise "could not start region #{inspect(region)}: #{inspect(reason)}"
     end
   end
 
   defp address({x, y, z}) do
-    {{div_floor(x), div_floor(y), div_floor(z)},
+    {{Integer.floor_div(x, @chunk_side), Integer.floor_div(y, @chunk_side),
+      Integer.floor_div(z, @chunk_side)},
      {Integer.mod(x, @chunk_side), Integer.mod(y, @chunk_side), Integer.mod(z, @chunk_side)}}
   end
-
-  defp div_floor(value), do: Integer.floor_div(value, @chunk_side)
 
   defp load_world(path, versions) do
     with {:ok, bytes} <- File.read(path),
@@ -117,7 +97,7 @@ defmodule Wyram.Engine.World do
          true <- data["plugins"] == versions,
          true <- data["format"] == 1,
          {:ok, chunks} <- decode_chunks(data["chunks"] || %{}) do
-      {:ok, %{seed: data["seed"], plugins: versions, chunks: chunks, edited: chunks}}
+      {:ok, %{seed: data["seed"], plugins: versions, edited: chunks}}
     else
       {:error, reason} -> {:error, reason}
       false -> {:error, :incompatible_save}

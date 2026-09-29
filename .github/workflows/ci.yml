@@ -27,6 +27,9 @@ jobs:
           version: '2026.9.17'
           install: true
           cache: true
+      - name: Install Rust quality components
+        run: rustup component add --toolchain 1.98.1 rustfmt clippy
+        shell: pwsh
       - name: Setup
         run: mise run setup
         shell: pwsh

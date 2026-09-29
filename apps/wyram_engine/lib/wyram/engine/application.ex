@@ -11,6 +11,8 @@ defmodule Wyram.Engine.Application do
 
     children = [
       {PluginManager, directory: Path.join(data_dir, "plugins")},
+      {Registry, keys: :unique, name: Wyram.Engine.RegionRegistry},
+      {DynamicSupervisor, strategy: :one_for_one, name: Wyram.Engine.RegionSupervisor},
       {World, directory: Path.join(data_dir, "worlds")},
       ClientPort
     ]
