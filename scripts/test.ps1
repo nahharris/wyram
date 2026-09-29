@@ -2,10 +2,12 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $testData = Join-Path $root ('.tools\test-run\' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path (Join-Path $testData 'plugins') | Out-Null
-Copy-Item -LiteralPath (Join-Path $root 'dist\official.wyrplug') -Destination (Join-Path $testData 'plugins\official.wyrplug') -Force
-& (Join-Path $PSScriptRoot 'pack-plugin.ps1') -Name example
-Copy-Item -LiteralPath (Join-Path $root 'dist\example.wyrplug') -Destination (Join-Path $testData 'plugins\example.wyrplug') -Force
+& (Join-Path $PSScriptRoot 'pack-plugin.ps1') -Name test_terrain
+& (Join-Path $PSScriptRoot 'pack-plugin.ps1') -Name test_addon
+Copy-Item -LiteralPath (Join-Path $root 'dist\test_terrain.wyrplug') -Destination (Join-Path $testData 'plugins\test_terrain.wyrplug') -Force
+Copy-Item -LiteralPath (Join-Path $root 'dist\test_addon.wyrplug') -Destination (Join-Path $testData 'plugins\test_addon.wyrplug') -Force
 & (Join-Path $PSScriptRoot 'test-plugin-upgrade.ps1')
+& (Join-Path $PSScriptRoot 'test-official-smoke.ps1')
 $env:WYRAM_DATA_DIR = $testData
 $env:WYRAM_CLIENT = 'C:\missing\wyram_client.exe'
 mix test

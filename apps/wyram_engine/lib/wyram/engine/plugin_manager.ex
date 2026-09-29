@@ -184,15 +184,15 @@ defmodule Wyram.Engine.PluginManager do
       length(Enum.uniq(modules)) != length(modules) ->
         {:error, :duplicate_module}
 
-      Enum.any?(modules, fn name -> :code.is_loaded(String.to_atom(name)) != false end) ->
-        {:error, :module_collision}
-
       Enum.any?(manifests, fn manifest ->
         Enum.any?(manifest["dependencies"], fn dependency ->
           not Map.has_key?(by_id, dependency)
         end)
       end) ->
         {:error, :missing_dependency}
+
+      Enum.any?(modules, fn name -> :code.is_loaded(String.to_atom(name)) != false end) ->
+        {:error, :module_collision}
 
       true ->
         :ok

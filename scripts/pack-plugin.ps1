@@ -1,7 +1,7 @@
-param([Parameter(Mandatory=$true)][ValidateSet('official','example')][string]$Name)
+param([Parameter(Mandatory=$true)][ValidateSet('official','example','test_terrain','test_addon')][string]$Name)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$plugin = Join-Path $root "plugins\$Name"
+$plugin = if ($Name.StartsWith('test_')) { Join-Path $root "test\fixtures\plugins\$Name" } else { Join-Path $root "plugins\$Name" }
 $stage = Join-Path $root ".tools\plugin-stage\$Name"
 $destination = Join-Path $root "dist\$Name.wyrplug"
 $archive = Join-Path $root "dist\$Name.zip"

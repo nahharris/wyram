@@ -16,7 +16,7 @@ mise run dev
 
 Click the window to capture the mouse. Use WASD to move, Space to jump, Ctrl to sprint, the number keys to select a block, left click to remove a block, right click to place it, and Escape to release the mouse. Game data and installed plugins live in `%LOCALAPPDATA%\Wyram`, or the directory specified by `WYRAM_DATA_DIR`.
 
-Run `mise run check` and `mise run test` before publishing changes. `mise run package` builds a Windows engine release and native client in `dist/windows`. From that directory, run `powershell -ExecutionPolicy Bypass -File run.ps1` to start the packaged game. The launcher installs the bundled official plugin into the user data directory if it is absent.
+Run `mise run check` and `mise run test` before publishing changes. The test layers are described in [docs/testing.md](docs/testing.md). `mise run package` builds a Windows engine release and native client in `dist/windows`. From that directory, run `powershell -ExecutionPolicy Bypass -File run.ps1` to start the packaged game. The launcher installs the bundled official plugin into the user data directory if it is absent.
 
 ## Plugins
 

@@ -3,22 +3,47 @@ defmodule Wyram.Engine.WorldTest do
 
   alias Wyram.Engine.{Native, Paths, PluginManager, World}
 
-  test "compiled official plugin defines the native terrain palette" do
+  test "compiled test terrain defines the native palette without game block names" do
     blocks = PluginManager.blocks()
 
     assert PluginManager.terrain_palette() ==
              Enum.map(
-               ["official:grass", "official:dirt", "official:stone"],
+               ["test_terrain:violet", "test_terrain:ochre", "test_terrain:slate"],
                &Map.fetch!(blocks, &1)
              )
 
-    assert PluginManager.plugin_versions()["official"] == "0.1.0"
+    assert PluginManager.plugin_versions()["test_terrain"] == "0.1.0"
+    assert World.get_block(0, 0, 0) == blocks["test_terrain:slate"]
+    assert World.get_block(0, 100, 0) == 0
   end
 
   test "a separately packaged plugin contributes a selectable block" do
-    id = Map.fetch!(PluginManager.blocks(), "example:amber")
-    assert PluginManager.block_colors()[id] == [232, 154, 44]
-    assert PluginManager.plugin_versions()["example"] == "0.1.0"
+    id = Map.fetch!(PluginManager.blocks(), "test_addon:prism")
+    assert PluginManager.block_colors()[id] == [33, 211, 177]
+    assert PluginManager.plugin_versions()["test_addon"] == "0.1.0"
+    assert {:error, :unknown_block} = World.set_block(0, 75, 0, 65_535)
+  end
+
+  test "loader rejects a compiled addon with a missing dependency" do
+    directory = Path.join(Paths.data_dir(), "missing-dependency")
+    File.mkdir_p!(directory)
+
+    File.cp!(
+      Path.join(Paths.data_dir(), "plugins/test_addon.wyrplug"),
+      Path.join(directory, "test_addon.wyrplug")
+    )
+
+    assert {:stop, :missing_dependency} = PluginManager.init(directory: directory)
+  end
+
+  test "loader rejects duplicate plugin IDs across packages" do
+    directory = Path.join(Paths.data_dir(), "duplicate-plugin")
+    File.mkdir_p!(directory)
+    package = Path.join(Paths.data_dir(), "plugins/test_terrain.wyrplug")
+    File.cp!(package, Path.join(directory, "first.wyrplug"))
+    File.cp!(package, Path.join(directory, "second.wyrplug"))
+
+    assert {:stop, :duplicate_plugin_id} = PluginManager.init(directory: directory)
   end
 
   test "chunk operations return binaries and preserve revisioned edits" do
@@ -52,7 +77,7 @@ defmodule Wyram.Engine.WorldTest do
     assert left != right
 
     original = World.get_block(64, 60, 0)
-    replacement = if original == 0, do: 1, else: 0
+    replacement = if original == 0, do: PluginManager.blocks()["test_addon:prism"], else: 0
     assert {:ok, _revision} = World.set_block(64, 60, 0, replacement)
     assert :ok = DynamicSupervisor.terminate_child(Wyram.Engine.RegionSupervisor, right)
     assert World.get_block(64, 60, 0) == replacement
