@@ -2,15 +2,6 @@ pub const CHUNK_SIDE: usize = 16;
 pub const BLOCK_COUNT: usize = CHUNK_SIDE * CHUNK_SIDE * CHUNK_SIDE;
 pub const BYTE_COUNT: usize = BLOCK_COUNT * 2;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u16)]
-pub enum Block {
-    Air = 0,
-    Grass = 1,
-    Dirt = 2,
-    Stone = 3,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChunkError {
     BadLength,
@@ -98,19 +89,20 @@ mod tests {
 
     #[test]
     fn generated_chunks_are_stable_and_are_correctly_addressed() {
-        let one = generate_chunk(7, -1, 3, 0, [1, 2, 3]);
-        assert_eq!(one, generate_chunk(7, -1, 3, 0, [1, 2, 3]));
-        assert_ne!(one, generate_chunk(7, 0, 3, 0, [1, 2, 3]));
+        let palette = [17, 29, 43];
+        let one = generate_chunk(7, -1, 3, 0, palette);
+        assert_eq!(one, generate_chunk(7, -1, 3, 0, palette));
+        assert_ne!(one, generate_chunk(7, 0, 3, 0, palette));
         assert_eq!(one.len(), BYTE_COUNT);
-        assert_eq!(read_block(&one, 0, 0, 0), Ok(Block::Stone as u16));
+        assert_eq!(read_block(&one, 0, 0, 0), Ok(palette[2]));
     }
 
     #[test]
     fn edit_changes_only_the_requested_block() {
-        let original = generate_chunk(5, 0, 4, 0, [1, 2, 3]);
+        let original = generate_chunk(5, 0, 4, 0, [17, 29, 43]);
         let edited = write_block(&original, 2, 3, 4, 42).unwrap();
         assert_eq!(read_block(&edited, 2, 3, 4), Ok(42));
-        assert_eq!(read_block(&original, 2, 3, 4), Ok(Block::Air as u16));
+        assert_eq!(read_block(&original, 2, 3, 4), Ok(0));
         assert_eq!(read_block(&edited, 3, 3, 4), read_block(&original, 3, 3, 4));
         assert_eq!(
             write_block(&original, 16, 0, 0, 1),
