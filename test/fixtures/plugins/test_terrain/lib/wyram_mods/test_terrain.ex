@@ -1,5 +1,5 @@
 defmodule WyramMods.TestTerrain do
-  @moduledoc "Test-only terrain with names unrelated to the official game."
+  @moduledoc "Test-only terrain with names unrelated to the Wyram game."
   @behaviour Wyram.Plugin
 
   @impl true

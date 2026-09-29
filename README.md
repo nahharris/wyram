@@ -16,11 +16,11 @@ mise run dev
 
 Click the window to capture the mouse. Use WASD to move, Space to jump, Ctrl to sprint, the number keys to select a block, left click to remove a block, right click to place it, and Escape to release the mouse. Game data and installed plugins live in `%LOCALAPPDATA%\Wyram`, or the directory specified by `WYRAM_DATA_DIR`.
 
-Run `mise run check` and `mise run test` before publishing changes. The test layers are described in [docs/testing.md](docs/testing.md). `mise run package` builds a Windows engine release and native client in `dist/windows`. From that directory, run `powershell -ExecutionPolicy Bypass -File run.ps1` to start the packaged game. The launcher installs the bundled official plugin into the user data directory if it is absent.
+Run `mise run check` and `mise run test` before publishing changes. The test layers are described in [docs/testing.md](docs/testing.md). `mise run package` builds a Windows engine release and native client in `dist/windows`. From that directory, run `powershell -ExecutionPolicy Bypass -File run.ps1` to start the packaged game. The launcher installs the bundled Wyram game plugin into the user data directory if it is absent.
 
 ## Plugins
 
-`plugins/official` is the default game. `plugins/example` is a separate package adding an amber block. To build the example, run `mise exec -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pack-plugin.ps1 example`, then copy `dist/example.wyrplug` into the game-data `plugins` directory and restart.
+`plugins/wyram` is the default game. `plugins/example` is a separate package adding an amber block. To build the example, run `mise exec -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pack-plugin.ps1 example`, then copy `dist/example.wyrplug` into the game-data `plugins` directory and restart.
 
 Plugins implement `Wyram.Plugin` from the public `wyram_plugin_api` application. Plugin metadata is declared in `mix.exs`; packaging generates the manifest alongside compiled BEAM files. Packages target the declared API, OTP major version, and Elixir minor version. Loading third-party packages runs their BEAM code with the user's OS permissions. Install only plugins you trust.
 

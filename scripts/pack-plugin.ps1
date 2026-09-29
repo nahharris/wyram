@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][ValidateSet('official','example','test_terrain','test_addon')][string]$Name)
+param([Parameter(Mandatory=$true)][ValidateSet('wyram','example','test_terrain','test_addon')][string]$Name)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $plugin = if ($Name.StartsWith('test_')) { Join-Path $root "test\fixtures\plugins\$Name" } else { Join-Path $root "plugins\$Name" }
@@ -14,9 +14,6 @@ try {
   mix compile --warnings-as-errors
   if ($LASTEXITCODE -ne 0) { throw 'plugin compilation failed' }
 } finally { Pop-Location }
-Get-ChildItem -LiteralPath (Join-Path $plugin '_build\dev\lib') -Recurse -Filter 'Elixir.WyramMods.*.beam' | ForEach-Object {
-  Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $stage "ebin\$($_.Name)") -Force
-}
 Push-Location $plugin
 try {
   mix run --no-compile --no-start (Join-Path $PSScriptRoot 'generate-plugin-manifest.exs') (Join-Path $stage 'manifest.json') (Join-Path $stage 'ebin')

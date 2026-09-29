@@ -1,4 +1,4 @@
-defmodule WyramMods.Official do
+defmodule WyramMods.Wyram do
   @moduledoc "The default creative voxel game, implemented through the public plugin contract."
   @behaviour Wyram.Plugin
 
@@ -14,7 +14,7 @@ defmodule WyramMods.Official do
 
   @impl true
   def terrain do
-    {:layered, %{surface: "official:grass", soil: "official:dirt", rock: "official:stone"}}
+    {:layered, %{surface: "wyram:grass", soil: "wyram:dirt", rock: "wyram:stone"}}
   end
 
   @impl true

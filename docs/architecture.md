@@ -1,6 +1,6 @@
 # Architecture
 
-The engine is an Elixir umbrella. `wyram_plugin_api` declares the public plugin contract; `wyram_engine` owns startup, plugin registration, the world and the native-client port. The official game is a separate compiled plugin. Native code is a Cargo workspace: `wyram_core` contains packed 16³ voxel chunks and deterministic terrain, `wyram_nif` exposes batch operations to Elixir, and `wyram_client` owns the winit window and wgpu renderer.
+The engine is an Elixir umbrella. `wyram_plugin_api` declares the public plugin contract; `wyram_engine` owns startup, plugin registration, the world and the native-client port. The Wyram game is a separate compiled plugin. Native code is a Cargo workspace: `wyram_core` contains packed 16³ voxel chunks and deterministic terrain, `wyram_nif` exposes batch operations to Elixir, and `wyram_client` owns the winit window and wgpu renderer.
 
 Each region GenServer owns the packed chunks in a 4 by 4 chunk-column area. World operations route directly to the region process through a Registry; the World GenServer serializes durable edits to the save file. Regions load edited chunks when they start, so a crashed region can recover from the saved state. The client receives chunk snapshots through a length-prefixed JSON port protocol, keeps a visual replica, and sends edit intents. Native terrain generation is a dirty CPU NIF; rendering is outside the BEAM VM.
 

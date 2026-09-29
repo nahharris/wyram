@@ -1,12 +1,12 @@
-defmodule WyramMods.Official.MixProject do
+defmodule WyramMods.Wyram.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :wyram_official,
+      app: :wyram_game,
       version: "0.1.0",
       elixir: "~> 1.20",
-      wyram_plugin: [id: "official", entry: WyramMods.Official, dependencies: []],
+      wyram_plugin: [id: "wyram", entry: WyramMods.Wyram, dependencies: []],
       deps: [{:wyram_plugin_api, path: "../../apps/wyram_plugin_api"}]
     ]
   end
