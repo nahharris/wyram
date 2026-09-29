@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 55
+    env:
+      WYRAM_DATA_DIR: ${{ github.workspace }}\.ci-data
+      WYRAM_CLIENT: C:\missing\wyram_client.exe
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          version: '2026.9.17'
+          install: true
+          cache: true
+      - name: Setup
+        run: mise run setup
+        shell: pwsh
+      - name: Format and analysis
+        run: mise run check
+        shell: pwsh
+      - name: Tests
+        run: mise run test
+        shell: pwsh
+      - name: Package
+        run: mise run package
+        shell: pwsh
+      - name: Upload Windows package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wyram-windows
+          path: dist/windows/
+          if-no-files-found: error

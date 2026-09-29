@@ -1,0 +1,12 @@
+[package]
+name = "wyram_nif"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.38.0"
+wyram_core.workspace = true

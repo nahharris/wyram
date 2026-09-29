@@ -1,0 +1,31 @@
+[tools]
+erlang = "29.1.1"
+elixir = "1.20.4-otp-29"
+rust = "1.98.1"
+
+[settings]
+lockfile = true
+
+[settings.erlang]
+compile = false
+
+[tasks.doctor]
+run = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/doctor.ps1"
+
+[tasks.setup]
+run = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1"
+
+[tasks.fmt]
+run = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fmt.ps1"
+
+[tasks.check]
+run = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1"
+
+[tasks.test]
+run = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1"
+
+[tasks.dev]
+run = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1"
+
+[tasks.package]
+run = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1"

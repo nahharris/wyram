@@ -1,0 +1,14 @@
+.tools/
+_build/
+deps/
+.elixir_ls/
+.fetch/
+native/target/
+apps/wyram_engine/priv/native/
+target/
+dist/
+bench/results/
+*.log
+*.crash
+*.wyrplug
+.DS_Store
