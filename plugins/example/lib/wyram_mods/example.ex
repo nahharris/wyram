@@ -3,9 +3,6 @@ defmodule WyramMods.Example do
   @behaviour Wyram.Plugin
 
   @impl true
-  def id, do: "example"
-
-  @impl true
   def blocks, do: [%{name: "amber", color: [232, 154, 44]}]
 
   @impl true

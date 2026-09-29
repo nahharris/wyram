@@ -3,6 +3,34 @@ defmodule Wyram.Engine.WorldTest do
 
   alias Wyram.Engine.{Native, Paths, PluginManager, World}
 
+  test "packaged manifests come from project declarations and the active runtime" do
+    for {id, entry, dependencies} <- [
+          {"test_terrain", "Elixir.WyramMods.TestTerrain", []},
+          {"test_addon", "Elixir.WyramMods.TestAddon", ["test_terrain"]}
+        ] do
+      package = Path.join(Paths.data_dir(), "plugins/#{id}.wyrplug")
+      assert {:ok, files} = :zip.extract(String.to_charlist(package), [:memory])
+      {_, bytes} = Enum.find(files, fn {name, _} -> name == ~c"manifest.json" end)
+      manifest = Jason.decode!(bytes)
+      %Version{major: major, minor: minor} = Version.parse!(System.version())
+
+      assert manifest == %{
+               "id" => id,
+               "version" => "0.1.0",
+               "api" => Wyram.PluginApi.version(),
+               "otp" => System.otp_release(),
+               "elixir" => "#{major}.#{minor}",
+               "entry" => entry,
+               "modules" => [entry],
+               "dependencies" => dependencies
+             }
+
+      refute File.exists?(
+               Path.expand("../../../test/fixtures/plugins/#{id}/manifest.json", __DIR__)
+             )
+    end
+  end
+
   test "compiled test terrain defines the native palette without game block names" do
     blocks = PluginManager.blocks()
 

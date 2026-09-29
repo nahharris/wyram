@@ -3,9 +3,6 @@ defmodule WyramMods.Official do
   @behaviour Wyram.Plugin
 
   @impl true
-  def id, do: "official"
-
-  @impl true
   def blocks do
     [
       %{name: "grass", color: [96, 150, 76]},

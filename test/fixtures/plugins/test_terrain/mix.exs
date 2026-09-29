@@ -6,6 +6,7 @@ defmodule WyramMods.TestTerrain.MixProject do
       app: :wyram_test_terrain,
       version: "0.1.0",
       elixir: "~> 1.20",
+      wyram_plugin: [id: "test_terrain", entry: WyramMods.TestTerrain, dependencies: []],
       deps: [{:wyram_plugin_api, path: "../../../../apps/wyram_plugin_api"}]
     ]
   end

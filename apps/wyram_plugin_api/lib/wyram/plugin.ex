@@ -10,7 +10,6 @@ defmodule Wyram.Plugin do
              required(:rock) => String.t()
            }}
 
-  @callback id() :: String.t()
   @callback blocks() :: [block_definition()]
   @callback terrain() :: terrain_profile() | :none
   @callback interact(String.t(), map()) ::

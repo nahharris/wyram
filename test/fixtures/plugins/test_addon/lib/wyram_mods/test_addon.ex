@@ -3,9 +3,6 @@ defmodule WyramMods.TestAddon do
   @behaviour Wyram.Plugin
 
   @impl true
-  def id, do: "test_addon"
-
-  @impl true
   def blocks, do: [%{name: "prism", color: [33, 211, 177]}]
 
   @impl true

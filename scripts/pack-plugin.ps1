@@ -6,7 +6,7 @@ $stage = Join-Path $root ".tools\plugin-stage\$Name"
 $destination = Join-Path $root "dist\$Name.wyrplug"
 $archive = Join-Path $root "dist\$Name.zip"
 New-Item -ItemType Directory -Force -Path (Join-Path $stage 'ebin') | Out-Null
-Copy-Item -LiteralPath (Join-Path $plugin 'manifest.json') -Destination (Join-Path $stage 'manifest.json') -Force
+Get-ChildItem -LiteralPath (Join-Path $stage 'ebin') -File -Filter '*.beam' | Remove-Item -Force
 Push-Location $plugin
 try {
   mix deps.get
@@ -17,6 +17,11 @@ try {
 Get-ChildItem -LiteralPath (Join-Path $plugin '_build\dev\lib') -Recurse -Filter 'Elixir.WyramMods.*.beam' | ForEach-Object {
   Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $stage "ebin\$($_.Name)") -Force
 }
+Push-Location $plugin
+try {
+  mix run --no-compile --no-start (Join-Path $PSScriptRoot 'generate-plugin-manifest.exs') (Join-Path $stage 'manifest.json') (Join-Path $stage 'ebin')
+  if ($LASTEXITCODE -ne 0) { throw 'plugin manifest generation failed' }
+} finally { Pop-Location }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
 if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination }
 Compress-Archive -Path (Join-Path $stage 'manifest.json'),(Join-Path $stage 'ebin') -DestinationPath $archive -Force

@@ -3,9 +3,6 @@ defmodule WyramMods.TestTerrain do
   @behaviour Wyram.Plugin
 
   @impl true
-  def id, do: "test_terrain"
-
-  @impl true
   def blocks do
     [
       %{name: "violet", color: [73, 39, 177]},

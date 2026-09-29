@@ -6,6 +6,7 @@ defmodule WyramMods.Official.MixProject do
       app: :wyram_official,
       version: "0.1.0",
       elixir: "~> 1.20",
+      wyram_plugin: [id: "official", entry: WyramMods.Official, dependencies: []],
       deps: [{:wyram_plugin_api, path: "../../apps/wyram_plugin_api"}]
     ]
   end
