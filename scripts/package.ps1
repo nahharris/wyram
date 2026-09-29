@@ -15,8 +15,13 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Engine release failed' }
 
   $stage = Join-Path $root 'dist\windows'
+  $resolvedRoot = [IO.Path]::GetFullPath($root)
+  $resolvedStage = [IO.Path]::GetFullPath($stage)
+  if (-not $resolvedStage.StartsWith($resolvedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Package stage escapes the workspace'
+  }
+  if (Test-Path -LiteralPath $resolvedStage) { Remove-Item -LiteralPath $resolvedStage -Recurse -Force }
   New-Item -ItemType Directory -Force -Path (Join-Path $stage 'plugins') | Out-Null
-  Remove-Item -LiteralPath (Join-Path $stage 'plugins\official.wyrplug') -Force -ErrorAction SilentlyContinue
   Copy-Item -LiteralPath (Join-Path $root 'native\target\release\wyram_client.exe') -Destination $stage -Force
   Copy-Item -LiteralPath (Join-Path $root 'dist\wyram.wyrplug') -Destination (Join-Path $stage 'plugins') -Force
   Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $stage -Force
@@ -25,11 +30,13 @@ try {
 
   $env:WYRAM_DATA_DIR = Join-Path $root ('dist\release-smoke\' + [guid]::NewGuid().ToString('N'))
   $env:WYRAM_CLIENT = 'C:\missing\wyram_client.exe'
+  $env:WYRAM_CONTROL_PORT = '0'
   New-Item -ItemType Directory -Force -Path (Join-Path $env:WYRAM_DATA_DIR 'plugins') | Out-Null
   Copy-Item -LiteralPath (Join-Path $stage 'plugins\wyram.wyrplug') -Destination (Join-Path $env:WYRAM_DATA_DIR 'plugins\wyram.wyrplug') -Force
-  & (Join-Path $stage 'engine\bin\wyram.bat') eval 'Application.ensure_all_started(:wyram_engine); 1 = Wyram.Engine.World.get_block(0, 60, 0)'
+  & (Join-Path $stage 'engine\bin\wyram.bat') eval 'Application.ensure_all_started(:wyram_engine); true = List.keymember?(Supervisor.which_children(Wyram.Engine.Supervisor), Wyram.Engine.Control, 0); 1 = Wyram.Engine.World.get_block(0, 60, 0)'
   if ($LASTEXITCODE -ne 0) { throw 'Packaged release smoke test failed' }
 } finally {
   $env:MIX_ENV = 'dev'
+  $env:WYRAM_CONTROL_PORT = $null
   Pop-Location
 }

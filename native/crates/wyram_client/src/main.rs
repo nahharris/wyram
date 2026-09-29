@@ -19,6 +19,13 @@ use crate::world::{Vertex, VoxelWorld};
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerPacket {
+    Teleport {
+        x: f32,
+        y: f32,
+        z: f32,
+        yaw: f32,
+        pitch: f32,
+    },
     Hello {
         colors: HashMap<String, [u8; 3]>,
     },
@@ -35,8 +42,19 @@ enum ServerPacket {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientPacket {
-    View { x: f32, z: f32 },
-    Edit { x: i32, y: i32, z: i32, id: u16 },
+    Player {
+        x: f32,
+        y: f32,
+        z: f32,
+        yaw: f32,
+        pitch: f32,
+    },
+    Edit {
+        x: i32,
+        y: i32,
+        z: i32,
+        id: u16,
+    },
 }
 
 #[derive(Debug)]
@@ -329,6 +347,7 @@ struct Game {
     selected: u16,
     last_frame: Instant,
     last_view: (i32, i32),
+    last_report: Instant,
     mesh_dirty: bool,
     last_mesh: Instant,
 }
@@ -349,6 +368,7 @@ impl Game {
             selected: 1,
             last_frame: Instant::now(),
             last_view: (i32::MAX, i32::MAX),
+            last_report: Instant::now() - Duration::from_secs(1),
             mesh_dirty: false,
             last_mesh: Instant::now() - Duration::from_secs(1),
         }
@@ -360,6 +380,17 @@ impl Game {
             self.pitch.sin(),
             -self.yaw.cos() * self.pitch.cos(),
         )
+    }
+
+    fn apply_teleport(&mut self, x: f32, y: f32, z: f32, yaw: f32, pitch: f32) {
+        self.position = Vec3::new(x, y, z);
+        self.yaw = yaw;
+        self.pitch = pitch;
+        self.vertical_speed = 0.0;
+        self.grounded = false;
+        self.pressed.clear();
+        self.last_view = (i32::MAX, i32::MAX);
+        self.last_report = Instant::now() - Duration::from_secs(1);
     }
 
     fn step(&mut self) {
@@ -414,12 +445,16 @@ impl Game {
             (self.position.x.floor() as i32).div_euclid(16),
             (self.position.z.floor() as i32).div_euclid(16),
         );
-        if center != self.last_view {
-            send_packet(ClientPacket::View {
+        if center != self.last_view || self.last_report.elapsed() >= Duration::from_millis(200) {
+            send_packet(ClientPacket::Player {
                 x: self.position.x,
+                y: self.position.y,
                 z: self.position.z,
+                yaw: self.yaw,
+                pitch: self.pitch,
             });
             self.last_view = center;
+            self.last_report = now;
         }
     }
 
@@ -478,6 +513,13 @@ impl ApplicationHandler<UserEvent> for Game {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
+            UserEvent::Packet(ServerPacket::Teleport {
+                x,
+                y,
+                z,
+                yaw,
+                pitch,
+            }) => self.apply_teleport(x, y, z, yaw, pitch),
             UserEvent::Packet(ServerPacket::Hello { colors }) => self.world.set_palette(colors),
             UserEvent::Packet(ServerPacket::Chunk {
                 key,
@@ -603,4 +645,22 @@ fn main() {
     event_loop
         .run_app(&mut game)
         .expect("game event loop failed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn teleport_resets_movement_and_repositions_player() {
+        let mut game = Game::new();
+        game.vertical_speed = -12.0;
+        game.grounded = true;
+        game.apply_teleport(32.5, 90.0, -7.5, 1.0, -0.25);
+        assert_eq!(game.position, Vec3::new(32.5, 90.0, -7.5));
+        assert_eq!((game.yaw, game.pitch), (1.0, -0.25));
+        assert_eq!(game.vertical_speed, 0.0);
+        assert!(!game.grounded);
+        assert_eq!(game.last_view, (i32::MAX, i32::MAX));
+    }
 }

@@ -6,4 +6,6 @@ Each region GenServer owns the packed chunks in a 4 by 4 chunk-column area. Worl
 
 Current limitations are deliberate and measurable: the renderer builds visible faces rather than greedy meshes; initial streaming is synchronous; client movement and targeting are local and server validation of their coordinates is minimal; the World save writer still serializes all edits and rewrites the edited-chunk snapshot on every edit; compiled plugins load at startup only. These are the next performance and integrity boundaries to address before claiming the targets in the plan.
 
-Run `mise exec -- mix run bench/regions.exs` after setup to compare serial and four-region concurrent chunk generation on the same machine. This measures generation throughput, not frame time or a full-game speedup. Benchmark output is deliberately not a CI threshold because CPU topology and runner load vary.
+The opt-in local control socket lets trusted scripts inspect world blocks and issue validated edits through the engine. The Rust client reports player pose asynchronously and accepts teleport commands through the existing port, without waiting on an Elixir call in the render loop.
+
+Run `mise run bench` to record serial and four-region concurrent chunk generation, warm block reads, and durable edit latency. The JSON format and comparison command are documented in [benchmarking.md](benchmarking.md). This measures engine paths, not renderer frame time or a full-game speedup. Benchmark output is deliberately not a CI threshold because CPU topology and runner load vary.

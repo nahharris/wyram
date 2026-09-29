@@ -15,6 +15,6 @@ defmodule Wyram.Engine.MixProject do
   end
 
   def application do
-    [mod: {Wyram.Engine.Application, []}, extra_applications: [:logger]]
+    [mod: {Wyram.Engine.Application, []}, extra_applications: [:logger, :crypto]]
   end
 end

@@ -14,6 +14,11 @@ defmodule Wyram.Engine.ClientPort do
     GenServer.cast(__MODULE__, {:publish_chunk, key, revision, data})
   end
 
+  def snapshot, do: GenServer.call(__MODULE__, :snapshot)
+
+  def teleport(x, y, z, yaw, pitch),
+    do: GenServer.call(__MODULE__, {:teleport, x, y, z, yaw, pitch})
+
   @impl true
   def init(_) do
     executable = Paths.client_executable()
@@ -27,12 +32,12 @@ defmodule Wyram.Engine.ClientPort do
           :hide
         ])
 
-      state = %{port: port, sent: MapSet.new(), center: {0, 0}}
+      state = %{port: port, sent: MapSet.new(), center: {0, 0}, player: nil}
       send(self(), :initialize)
       {:ok, state}
     else
       Logger.warning("Native client unavailable at #{executable}; engine running headlessly")
-      {:ok, %{port: nil, sent: MapSet.new(), center: {0, 0}}}
+      {:ok, %{port: nil, sent: MapSet.new(), center: {0, 0}, player: nil}}
     end
   end
 
@@ -49,26 +54,28 @@ defmodule Wyram.Engine.ClientPort do
 
   def handle_info({port, {:data, bytes}}, %{port: port} = state) do
     case Jason.decode(bytes) do
-      {:ok, %{"type" => "view", "x" => x, "z" => z}} when is_number(x) and is_number(z) ->
-        {:noreply,
-         stream(
-           state,
-           {Integer.floor_div(trunc(x), @chunk_side), Integer.floor_div(trunc(z), @chunk_side)}
-         )}
-
-      {:ok, %{"type" => "edit", "x" => x, "y" => y, "z" => z, "id" => id}}
-      when is_integer(x) and is_integer(y) and is_integer(z) and is_integer(id) ->
-        World.set_block(x, y, z, id)
-        {:noreply, state}
-
-      _ ->
-        {:noreply, state}
+      {:ok, packet} -> {:noreply, handle_packet(packet, state)}
+      _ -> {:noreply, state}
     end
   end
 
   def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
     Logger.warning("Native client exited with status #{status}")
-    {:noreply, %{state | port: nil, sent: MapSet.new()}}
+    {:noreply, %{state | port: nil, sent: MapSet.new(), player: nil}}
+  end
+
+  @impl true
+  def handle_call(:snapshot, _from, state) do
+    {:reply, %{connected: state.port != nil, player: state.player}, state}
+  end
+
+  def handle_call({:teleport, _, _, _, _, _}, _from, %{port: nil} = state) do
+    {:reply, {:error, :client_unavailable}, state}
+  end
+
+  def handle_call({:teleport, x, y, z, yaw, pitch}, _from, state) do
+    send_packet(state.port, %{type: "teleport", x: x, y: y, z: z, yaw: yaw, pitch: pitch})
+    {:reply, :ok, state}
   end
 
   @impl true
@@ -79,6 +86,32 @@ defmodule Wyram.Engine.ClientPort do
 
     {:noreply, state}
   end
+
+  defp handle_packet(
+         %{"type" => "player", "x" => x, "y" => y, "z" => z, "yaw" => yaw, "pitch" => pitch},
+         state
+       )
+       when is_number(x) and is_number(y) and is_number(z) and is_number(yaw) and is_number(pitch) do
+    center = {Integer.floor_div(floor(x), @chunk_side), Integer.floor_div(floor(z), @chunk_side)}
+    player = %{x: x, y: y, z: z, yaw: yaw, pitch: pitch}
+    %{stream(state, center) | player: player}
+  end
+
+  defp handle_packet(%{"type" => "view", "x" => x, "z" => z}, state)
+       when is_number(x) and is_number(z) do
+    stream(
+      state,
+      {Integer.floor_div(trunc(x), @chunk_side), Integer.floor_div(trunc(z), @chunk_side)}
+    )
+  end
+
+  defp handle_packet(%{"type" => "edit", "x" => x, "y" => y, "z" => z, "id" => id}, state)
+       when is_integer(x) and is_integer(y) and is_integer(z) and is_integer(id) do
+    World.set_block(x, y, z, id)
+    state
+  end
+
+  defp handle_packet(_, state), do: state
 
   defp stream(%{port: nil} = state, _), do: state
 

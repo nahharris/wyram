@@ -27,5 +27,14 @@ run = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1"
 [tasks.dev]
 run = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1"
 
+[tasks."dev:agent"]
+run = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-agent.ps1"
+
+[tasks.control]
+run = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/control.ps1"
+
+[tasks.bench]
+run = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bench.ps1"
+
 [tasks.package]
 run = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1"

@@ -1,0 +1,7 @@
+# Benchmarks
+
+Run `mise run bench` after setup. The task starts a fresh headless world with the test terrain plugin, measures the workloads, and writes a JSON result under the ignored `bench/results/` directory. For a shorter run or a chosen output path, call `scripts/bench.ps1 -Rounds 2 -Output C:\path\result.json` through `mise exec -- powershell -NoProfile -ExecutionPolicy Bypass -File ...`.
+
+Compare two results with `mise exec -- mix run --no-start bench/compare.exs baseline.json candidate.json`. The comparator prints p50 latency changes and warns if the workload definitions differ. Results record the commit, whether the worktree was dirty, UTC time, OTP/Elixir versions, OS, scheduler count, plugin versions, workload size, raw samples, p50/p95/mean latencies, and chunk throughput. Save representative result files elsewhere if you want a long-term baseline; generated results are intentionally ignored by Git.
+
+Each round generates 64 new chunks sequentially in four regions and another 64 in parallel across those regions. Order alternates by round to reduce ordering bias. The suite also times warm block reads in batches of 1,000 to overcome Windows timer granularity, and 30 durable block edits. It isolates game data for each run. These are engine measurements, not renderer frame times or a claim that the full game is faster by the parallel-chunk ratio. Compare runs on the same machine and toolchain under similar load; CI checks the result format but does not impose performance thresholds.
