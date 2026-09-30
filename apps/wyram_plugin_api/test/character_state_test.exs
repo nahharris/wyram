@@ -20,6 +20,8 @@ defmodule Wyram.Character.StateTest do
     packet =
       Map.from_struct(input) |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
 
+    assert {:ok, %{climbing: true}} = Input.decode(Map.put(packet, "climbing", true))
+    assert {:error, :invalid_input} = Input.decode(Map.put(packet, "climbing", "yes"))
     assert {:ok, %{crawling: true}} = Input.decode(Map.put(packet, "crawling", true))
     assert {:error, :invalid_input} = Input.decode(Map.put(packet, "crawling", "yes"))
     assert {:ok, %{sneaking: true}} = Input.decode(Map.put(packet, "sneaking", true))

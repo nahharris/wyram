@@ -97,6 +97,8 @@ defmodule Wyram.Engine.Characters do
           velocity: {0.0, 0.0, 0.0},
           grounded: false,
           jump_held: false,
+          climb_held: false,
+          action: nil,
           sequence: body.sequence + 1,
           input_sequence: 0,
           epoch:
@@ -135,7 +137,8 @@ defmodule Wyram.Engine.Characters do
             jump: false,
             running: false,
             sneaking: false,
-            crawling: false
+            crawling: false,
+            climbing: false
         },
         else: state.input
 
@@ -148,7 +151,8 @@ defmodule Wyram.Engine.Characters do
 
         {:error, _} ->
           Map.new(state.bodies, fn {id, body} ->
-            {id, State.finish(body, {body.position, {false, false, false}, true})}
+            {id,
+             State.finish(%{body | action: nil}, {body.position, {false, false, false}, true})}
           end)
       end
 
