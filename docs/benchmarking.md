@@ -1,5 +1,7 @@
 # Benchmarks
 
+`mise run bench:outbound` compares synchronous sends with background writer admission using the same 64 ordered edit packets and a receiver that delays each flush by 2 ms. Six rounds alternate order, assert packet count/order, and record raw admission latencies and complete drain time under `bench/results/`. Use `-- -Profile dev` for debug or `-- -Output path.jsonl` for a chosen new output. This measures producer responsiveness under controlled backpressure, not faster engine delivery or ordinary FPS. See [outbound design](outbound-ipc.md) for capacity and failure policy. Frame captures now include outbound queue depth, sent/coalesced counters and lifetime queue/write maxima; `perf:report` prints these separately from frame percentiles.
+
 `mise run bench:mesh` compares the retained simple mesher and greedy mesher on identical empty, solid, terrain and checkerboard chunks. Both implementations run in the same optimized profile, with warmup and 30 alternating-order rounds of 10 iterations. Results contain raw milliseconds per mesh, vertex counts, compiled profile/optimization level, commit and dirty-worktree state. Run `mise run bench:mesh -- -Profile dev` for a separate debug-profile comparison. The benchmark asserts oriented unit-face coverage and color parity before timing. It is an isolated CPU/geometry benchmark, not GPU execution time or full-game throughput. Generated outputs stay under `bench/results/`.
 
 Use `mise run dev:perf` or `mise run dev:agent:perf` for optimized native development with symbols. They share plugin staging/cleanup with debug development and select `native/target/perf/wyram_client.exe`. Ordinary `dev` selects the debug client. An explicit `WYRAM_CLIENT` override remains authoritative for both commands; unset it to use the selected built client. Frame samples record `build_profile` and `opt_level` compiled into the executable; release packaging still uses Cargo's release profile.
@@ -24,7 +26,6 @@ Deferred work is tracked in GitHub:
 - [GPU buffer reuse and large uploads](https://github.com/nahharris/wyram/issues/2)
 - [Batched binary transport and background decoding](https://github.com/nahharris/wyram/issues/3)
 - [Asynchronous Elixir streaming](https://github.com/nahharris/wyram/issues/4)
-- [Background outbound IPC](https://github.com/nahharris/wyram/issues/5)
 - [GPU meshing experiment](https://github.com/nahharris/wyram/issues/7)
 - [Matched routes and GPU timing](https://github.com/nahharris/wyram/issues/8)
 

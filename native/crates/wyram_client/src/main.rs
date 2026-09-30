@@ -1,10 +1,11 @@
 mod chunk_mesh;
 mod meshing;
+mod outbound;
 mod telemetry;
 mod world;
 
 use std::collections::{HashMap, HashSet};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -92,17 +93,6 @@ fn start_reader(proxy: EventLoopProxy<UserEvent>) {
             }
         }
     });
-}
-
-fn send_packet(packet: ClientPacket) {
-    if let Ok(bytes) = serde_json::to_vec(&packet)
-        && let Ok(length) = u32::try_from(bytes.len())
-    {
-        let mut out = io::stdout().lock();
-        let _ = out.write_all(&length.to_be_bytes());
-        let _ = out.write_all(&bytes);
-        let _ = out.flush();
-    }
 }
 
 struct Graphics {
@@ -354,6 +344,8 @@ struct Game {
     telemetry: FrameTelemetry,
     decode_ms: f64,
     last_redraw: Instant,
+    outbound: Option<outbound::Outbound>,
+    outbound_error: Option<outbound::SendError>,
 }
 
 impl Game {
@@ -377,6 +369,8 @@ impl Game {
             telemetry: FrameTelemetry::from_env(),
             decode_ms: 0.0,
             last_redraw: Instant::now(),
+            outbound: None,
+            outbound_error: None,
         }
     }
 
@@ -386,6 +380,14 @@ impl Game {
             self.pitch.sin(),
             -self.yaw.cos() * self.pitch.cos(),
         )
+    }
+
+    fn send_packet(&mut self, packet: ClientPacket) {
+        if let Some(outbound) = &self.outbound
+            && let Err(error) = outbound.send(packet)
+        {
+            self.outbound_error = Some(error);
+        }
     }
 
     fn apply_teleport(&mut self, x: f32, y: f32, z: f32, yaw: f32, pitch: f32) {
@@ -452,7 +454,7 @@ impl Game {
             (self.position.z.floor() as i32).div_euclid(16),
         );
         if center != self.last_view || self.last_report.elapsed() >= Duration::from_millis(200) {
-            send_packet(ClientPacket::Player {
+            self.send_packet(ClientPacket::Player {
                 x: self.position.x,
                 y: self.position.y,
                 z: self.position.z,
@@ -464,7 +466,7 @@ impl Game {
         }
     }
 
-    fn edit(&self, place: bool) {
+    fn edit(&mut self, place: bool) {
         let mut previous = None;
         for step in 1..=60 {
             let point = self.position + self.direction() * (step as f32 * 0.1);
@@ -475,7 +477,7 @@ impl Game {
             );
             if self.world.block(key.0, key.1, key.2) != 0 {
                 let target = if place { previous.unwrap_or(key) } else { key };
-                send_packet(ClientPacket::Edit {
+                self.send_packet(ClientPacket::Edit {
                     x: target.0,
                     y: target.1,
                     z: target.2,
@@ -622,6 +624,11 @@ impl ApplicationHandler<UserEvent> for Game {
                             graphics.replace_mesh(key, vertices)
                         });
                     graphics.render(self.position, direction);
+                    let outbound = self
+                        .outbound
+                        .as_ref()
+                        .map(|writer| writer.snapshot())
+                        .unwrap_or_default();
                     self.telemetry.record(FrameSample {
                         frame_ms,
                         redraw_cpu_ms: start.elapsed().as_secs_f64() * 1000.0,
@@ -634,6 +641,11 @@ impl ApplicationHandler<UserEvent> for Game {
                         loaded_chunks: self.world.chunk_count(),
                         dirty_chunks: self.world.dirty_count(),
                         in_flight: self.meshing.in_flight(),
+                        outbound_queued: outbound.queued,
+                        outbound_sent: outbound.sent,
+                        outbound_coalesced_poses: outbound.coalesced_poses,
+                        outbound_queue_max_ms: outbound.queue_max_ms,
+                        outbound_write_max_ms: outbound.write_max_ms,
                         ..FrameSample::default()
                     });
                 }
@@ -656,7 +668,11 @@ impl ApplicationHandler<UserEvent> for Game {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.outbound_error.is_some() {
+            event_loop.exit();
+            return;
+        }
         if let Some(window) = &self.window {
             window.request_redraw();
         }
@@ -669,9 +685,20 @@ fn main() {
         .expect("event loop creation failed");
     start_reader(event_loop.create_proxy());
     let mut game = Game::new();
+    let proxy = event_loop.create_proxy();
+    let (outbound, _worker) = outbound::Outbound::start(io::stdout(), move |error| {
+        let _ = proxy.send_event(UserEvent::Disconnected);
+        eprintln!("engine connection write failed: {error}");
+    });
+    game.outbound = Some(outbound);
     event_loop
         .run_app(&mut game)
         .expect("game event loop failed");
+    if let Some(error) = game.outbound_error {
+        eprintln!(
+            "engine send queue failed ({error:?}); session ended, pending edits may be undelivered"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -21,6 +21,11 @@ pub struct FrameSample {
     pub dirty_chunks: usize,
     pub in_flight: usize,
     pub dropped_samples: u64,
+    pub outbound_queued: usize,
+    pub outbound_sent: u64,
+    pub outbound_coalesced_poses: u64,
+    pub outbound_queue_max_ms: f64,
+    pub outbound_write_max_ms: f64,
 }
 
 #[derive(Default)]
