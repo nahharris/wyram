@@ -75,7 +75,11 @@ defmodule Wyram.Character.ProfileTest do
           prone_height: 0.09,
           prone_height: 1.1,
           prone_eye: 0.6,
-          crawl_speed: 0
+          crawl_speed: 0,
+          climb_height: -1,
+          climb_height: 4,
+          climb_height: 1.5,
+          climb_speed: 0
         ] do
       assert Profile.validate(Map.put(Profile.default(), key, value)) ==
                {:error, :invalid_character_profile}

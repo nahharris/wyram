@@ -19,8 +19,32 @@ pub struct Snapshot {
     pub sequence: u64,
     pub epoch: u64,
     pub unavailable: bool,
+    pub action: Option<Action>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct Action {
+    pub kind: String,
+    pub phase: String,
+    pub target: Option<[f32; 3]>,
+}
+
+impl Snapshot {
+    fn approved_delta(&self, seconds: f32) -> Vec3 {
+        let delta = Vec3::from_array(self.velocity) * seconds;
+        let Some(action) = &self.action else {
+            return delta;
+        };
+        if action.kind != "climb" || !matches!(action.phase.as_str(), "rise" | "cross") {
+            return delta;
+        }
+        let Some(target) = action.target else {
+            return delta;
+        };
+        let remaining = Vec3::from_array(target) - Vec3::from_array(self.feet);
+        delta.clamp(remaining.min(Vec3::ZERO), remaining.max(Vec3::ZERO))
+    }
+}
 pub struct Replica {
     pub state: Option<Snapshot>,
     received_at: Instant,
@@ -61,7 +85,7 @@ impl Replica {
         world
             .predict_body(
                 state.feet,
-                Vec3::from_array(state.velocity) * seconds,
+                state.approved_delta(seconds),
                 state.radius,
                 state.height,
                 state.eye_height,

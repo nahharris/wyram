@@ -190,6 +190,7 @@ mod tests {
                 jump: false,
                 sneaking: false,
                 crawling: false,
+                climbing: false,
             },
         }
     }

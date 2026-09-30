@@ -14,7 +14,9 @@ defmodule Wyram.Character.Profile do
             sneak_speed: 2.0,
             prone_height: 0.6,
             prone_eye: 0.45,
-            crawl_speed: 1.0
+            crawl_speed: 1.0,
+            climb_height: 3,
+            climb_speed: 4.0
 
   @type t :: %__MODULE__{
           walk_speed: number(),
@@ -30,7 +32,9 @@ defmodule Wyram.Character.Profile do
           sneak_speed: number(),
           prone_height: number(),
           prone_eye: number(),
-          crawl_speed: number()
+          crawl_speed: number(),
+          climb_height: non_neg_integer(),
+          climb_speed: number()
         }
   @type motion :: %{
           mode: :walk | :run,
@@ -51,11 +55,13 @@ defmodule Wyram.Character.Profile do
       profile.gravity,
       profile.terminal_speed,
       profile.sneak_speed,
-      profile.crawl_speed
+      profile.crawl_speed,
+      profile.climb_speed
     ]
 
     if Enum.all?(values, &(is_number(&1) and &1 > 0 and &1 <= 100)) and
-         profile.run_speed >= profile.walk_speed and valid_geometry?(profile) do
+         profile.run_speed >= profile.walk_speed and valid_geometry?(profile) and
+         valid_climb?(profile) do
       :ok
     else
       {:error, :invalid_character_profile}
@@ -115,4 +121,6 @@ defmodule Wyram.Character.Profile do
     do:
       p.crouch_height <= p.standing_height and p.prone_height >= 0.1 and
         p.prone_height <= p.crouch_height
+
+  defp valid_climb?(p), do: is_integer(p.climb_height) and p.climb_height in 0..3
 end

@@ -8,6 +8,8 @@ defmodule Wyram.Character.State do
             profile: nil,
             grounded: false,
             jump_held: false,
+            climb_held: false,
+            action: nil,
             unavailable: false,
             mode: :walk,
             posture: :stand,
@@ -27,6 +29,8 @@ defmodule Wyram.Character.State do
           profile: Profile.t(),
           grounded: boolean(),
           jump_held: boolean(),
+          climb_held: boolean(),
+          action: map() | nil,
           unavailable: boolean(),
           mode: atom(),
           posture: atom(),
@@ -134,6 +138,7 @@ defmodule Wyram.Character.State do
       grounded: state.grounded,
       unavailable: state.unavailable,
       mode: state.mode,
+      action: snapshot_action(state.action),
       posture: state.posture
     }
   end
@@ -145,4 +150,11 @@ defmodule Wyram.Character.State do
     do: %{motion | mode: :crawl, speed: p.crawl_speed}
 
   defp posture_motion(_, motion), do: motion
+  defp snapshot_action(nil), do: nil
+
+  defp snapshot_action(action) do
+    Map.new(action, fn {key, value} ->
+      {key, if(is_tuple(value), do: Tuple.to_list(value), else: value)}
+    end)
+  end
 end
