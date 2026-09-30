@@ -1,3 +1,4 @@
+mod chunk_mesh;
 mod meshing;
 mod telemetry;
 mod world;

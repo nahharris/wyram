@@ -7,6 +7,8 @@ use std::thread::JoinHandle;
 
 #[derive(Default, Serialize)]
 pub struct FrameSample {
+    pub build_profile: &'static str,
+    pub opt_level: &'static str,
     pub frame_ms: f64,
     pub redraw_cpu_ms: f64,
     pub decode_ms: f64,
@@ -73,6 +75,8 @@ impl FrameTelemetry {
     pub fn record(&mut self, mut sample: FrameSample) {
         if let Some(sender) = &self.sender {
             sample.dropped_samples = self.dropped;
+            sample.build_profile = env!("WYRAM_NATIVE_PROFILE");
+            sample.opt_level = env!("WYRAM_OPT_LEVEL");
             if sender.try_send(sample).is_err() {
                 self.dropped += 1;
             }
@@ -127,6 +131,11 @@ mod tests {
         let sample: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
         assert_eq!(sample["frame_ms"], 12.5);
         assert_eq!(sample["loaded_chunks"], 75);
+        assert!(
+            sample["build_profile"]
+                .as_str()
+                .is_some_and(|profile| !profile.is_empty())
+        );
         std::fs::remove_file(path).unwrap();
     }
 }

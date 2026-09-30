@@ -11,3 +11,7 @@ version = "0.1.0"
 wyram_core = { path = "crates/wyram_core" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+[profile.perf]
+inherits = "release"
+debug = 1

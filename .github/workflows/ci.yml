@@ -39,6 +39,9 @@ jobs:
       - name: Tests
         run: mise run test
         shell: pwsh
+      - name: Optimized client tests
+        run: mise exec -- cargo test --manifest-path native/Cargo.toml -p wyram_client --profile perf --locked
+        shell: pwsh
       - name: Package
         run: mise run package
         shell: pwsh

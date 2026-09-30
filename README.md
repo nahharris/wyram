@@ -22,6 +22,8 @@ Run `mise run check` and `mise run test` before publishing changes. The test lay
 
 Use `mise run dev:agent` and the [local automation interface](docs/automation.md) to inspect the player and world or send commands from scripts. Use `mise run bench` to record repeatable engine measurements; [benchmarking.md](docs/benchmarking.md) explains the results and comparison tool.
 
+Use `mise run dev:perf` or `mise run dev:agent:perf` for an optimized native client with debug symbols. These use the same plugin staging and cleanup as ordinary development; normal `dev` remains unoptimized. `mise run bench:mesh` compares greedy meshing against the simple test oracle in the same optimized profile. The [performance issue plan](docs/performance-plan.md) lists the remaining approaches and verification gates.
+
 ## Plugins
 
 `plugins/wyram` is the default game. `plugins/example` is a separate package adding an amber block. To build the example, run `mise exec -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pack-plugin.ps1 example`, then copy `dist/example.wyrplug` into the game-data `plugins` directory and restart.

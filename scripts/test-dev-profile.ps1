@@ -1,0 +1,38 @@
+$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $PSScriptRoot
+$previousData = $env:WYRAM_DATA_DIR
+$previousClient = $env:WYRAM_CLIENT
+$mixExecutable = (Get-Command mix -CommandType Application | Select-Object -First 1).Source
+$probe = [pscustomobject]@{Calls=0}
+function mix {
+  if ($args.Count -eq 2 -and $args[0] -eq 'run' -and $args[1] -eq '--no-halt') {
+    # Exercise real packaging/build/staging, replacing only the indefinite game run.
+    if ($env:WYRAM_CLIENT -ne $expectedClient) { throw 'Launcher selected the wrong native profile' }
+    if (-not (Test-Path -LiteralPath $expectedPlugin)) { throw 'Launcher did not stage the plugin' }
+    $probe.Calls += 1
+    $global:LASTEXITCODE = 0
+  } else { & $mixExecutable @args }
+}
+try {
+  foreach ($profile in @('dev', 'perf')) {
+    $env:WYRAM_DATA_DIR = Join-Path $root ('.tools\dev-profile-test\' + [guid]::NewGuid().ToString('N'))
+    $env:WYRAM_CLIENT = $null
+    $probe.Calls = 0
+    $output = if ($profile -eq 'dev') { 'debug' } else { 'perf' }
+    $expectedClient = Join-Path $root "native\target\$output\wyram_client.exe"
+    $expectedPlugin = Join-Path $env:WYRAM_DATA_DIR 'plugins\wyram.wyrplug'
+    & (Join-Path $PSScriptRoot 'dev.ps1') -Profile $profile
+    if (Test-Path -LiteralPath $expectedPlugin) { throw 'Launcher left the staged plugin installed' }
+    if ($env:WYRAM_CLIENT) { throw 'Launcher did not restore the client environment' }
+    if ($probe.Calls -ne 1) { throw 'Launcher did not invoke the game exactly once' }
+  }
+  $env:WYRAM_CLIENT = 'C:\missing\custom-client.exe'
+  $expectedClient = $env:WYRAM_CLIENT
+  $probe.Calls = 0
+  & (Join-Path $PSScriptRoot 'dev.ps1') -Profile dev
+  if ($probe.Calls -ne 1 -or $env:WYRAM_CLIENT -ne $expectedClient) { throw 'Launcher did not preserve explicit client override' }
+} finally {
+  $env:WYRAM_DATA_DIR = $previousData
+  $env:WYRAM_CLIENT = $previousClient
+}
+Write-Host 'Debug and optimized development launchers passed'

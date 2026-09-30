@@ -1,5 +1,11 @@
 # Benchmarks
 
+`mise run bench:mesh` compares the retained simple mesher and greedy mesher on identical empty, solid, terrain and checkerboard chunks. Both implementations run in the same optimized profile, with warmup and 30 alternating-order rounds of 10 iterations. Results contain raw milliseconds per mesh, vertex counts, compiled profile/optimization level, commit and dirty-worktree state. Run `mise run bench:mesh -- -Profile dev` for a separate debug-profile comparison. The benchmark asserts oriented unit-face coverage and color parity before timing. It is an isolated CPU/geometry benchmark, not GPU execution time or full-game throughput. Generated outputs stay under `bench/results/`.
+
+Use `mise run dev:perf` or `mise run dev:agent:perf` for optimized native development with symbols. They share plugin staging/cleanup with debug development and select `native/target/perf/wyram_client.exe`. Ordinary `dev` selects the debug client. An explicit `WYRAM_CLIENT` override remains authoritative for both commands; unset it to use the selected built client. Frame samples record `build_profile` and `opt_level` compiled into the executable; release packaging still uses Cargo's release profile.
+
+For a repeatable desktop stress route, `bench/renderer_route.exs` performs eight teleports at fixed 800 ms intervals after waiting for the client and warming up for two seconds. It shuts down the isolated engine afterward. Run it with `mise exec -- mix run bench/renderer_route.exs`, setting `WYRAM_DATA_DIR` to a fresh directory containing `plugins/wyram.wyrplug`, `WYRAM_CLIENT` to the chosen executable, and `WYRAM_CLIENT_METRICS` to a new capture path. Use the same plugin, seed, window size, route, profile and machine for baseline/candidate captures. Repeat with alternating order while no builds/tests are running. This stress route is not a walking route or a substitute for GPU timing; issue #8 remains open.
+
 For renderer frame captures, set `WYRAM_CLIENT_METRICS` to a new JSONL path before `mise dev` or `mise run dev:agent`. For example, in Nushell:
 
 ```nu
@@ -15,12 +21,10 @@ The renderer uses two mesh workers with at most one outstanding job each. Snapsh
 
 Deferred work is tracked in GitHub:
 
-- [Greedy meshing](https://github.com/nahharris/wyram/issues/1)
 - [GPU buffer reuse and large uploads](https://github.com/nahharris/wyram/issues/2)
 - [Batched binary transport and background decoding](https://github.com/nahharris/wyram/issues/3)
 - [Asynchronous Elixir streaming](https://github.com/nahharris/wyram/issues/4)
 - [Background outbound IPC](https://github.com/nahharris/wyram/issues/5)
-- [Optimized development profile](https://github.com/nahharris/wyram/issues/6)
 - [GPU meshing experiment](https://github.com/nahharris/wyram/issues/7)
 - [Matched routes and GPU timing](https://github.com/nahharris/wyram/issues/8)
 

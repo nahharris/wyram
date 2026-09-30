@@ -4,13 +4,15 @@ use std::sync::Arc;
 use base64::Engine;
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
-use wyram_core::{BLOCK_COUNT, BYTE_COUNT, CHUNK_SIDE};
+#[cfg(test)]
+use wyram_core::BLOCK_COUNT;
+use wyram_core::{BYTE_COUNT, CHUNK_SIDE};
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct Vertex {
-    position: [f32; 3],
-    color: [f32; 3],
+    pub(crate) position: [f32; 3],
+    pub(crate) color: [f32; 3],
 }
 
 impl Vertex {
@@ -56,7 +58,15 @@ pub struct MeshJob {
 
 impl MeshJob {
     pub fn build(&self) -> Vec<Vertex> {
-        self.snapshot.mesh_chunk(self.key)
+        let data = &self
+            .snapshot
+            .chunks
+            .get(&self.key)
+            .expect("mesh snapshot has its chunk")
+            .data;
+        crate::chunk_mesh::build(data, self.key, &self.snapshot.colors, |p| {
+            self.snapshot.block(p[0], p[1], p[2])
+        })
     }
 }
 
@@ -214,39 +224,9 @@ impl VoxelWorld {
         false
     }
 
+    #[cfg(test)]
     fn mesh_chunk(&self, key: [i32; 3]) -> Vec<Vertex> {
-        const FACES: [([i32; 3], [[f32; 3]; 4], f32); 6] = [
-            (
-                [1, 0, 0],
-                [[1., 0., 0.], [1., 1., 0.], [1., 1., 1.], [1., 0., 1.]],
-                0.78,
-            ),
-            (
-                [-1, 0, 0],
-                [[0., 0., 1.], [0., 1., 1.], [0., 1., 0.], [0., 0., 0.]],
-                0.66,
-            ),
-            (
-                [0, 1, 0],
-                [[0., 1., 0.], [0., 1., 1.], [1., 1., 1.], [1., 1., 0.]],
-                1.0,
-            ),
-            (
-                [0, -1, 0],
-                [[0., 0., 1.], [0., 0., 0.], [1., 0., 0.], [1., 0., 1.]],
-                0.45,
-            ),
-            (
-                [0, 0, 1],
-                [[1., 0., 1.], [1., 1., 1.], [0., 1., 1.], [0., 0., 1.]],
-                0.82,
-            ),
-            (
-                [0, 0, -1],
-                [[0., 0., 0.], [0., 1., 0.], [1., 1., 0.], [1., 0., 0.]],
-                0.72,
-            ),
-        ];
+        use crate::chunk_mesh::FACES;
         let mut result = Vec::new();
         if let Some(chunk) = self.chunks.get(&key) {
             for index in 0..BLOCK_COUNT {
@@ -284,6 +264,10 @@ impl VoxelWorld {
         result
     }
 }
+
+#[cfg(test)]
+#[path = "mesh_tests.rs"]
+mod mesh_tests;
 
 #[cfg(test)]
 mod tests {

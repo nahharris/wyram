@@ -9,3 +9,5 @@ The suite checks package loading, palette-driven native terrain, invalid block r
 Rust core tests pass arbitrary numeric palettes directly. They do not load a plugin or assume Wyram game block IDs; this keeps the packed voxel layer independent of game content.
 
 The suite also exercises the opt-in loopback control protocol and runs a short benchmark smoke check. Performance results are recorded as JSON, but CI does not set a timing threshold.
+
+Native mesh tests expand greedy rectangles into oriented unit faces and compare coverage, triangle winding and colors against the retained simple mesher. Fixtures include mixed materials (including equal colors with different IDs), cavities, checkerboards, randomized voxels, procedural terrain, seams at negative coordinates and edits. Existing worker-bound, stale-result, unload/reload and collision tests remain active. Windows CI also runs native tests under the optimized `perf` profile. Launcher tests exercise actual builds and plugin staging/restoration for both profiles, replacing only the indefinite final game run; desktop/GPU captures are a separate manual verification surface.
