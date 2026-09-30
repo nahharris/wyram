@@ -24,6 +24,7 @@ pub struct FrameSample {
     pub outbound_queued: usize,
     pub outbound_sent: u64,
     pub outbound_coalesced_poses: u64,
+    pub outbound_coalesced_inputs: u64,
     pub outbound_queue_max_ms: f64,
     pub outbound_write_max_ms: f64,
 }

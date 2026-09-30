@@ -1,3 +1,6 @@
+pub mod collision;
+pub use collision::PackedWorld;
+
 pub const CHUNK_SIDE: usize = 16;
 pub const BLOCK_COUNT: usize = CHUNK_SIDE * CHUNK_SIDE * CHUNK_SIDE;
 pub const BYTE_COUNT: usize = BLOCK_COUNT * 2;
@@ -110,3 +113,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "collision_tests.rs"]
+mod collision_tests;

@@ -1,7 +1,7 @@
 defmodule Wyram.Engine.Application do
   @moduledoc false
   use Application
-  alias Wyram.Engine.{ClientPort, Control, Paths, PluginManager, World}
+  alias Wyram.Engine.{Characters, ClientPort, Control, Paths, PluginManager, World}
 
   @impl true
   def start(_type, _args) do
@@ -14,6 +14,7 @@ defmodule Wyram.Engine.Application do
       {Registry, keys: :unique, name: Wyram.Engine.RegionRegistry},
       {DynamicSupervisor, strategy: :one_for_one, name: Wyram.Engine.RegionSupervisor},
       {World, directory: Path.join(data_dir, "worlds")},
+      {Characters, []},
       ClientPort
     ]
 

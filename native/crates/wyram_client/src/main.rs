@@ -1,6 +1,7 @@
 mod chunk_mesh;
 mod meshing;
 mod outbound;
+mod replica;
 mod telemetry;
 mod world;
 
@@ -19,15 +20,15 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::meshing::MeshPipeline;
+use crate::replica::{Replica, Snapshot};
 use crate::telemetry::{FrameSample, FrameTelemetry};
 use crate::world::{Vertex, VoxelWorld};
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerPacket {
-    Motion {
-        #[serde(flatten)]
-        motion: Motion,
+    CharacterStates {
+        characters: Vec<Snapshot>,
     },
     Teleport {
         x: f32,
@@ -38,7 +39,7 @@ enum ServerPacket {
     },
     Hello {
         colors: HashMap<String, [u8; 3]>,
-        motion: Motion,
+        characters: Vec<Snapshot>,
     },
     Chunk {
         key: [i32; 3],
@@ -50,26 +51,24 @@ enum ServerPacket {
     },
 }
 
-// Gameplay tuning is validated and resolved in Elixir. This is a presentation/prediction copy.
-#[derive(Clone, Copy, Debug, Deserialize)]
-struct Motion {
-    speed: f32,
-    jump_speed: f32,
-    gravity: f32,
-    terminal_speed: f32,
+#[derive(Clone, Copy, PartialEq, Serialize)]
+struct Intent {
+    forward: f32,
+    right: f32,
+    yaw: f32,
+    pitch: f32,
+    running: bool,
+    jump: bool,
 }
+
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientPacket {
-    MovementIntent {
-        running: bool,
-    },
-    Player {
-        x: f32,
-        y: f32,
-        z: f32,
-        yaw: f32,
-        pitch: f32,
+    Input {
+        sequence: u64,
+        epoch: u64,
+        #[serde(flatten)]
+        intent: Intent,
     },
     Edit {
         x: i32,
@@ -348,16 +347,13 @@ struct Game {
     position: Vec3,
     yaw: f32,
     pitch: f32,
-    vertical_speed: f32,
-    motion: Option<Motion>,
-    last_running: bool,
-    grounded: bool,
+    replica: Replica,
+    last_intent: Option<Intent>,
+    input_sequence: u64,
+    last_input: Instant,
     pressed: HashSet<KeyCode>,
     cursor_locked: bool,
     selected: u16,
-    last_frame: Instant,
-    last_view: (i32, i32),
-    last_report: Instant,
     meshing: MeshPipeline,
     telemetry: FrameTelemetry,
     decode_ms: f64,
@@ -375,16 +371,13 @@ impl Game {
             position: Vec3::new(0.5, 73.0, 0.5),
             yaw: 0.0,
             pitch: -0.15,
-            vertical_speed: 0.0,
-            motion: None,
-            last_running: false,
-            grounded: false,
+            replica: Replica::default(),
+            last_intent: None,
+            input_sequence: 0,
+            last_input: Instant::now() - Duration::from_secs(1),
             pressed: HashSet::new(),
             cursor_locked: false,
             selected: 1,
-            last_frame: Instant::now(),
-            last_view: (i32::MAX, i32::MAX),
-            last_report: Instant::now() - Duration::from_secs(1),
             meshing: MeshPipeline::new(),
             telemetry: FrameTelemetry::from_env(),
             decode_ms: 0.0,
@@ -414,89 +407,65 @@ impl Game {
         self.position = Vec3::new(x, y, z);
         self.yaw = yaw;
         self.pitch = pitch;
-        self.vertical_speed = 0.0;
-        self.grounded = false;
         self.release_input();
-        self.last_view = (i32::MAX, i32::MAX);
-        self.last_report = Instant::now() - Duration::from_secs(1);
     }
 
     fn release_input(&mut self) {
         self.pressed.clear();
-        self.update_movement_intent();
+        self.update_input(true);
     }
-    fn update_movement_intent(&mut self) {
-        let running = self.pressed.contains(&KeyCode::ControlLeft);
-        if running != self.last_running {
-            self.send_packet(ClientPacket::MovementIntent { running });
-            self.last_running = running;
-        }
-    }
-    fn step(&mut self) {
-        let now = Instant::now();
-        let dt = (now - self.last_frame).as_secs_f32().min(0.05);
-        self.last_frame = now;
-        self.update_movement_intent();
-        let Some(motion) = self.motion else {
-            return;
+
+    fn update_input(&mut self, force: bool) {
+        let axis = |positive, negative| {
+            f32::from(u8::from(self.pressed.contains(&positive)))
+                - f32::from(u8::from(self.pressed.contains(&negative)))
         };
-        let forward = Vec3::new(self.yaw.sin(), 0.0, -self.yaw.cos());
-        let right = Vec3::new(-forward.z, 0.0, forward.x);
-        let mut wish = Vec3::ZERO;
-        if self.pressed.contains(&KeyCode::KeyW) {
-            wish += forward;
-        }
-        if self.pressed.contains(&KeyCode::KeyS) {
-            wish -= forward;
-        }
-        if self.pressed.contains(&KeyCode::KeyD) {
-            wish += right;
-        }
-        if self.pressed.contains(&KeyCode::KeyA) {
-            wish -= right;
-        }
-        let horizontal = wish.normalize_or_zero() * motion.speed * dt;
-        let next_x = self.position + Vec3::new(horizontal.x, 0.0, 0.0);
-        if !self.world.collides(next_x) {
-            self.position.x = next_x.x;
-        }
-        let next_z = self.position + Vec3::new(0.0, 0.0, horizontal.z);
-        if !self.world.collides(next_z) {
-            self.position.z = next_z.z;
-        }
-        if self.grounded && self.pressed.contains(&KeyCode::Space) {
-            self.vertical_speed = motion.jump_speed;
-            self.grounded = false;
-        }
-        self.vertical_speed =
-            (self.vertical_speed - motion.gravity * dt).max(-motion.terminal_speed);
-        let next_y = self.position + Vec3::new(0.0, self.vertical_speed * dt, 0.0);
-        if self.world.collides(next_y) {
-            if self.vertical_speed < 0.0 {
-                self.grounded = true;
-            }
-            self.vertical_speed = 0.0;
-        } else {
-            self.position.y = next_y.y;
-            self.grounded = false;
-        }
-        let center = (
-            (self.position.x.floor() as i32).div_euclid(16),
-            (self.position.z.floor() as i32).div_euclid(16),
-        );
-        if center != self.last_view || self.last_report.elapsed() >= Duration::from_millis(200) {
-            self.send_packet(ClientPacket::Player {
-                x: self.position.x,
-                y: self.position.y,
-                z: self.position.z,
-                yaw: self.yaw,
-                pitch: self.pitch,
+        let intent = Intent {
+            forward: axis(KeyCode::KeyW, KeyCode::KeyS),
+            right: axis(KeyCode::KeyD, KeyCode::KeyA),
+            yaw: self.yaw,
+            pitch: self.pitch,
+            running: self.pressed.contains(&KeyCode::ControlLeft),
+            jump: self.pressed.contains(&KeyCode::Space),
+        };
+        if force
+            || self.last_intent != Some(intent)
+            || self.last_input.elapsed() >= Duration::from_millis(100)
+        {
+            self.input_sequence += 1;
+            self.send_packet(ClientPacket::Input {
+                sequence: self.input_sequence,
+                epoch: self.replica.epoch(),
+                intent,
             });
-            self.last_view = center;
-            self.last_report = now;
+            self.last_intent = Some(intent);
+            self.last_input = Instant::now();
         }
     }
 
+    fn accept_characters(&mut self, characters: Vec<Snapshot>) {
+        for snapshot in characters.into_iter().filter(|state| state.id == "player") {
+            let reset = snapshot.epoch != self.replica.epoch();
+            let (x, y, z, yaw, pitch) = (
+                snapshot.x,
+                snapshot.y,
+                snapshot.z,
+                snapshot.yaw,
+                snapshot.pitch,
+            );
+            if self.replica.accept(snapshot) {
+                if reset {
+                    self.apply_teleport(x, y, z, yaw, pitch);
+                }
+                self.position = Vec3::new(x, y, z);
+            }
+        }
+    }
+
+    fn step(&mut self) {
+        self.update_input(false);
+        self.position = self.replica.sample(&self.world);
+    }
     fn edit(&mut self, place: bool) {
         let mut previous = None;
         for step in 1..=60 {
@@ -559,11 +528,13 @@ impl ApplicationHandler<UserEvent> for Game {
                 yaw,
                 pitch,
             }) => self.apply_teleport(x, y, z, yaw, pitch),
-            UserEvent::Packet(ServerPacket::Hello { colors, motion }) => {
+            UserEvent::Packet(ServerPacket::Hello { colors, characters }) => {
                 self.world.set_palette(colors);
-                self.motion = Some(motion);
+                self.accept_characters(characters);
             }
-            UserEvent::Packet(ServerPacket::Motion { motion }) => self.motion = Some(motion),
+            UserEvent::Packet(ServerPacket::CharacterStates { characters }) => {
+                self.accept_characters(characters)
+            }
             UserEvent::Packet(ServerPacket::Chunk {
                 key,
                 revision,
@@ -680,7 +651,7 @@ impl ApplicationHandler<UserEvent> for Game {
                         in_flight: self.meshing.in_flight(),
                         outbound_queued: outbound.queued,
                         outbound_sent: outbound.sent,
-                        outbound_coalesced_poses: outbound.coalesced_poses,
+                        outbound_coalesced_inputs: outbound.coalesced_inputs,
                         outbound_queue_max_ms: outbound.queue_max_ms,
                         outbound_write_max_ms: outbound.write_max_ms,
                         ..FrameSample::default()
@@ -700,7 +671,7 @@ impl ApplicationHandler<UserEvent> for Game {
         if self.cursor_locked
             && let DeviceEvent::MouseMotion { delta } = event
         {
-            self.yaw += delta.0 as f32 * 0.002;
+            self.yaw = (self.yaw + delta.0 as f32 * 0.002).rem_euclid(std::f32::consts::TAU);
             self.pitch = (self.pitch - delta.1 as f32 * 0.002).clamp(-1.55, 1.55);
         }
     }
@@ -741,65 +712,39 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn releasing_input_sends_walk_intent_once() {
+    fn releasing_input_sends_idle_intent_with_current_epoch() {
         let (outbound, worker) =
             outbound::Outbound::start(Vec::<u8>::new(), |_| panic!("write failed"));
         let mut game = Game::new();
         game.outbound = Some(outbound);
         game.pressed.insert(KeyCode::ControlLeft);
-        game.last_running = true;
         game.release_input();
-        game.update_movement_intent();
+        game.update_input(false);
         assert!(game.pressed.is_empty());
-        assert!(!game.last_running);
         drop(game);
         let bytes = worker.join().unwrap().unwrap();
         let length = u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize;
         assert_eq!(bytes.len(), length + 4);
         let packet: serde_json::Value = serde_json::from_slice(&bytes[4..]).unwrap();
-        assert_eq!(packet["type"], "movement_intent");
+        assert_eq!(packet["type"], "input");
         assert_eq!(packet["running"], false);
+        assert_eq!(packet["forward"], 0.0);
     }
-
     #[test]
-    fn native_prediction_uses_engine_speed_even_when_run_key_is_pressed() {
+    fn raw_keys_cannot_move_a_player_without_authoritative_state() {
         let mut game = Game::new();
-        game.motion = Some(Motion {
-            speed: 2.0,
-            jump_speed: 6.0,
-            gravity: 18.0,
-            terminal_speed: 22.0,
-        });
-        game.pressed.insert(KeyCode::ControlLeft);
         game.pressed.insert(KeyCode::KeyW);
-        game.last_frame = Instant::now() - Duration::from_millis(100);
+        game.pressed.insert(KeyCode::ControlLeft);
         game.step();
-        assert!((game.position.z - 0.4).abs() < 0.0001);
-        assert!((game.vertical_speed + 0.9).abs() < 0.0001);
+        assert_eq!(game.position, Vec3::new(0.5, 73.0, 0.5));
     }
     #[test]
-    fn engine_motion_packet_controls_running_speed() {
-        let packet: ServerPacket = serde_json::from_str(r#"{"type":"motion","mode":"run","speed":3.0,"jump_speed":6.0,"gravity":18.0,"terminal_speed":22.0}"#).expect("engine motion protocol");
-        let ServerPacket::Motion { motion } = packet else {
-            panic!("motion packet")
-        };
-        assert_eq!(motion.speed, 3.0);
-        assert_eq!(motion.jump_speed, 6.0);
-        assert_eq!(motion.gravity, 18.0);
-        assert_eq!(motion.terminal_speed, 22.0);
-    }
-    #[test]
-    fn teleport_resets_movement_and_repositions_player() {
+    fn teleport_resets_held_input_and_repositions_player() {
         let mut game = Game::new();
-        game.vertical_speed = -12.0;
-        game.grounded = true;
+        game.pressed.insert(KeyCode::KeyW);
         game.apply_teleport(32.5, 90.0, -7.5, 1.0, -0.25);
         assert_eq!(game.position, Vec3::new(32.5, 90.0, -7.5));
-        assert_eq!((game.yaw, game.pitch), (1.0, -0.25));
-        assert_eq!(game.vertical_speed, 0.0);
-        assert!(!game.grounded);
-        assert_eq!(game.last_view, (i32::MAX, i32::MAX));
+        assert!(game.pressed.is_empty());
     }
 }

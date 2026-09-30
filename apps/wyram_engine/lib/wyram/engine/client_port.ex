@@ -2,8 +2,8 @@ defmodule Wyram.Engine.ClientPort do
   @moduledoc "Bounded binary transport to the native graphics client."
   use GenServer
   require Logger
-  alias Wyram.Character.Profile
-  alias Wyram.Engine.{Paths, PluginManager, World}
+
+  alias Wyram.Engine.{Characters, Native, Paths, PluginManager, World}
 
   @radius 2
   @chunk_side 16
@@ -25,8 +25,8 @@ defmodule Wyram.Engine.ClientPort do
 
   @impl true
   def init(_) do
+    Process.flag(:trap_exit, true)
     executable = Paths.client_executable()
-    profile = PluginManager.player_profile()
 
     if File.regular?(executable) do
       port =
@@ -37,12 +37,12 @@ defmodule Wyram.Engine.ClientPort do
           :hide
         ])
 
-      state = initial_state(port, profile)
+      state = initial_state(port)
       send(self(), :initialize)
       {:ok, state}
     else
       Logger.warning("Native client unavailable at #{executable}; engine running headlessly")
-      {:ok, initial_state(nil, profile)}
+      {:ok, initial_state(nil)}
     end
   end
 
@@ -52,9 +52,10 @@ defmodule Wyram.Engine.ClientPort do
       type: "hello",
       blocks: PluginManager.blocks(),
       colors: PluginManager.block_colors(),
-      motion: state.motion
+      characters: Characters.latest()
     })
 
+    Characters.connect()
     {:noreply, stream(state, {0, 0})}
   end
 
@@ -67,10 +68,34 @@ defmodule Wyram.Engine.ClientPort do
 
   def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
     if status != 0, do: Logger.warning("Native client exited with status #{status}")
+    Characters.disconnect()
     Enum.each(state.exit_waiters, &GenServer.reply(&1, {:ok, status}))
 
     {:noreply,
      %{state | port: nil, sent: MapSet.new(), player: nil, exit_status: status, exit_waiters: []}}
+  end
+
+  def handle_info(:poll_client, %{port: nil} = state), do: {:noreply, state}
+
+  def handle_info(:poll_client, state) do
+    case Native.process_status(state.process_watch) do
+      {:ok, nil} ->
+        Process.send_after(self(), :poll_client, 100)
+        {:noreply, state}
+
+      {:ok, status} ->
+        handle_info({state.port, {:exit_status, status}}, state)
+
+      {:error, reason} ->
+        {:stop, {:client_monitor_failed, reason}, state}
+    end
+  end
+
+  def handle_info({port, {:exit_status, _}}, state) when is_port(port), do: {:noreply, state}
+
+  def handle_info({:EXIT, port, _reason}, state) when is_port(port) do
+    # Keep await_exit waiters alive until the native exit_status arrives.
+    {:noreply, state}
   end
 
   @impl true
@@ -95,10 +120,14 @@ defmodule Wyram.Engine.ClientPort do
   end
 
   def handle_call({:teleport, x, y, z, yaw, pitch}, _from, state) do
-    send_packet(state.port, %{type: "teleport", x: x, y: y, z: z, yaw: yaw, pitch: pitch})
-    motion = Profile.motion(state.profile, false)
-    send_packet(state.port, Map.put(motion, :type, :motion))
-    {:reply, :ok, %{state | motion: motion}}
+    case Characters.teleport(x, y, z, yaw, pitch) do
+      :ok ->
+        send_packet(state.port, %{type: "character_states", characters: Characters.latest()})
+        {:reply, :ok, state}
+
+      error ->
+        {:reply, error, state}
+    end
   end
 
   @impl true
@@ -110,29 +139,25 @@ defmodule Wyram.Engine.ClientPort do
     {:noreply, state}
   end
 
-  defp handle_packet(%{"type" => "movement_intent", "running" => running}, state)
-       when is_boolean(running) do
-    motion = Profile.motion(state.profile, running)
-    if motion != state.motion, do: send_packet(state.port, Map.put(motion, :type, :motion))
-    %{state | motion: motion}
+  def handle_cast(:characters_restarted, state) do
+    if state.port != nil, do: Characters.connect()
+    {:noreply, state}
   end
 
-  defp handle_packet(
-         %{"type" => "player", "x" => x, "y" => y, "z" => z, "yaw" => yaw, "pitch" => pitch},
-         state
-       )
-       when is_number(x) and is_number(y) and is_number(z) and is_number(yaw) and is_number(pitch) do
+  def handle_cast(:characters_ready, state) do
+    batch = Characters.latest()
+    Characters.acknowledge()
+    send_packet(state.port, %{type: "character_states", characters: batch})
+    player = Enum.find(batch, &(&1.id == "player"))
+    {x, z} = {player.x, player.z}
     center = {Integer.floor_div(floor(x), @chunk_side), Integer.floor_div(floor(z), @chunk_side)}
-    player = %{x: x, y: y, z: z, yaw: yaw, pitch: pitch}
-    %{stream(state, center) | player: player}
+    next = if state.center != center, do: stream(state, center), else: state
+    {:noreply, %{next | player: player}}
   end
 
-  defp handle_packet(%{"type" => "view", "x" => x, "z" => z}, state)
-       when is_number(x) and is_number(z) do
-    stream(
-      state,
-      {Integer.floor_div(trunc(x), @chunk_side), Integer.floor_div(trunc(z), @chunk_side)}
-    )
+  defp handle_packet(%{"type" => "input"} = packet, state) do
+    Characters.input(packet)
+    state
   end
 
   defp handle_packet(%{"type" => "edit", "x" => x, "y" => y, "z" => z, "id" => id}, state)
@@ -143,7 +168,21 @@ defmodule Wyram.Engine.ClientPort do
 
   defp handle_packet(_, state), do: state
 
-  defp initial_state(port, profile) do
+  defp initial_state(port) do
+    watch =
+      if port != nil do
+        {:os_pid, pid} = Port.info(port, :os_pid)
+
+        case Native.watch_process(pid) do
+          {:ok, watch} ->
+            Process.send_after(self(), :poll_client, 100)
+            watch
+
+          {:error, _} ->
+            nil
+        end
+      end
+
     %{
       port: port,
       sent: MapSet.new(),
@@ -151,8 +190,7 @@ defmodule Wyram.Engine.ClientPort do
       player: nil,
       exit_status: nil,
       exit_waiters: [],
-      profile: profile,
-      motion: Profile.motion(profile, false)
+      process_watch: watch
     }
   end
 
@@ -189,5 +227,10 @@ defmodule Wyram.Engine.ClientPort do
   end
 
   defp send_packet(nil, _packet), do: :ok
-  defp send_packet(port, packet), do: Port.command(port, Jason.encode!(packet))
+
+  defp send_packet(port, packet) do
+    Port.command(port, Jason.encode!(packet))
+  rescue
+    ArgumentError -> {:error, :client_closed}
+  end
 end
