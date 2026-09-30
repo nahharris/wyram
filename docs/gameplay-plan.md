@@ -14,7 +14,7 @@ Walking, Ctrl-running and Space-jumping already exist. Their tuning was hard-cod
 | Prone crawling | Implemented through shared posture clearance | [#13](https://github.com/nahharris/wyram/issues/13) |
 | Guaranteed one-block jumping | Collision-backed clearance and landing verified across render schedules | [#14](https://github.com/nahharris/wyram/issues/14) |
 | Climbing/mantling up to three blocks | Implemented through supported swept traversal phases | [#15](https://github.com/nahharris/wyram/issues/15) |
-| Floor sliding | Requires running, low posture, swept movement and friction | [#16](https://github.com/nahharris/wyram/issues/16) |
+| Floor sliding | Implemented with crouched momentum and swept interruption | [#16](https://github.com/nahharris/wyram/issues/16) |
 | Wall sliding | Requires authoritative airborne contact and controlled descent | [#17](https://github.com/nahharris/wyram/issues/17) |
 | Swimming and diving | Deferred until public fluid semantics and water presentation exist | [#18](https://github.com/nahharris/wyram/issues/18) |
 | Four-direction rolling | Requires swept action movement, clearance and interruption rules | [#19](https://github.com/nahharris/wyram/issues/19) |
@@ -60,3 +60,10 @@ Space uses a grounded input edge: release and press again after landing to jump 
 Hold E with a movement direction to deliberately climb a ledge up to three blocks. The dominant world direction resolves diagonal input; ties prefer the horizontal X axis. Elixir searches the lowest reachable height, checks a complete vertical rise, a horizontal crossing and supported destination before entry, then advances those phases at profile climb speed (default 4 blocks/second). The default maximum is three; profiles can disable climbing with maximum zero. Space remains the ordinary one-block jump.
 
 Release E, request a lower posture, teleport, loss of landing support, blocked path or unavailable terrain cancels traversal. A held E does not re-enter until released. Each active step rechecks destination support and sweeps actual displacement; camera and future animation follow approved `action`, `phase` and position snapshots. No mesh or animation owns traversal displacement.
+
+
+### Floor sliding
+
+While running with Ctrl, press Shift to slide if grounded and already moving at least the profile entry speed (default 6 blocks/second). Slide preserves the entry direction, shrinks to the approved crouched body, and decelerates with friction (default 10 blocks/second squared) for at most 0.6 seconds. Slow entry falls back to ordinary sneaking. Profiles can disable sliding.
+
+Releasing Ctrl/Shift, jumping, crawling, climbing, wall contact, lost support, or unavailable terrain ends the slide. Grounded ledge protection prevents sliding off an edge. On exit, standing still requires clearance; a low tunnel retains crouching. Holding the controls does not repeatedly restart the slide. Timers and displacement share authoritative fixed steps; presentation consumes the approved action independently.
