@@ -25,6 +25,10 @@ use crate::world::{Vertex, VoxelWorld};
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerPacket {
+    Motion {
+        #[serde(flatten)]
+        motion: Motion,
+    },
     Teleport {
         x: f32,
         y: f32,
@@ -34,6 +38,7 @@ enum ServerPacket {
     },
     Hello {
         colors: HashMap<String, [u8; 3]>,
+        motion: Motion,
     },
     Chunk {
         key: [i32; 3],
@@ -45,9 +50,20 @@ enum ServerPacket {
     },
 }
 
+// Gameplay tuning is validated and resolved in Elixir. This is a presentation/prediction copy.
+#[derive(Clone, Copy, Debug, Deserialize)]
+struct Motion {
+    speed: f32,
+    jump_speed: f32,
+    gravity: f32,
+    terminal_speed: f32,
+}
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientPacket {
+    MovementIntent {
+        running: bool,
+    },
     Player {
         x: f32,
         y: f32,
@@ -333,6 +349,8 @@ struct Game {
     yaw: f32,
     pitch: f32,
     vertical_speed: f32,
+    motion: Option<Motion>,
+    last_running: bool,
     grounded: bool,
     pressed: HashSet<KeyCode>,
     cursor_locked: bool,
@@ -358,6 +376,8 @@ impl Game {
             yaw: 0.0,
             pitch: -0.15,
             vertical_speed: 0.0,
+            motion: None,
+            last_running: false,
             grounded: false,
             pressed: HashSet::new(),
             cursor_locked: false,
@@ -396,15 +416,30 @@ impl Game {
         self.pitch = pitch;
         self.vertical_speed = 0.0;
         self.grounded = false;
-        self.pressed.clear();
+        self.release_input();
         self.last_view = (i32::MAX, i32::MAX);
         self.last_report = Instant::now() - Duration::from_secs(1);
     }
 
+    fn release_input(&mut self) {
+        self.pressed.clear();
+        self.update_movement_intent();
+    }
+    fn update_movement_intent(&mut self) {
+        let running = self.pressed.contains(&KeyCode::ControlLeft);
+        if running != self.last_running {
+            self.send_packet(ClientPacket::MovementIntent { running });
+            self.last_running = running;
+        }
+    }
     fn step(&mut self) {
         let now = Instant::now();
         let dt = (now - self.last_frame).as_secs_f32().min(0.05);
         self.last_frame = now;
+        self.update_movement_intent();
+        let Some(motion) = self.motion else {
+            return;
+        };
         let forward = Vec3::new(self.yaw.sin(), 0.0, -self.yaw.cos());
         let right = Vec3::new(-forward.z, 0.0, forward.x);
         let mut wish = Vec3::ZERO;
@@ -420,12 +455,7 @@ impl Game {
         if self.pressed.contains(&KeyCode::KeyA) {
             wish -= right;
         }
-        let speed = if self.pressed.contains(&KeyCode::ControlLeft) {
-            9.0
-        } else {
-            5.0
-        };
-        let horizontal = wish.normalize_or_zero() * speed * dt;
+        let horizontal = wish.normalize_or_zero() * motion.speed * dt;
         let next_x = self.position + Vec3::new(horizontal.x, 0.0, 0.0);
         if !self.world.collides(next_x) {
             self.position.x = next_x.x;
@@ -435,10 +465,11 @@ impl Game {
             self.position.z = next_z.z;
         }
         if self.grounded && self.pressed.contains(&KeyCode::Space) {
-            self.vertical_speed = 7.0;
+            self.vertical_speed = motion.jump_speed;
             self.grounded = false;
         }
-        self.vertical_speed = (self.vertical_speed - 20.0 * dt).max(-25.0);
+        self.vertical_speed =
+            (self.vertical_speed - motion.gravity * dt).max(-motion.terminal_speed);
         let next_y = self.position + Vec3::new(0.0, self.vertical_speed * dt, 0.0);
         if self.world.collides(next_y) {
             if self.vertical_speed < 0.0 {
@@ -528,7 +559,11 @@ impl ApplicationHandler<UserEvent> for Game {
                 yaw,
                 pitch,
             }) => self.apply_teleport(x, y, z, yaw, pitch),
-            UserEvent::Packet(ServerPacket::Hello { colors }) => self.world.set_palette(colors),
+            UserEvent::Packet(ServerPacket::Hello { colors, motion }) => {
+                self.world.set_palette(colors);
+                self.motion = Some(motion);
+            }
+            UserEvent::Packet(ServerPacket::Motion { motion }) => self.motion = Some(motion),
             UserEvent::Packet(ServerPacket::Chunk {
                 key,
                 revision,
@@ -554,6 +589,7 @@ impl ApplicationHandler<UserEvent> for Game {
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Focused(false) => self.release_input(),
             WindowEvent::Resized(size) => {
                 if let Some(graphics) = self.graphics.as_mut() {
                     graphics.resize(size.width, size.height);
@@ -566,6 +602,7 @@ impl ApplicationHandler<UserEvent> for Game {
                             self.pressed.insert(code);
                             if code == KeyCode::Escape {
                                 self.cursor_locked = false;
+                                self.release_input();
                                 if let Some(window) = &self.window {
                                     let _ = window.set_cursor_grab(CursorGrabMode::None);
                                     window.set_cursor_visible(true);
@@ -705,6 +742,54 @@ fn main() {
 mod tests {
     use super::*;
 
+    #[test]
+    fn releasing_input_sends_walk_intent_once() {
+        let (outbound, worker) =
+            outbound::Outbound::start(Vec::<u8>::new(), |_| panic!("write failed"));
+        let mut game = Game::new();
+        game.outbound = Some(outbound);
+        game.pressed.insert(KeyCode::ControlLeft);
+        game.last_running = true;
+        game.release_input();
+        game.update_movement_intent();
+        assert!(game.pressed.is_empty());
+        assert!(!game.last_running);
+        drop(game);
+        let bytes = worker.join().unwrap().unwrap();
+        let length = u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize;
+        assert_eq!(bytes.len(), length + 4);
+        let packet: serde_json::Value = serde_json::from_slice(&bytes[4..]).unwrap();
+        assert_eq!(packet["type"], "movement_intent");
+        assert_eq!(packet["running"], false);
+    }
+
+    #[test]
+    fn native_prediction_uses_engine_speed_even_when_run_key_is_pressed() {
+        let mut game = Game::new();
+        game.motion = Some(Motion {
+            speed: 2.0,
+            jump_speed: 6.0,
+            gravity: 18.0,
+            terminal_speed: 22.0,
+        });
+        game.pressed.insert(KeyCode::ControlLeft);
+        game.pressed.insert(KeyCode::KeyW);
+        game.last_frame = Instant::now() - Duration::from_millis(100);
+        game.step();
+        assert!((game.position.z - 0.4).abs() < 0.0001);
+        assert!((game.vertical_speed + 0.9).abs() < 0.0001);
+    }
+    #[test]
+    fn engine_motion_packet_controls_running_speed() {
+        let packet: ServerPacket = serde_json::from_str(r#"{"type":"motion","mode":"run","speed":3.0,"jump_speed":6.0,"gravity":18.0,"terminal_speed":22.0}"#).expect("engine motion protocol");
+        let ServerPacket::Motion { motion } = packet else {
+            panic!("motion packet")
+        };
+        assert_eq!(motion.speed, 3.0);
+        assert_eq!(motion.jump_speed, 6.0);
+        assert_eq!(motion.gravity, 18.0);
+        assert_eq!(motion.terminal_speed, 22.0);
+    }
     #[test]
     fn teleport_resets_movement_and_repositions_player() {
         let mut game = Game::new();

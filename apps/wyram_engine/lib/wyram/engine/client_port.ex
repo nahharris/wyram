@@ -2,6 +2,7 @@ defmodule Wyram.Engine.ClientPort do
   @moduledoc "Bounded binary transport to the native graphics client."
   use GenServer
   require Logger
+  alias Wyram.Character.Profile
   alias Wyram.Engine.{Paths, PluginManager, World}
 
   @radius 2
@@ -25,6 +26,7 @@ defmodule Wyram.Engine.ClientPort do
   @impl true
   def init(_) do
     executable = Paths.client_executable()
+    profile = PluginManager.player_profile()
 
     if File.regular?(executable) do
       port =
@@ -35,12 +37,12 @@ defmodule Wyram.Engine.ClientPort do
           :hide
         ])
 
-      state = initial_state(port)
+      state = initial_state(port, profile)
       send(self(), :initialize)
       {:ok, state}
     else
       Logger.warning("Native client unavailable at #{executable}; engine running headlessly")
-      {:ok, initial_state(nil)}
+      {:ok, initial_state(nil, profile)}
     end
   end
 
@@ -49,7 +51,8 @@ defmodule Wyram.Engine.ClientPort do
     send_packet(state.port, %{
       type: "hello",
       blocks: PluginManager.blocks(),
-      colors: PluginManager.block_colors()
+      colors: PluginManager.block_colors(),
+      motion: state.motion
     })
 
     {:noreply, stream(state, {0, 0})}
@@ -93,7 +96,9 @@ defmodule Wyram.Engine.ClientPort do
 
   def handle_call({:teleport, x, y, z, yaw, pitch}, _from, state) do
     send_packet(state.port, %{type: "teleport", x: x, y: y, z: z, yaw: yaw, pitch: pitch})
-    {:reply, :ok, state}
+    motion = Profile.motion(state.profile, false)
+    send_packet(state.port, Map.put(motion, :type, :motion))
+    {:reply, :ok, %{state | motion: motion}}
   end
 
   @impl true
@@ -103,6 +108,13 @@ defmodule Wyram.Engine.ClientPort do
     end
 
     {:noreply, state}
+  end
+
+  defp handle_packet(%{"type" => "movement_intent", "running" => running}, state)
+       when is_boolean(running) do
+    motion = Profile.motion(state.profile, running)
+    if motion != state.motion, do: send_packet(state.port, Map.put(motion, :type, :motion))
+    %{state | motion: motion}
   end
 
   defp handle_packet(
@@ -131,14 +143,16 @@ defmodule Wyram.Engine.ClientPort do
 
   defp handle_packet(_, state), do: state
 
-  defp initial_state(port) do
+  defp initial_state(port, profile) do
     %{
       port: port,
       sent: MapSet.new(),
       center: {0, 0},
       player: nil,
       exit_status: nil,
-      exit_waiters: []
+      exit_waiters: [],
+      profile: profile,
+      motion: Profile.motion(profile, false)
     }
   end
 

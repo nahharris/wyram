@@ -10,6 +10,9 @@ defmodule Wyram.Plugin do
              required(:rock) => String.t()
            }}
 
+  @callback player_profile() :: Wyram.Character.Profile.t()
+  @optional_callbacks player_profile: 0
+
   @callback blocks() :: [block_definition()]
   @callback terrain() :: terrain_profile() | :none
   @callback interact(String.t(), map()) ::
