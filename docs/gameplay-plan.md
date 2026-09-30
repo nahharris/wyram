@@ -11,7 +11,7 @@ Walking, Ctrl-running and Space-jumping already exist. Their tuning was hard-cod
 | Public character profiles and Elixir walk/run policy | Implemented; preserves controls and tuning | [#10](https://github.com/nahharris/wyram/issues/10) |
 | Fixed-step character authority and batched swept collision | Implemented foundation; explicit unknown-terrain handling | [#11](https://github.com/nahharris/wyram/issues/11) |
 | Sneaking | Implemented; reduced height, slow movement, safe ledges | [#12](https://github.com/nahharris/wyram/issues/12) |
-| Prone crawling | Requires posture clearance and sneaking | [#13](https://github.com/nahharris/wyram/issues/13) |
+| Prone crawling | Implemented through shared posture clearance | [#13](https://github.com/nahharris/wyram/issues/13) |
 | Guaranteed one-block jumping | Requires fixed-step collision; test clearance and landing across render schedules | [#14](https://github.com/nahharris/wyram/issues/14) |
 | Climbing/mantling up to three blocks | Requires swept ledge queries, clearance and traversal phases | [#15](https://github.com/nahharris/wyram/issues/15) |
 | Floor sliding | Requires running, low posture, swept movement and friction | [#16](https://github.com/nahharris/wyram/issues/16) |
@@ -44,3 +44,8 @@ The shared owner schedules one next tick and does not accumulate an unbounded ca
 ### Sneaking
 
 Hold Left Shift to request crouching. Elixir selects profile-specific body height, eye height and sneak speed, which takes precedence over running. Shrinking keeps the feet anchored; expanding requires complete standing-body clearance. Releasing Shift under a ceiling retains crouching until standing fits. Grounded sneaking preserves support at cardinal and diagonal ledges; an intentional jump bypasses this protection. Collision, posture and support queries run in reusable batches for all characters. The default crouched height is one block, eye height 0.85 and speed 2 blocks/second.
+
+
+### Crawling
+
+Hold C to request prone crawling. Prone takes precedence over Shift and Ctrl; the default profile uses height 0.6, eye offset 0.45 and speed 1 block/second. Releasing C requests standing, but stays prone while the standing body is blocked. Shift can request a clearance-checked intermediate crouch. Feet never move as a side effect of posture changes. Crawling shares grounded ledge protection with sneaking, and solid voxel steps remain collision obstacles. Focus loss, Escape, teleport and stale input clear crawl intent; expansion remains subject to clearance.
