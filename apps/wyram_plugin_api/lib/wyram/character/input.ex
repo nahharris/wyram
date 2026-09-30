@@ -10,7 +10,9 @@ defmodule Wyram.Character.Input do
             jump: false,
             sneaking: false,
             crawling: false,
-            climbing: false
+            climbing: false,
+            rolling: false,
+            cancel_actions: false
 
   @type t :: %__MODULE__{
           sequence: non_neg_integer(),
@@ -23,10 +25,24 @@ defmodule Wyram.Character.Input do
           jump: boolean(),
           sneaking: boolean(),
           crawling: boolean(),
-          climbing: boolean()
+          climbing: boolean(),
+          rolling: boolean(),
+          cancel_actions: boolean()
         }
   @spec idle() :: t()
   def idle, do: %__MODULE__{}
+
+  @doc "Release all controls while retaining look, epoch and acknowledgement sequence."
+  @spec release(t()) :: t()
+  def release(input),
+    do: %{
+      idle()
+      | sequence: input.sequence,
+        epoch: input.epoch,
+        yaw: input.yaw,
+        pitch: input.pitch,
+        cancel_actions: true
+    }
 
   @spec decode(term()) :: {:ok, t()} | {:error, :invalid_input}
   def decode(
@@ -45,9 +61,7 @@ defmodule Wyram.Character.Input do
     values = [{forward, -1, 1}, {right, -1, 1}, {yaw, -1000, 1000}, {pitch, -1.55, 1.55}]
 
     if valid_sequence?(sequence) and valid_sequence?(epoch) and Enum.all?(values, &bounded?/1) and
-         is_boolean(Map.get(packet, "sneaking", false)) and
-         is_boolean(Map.get(packet, "crawling", false)) and
-         is_boolean(Map.get(packet, "climbing", false)) do
+         valid_flags?(packet) do
       {:ok,
        %__MODULE__{
          sequence: sequence,
@@ -60,7 +74,9 @@ defmodule Wyram.Character.Input do
          jump: jump,
          sneaking: Map.get(packet, "sneaking", false),
          crawling: Map.get(packet, "crawling", false),
-         climbing: Map.get(packet, "climbing", false)
+         climbing: Map.get(packet, "climbing", false),
+         rolling: Map.get(packet, "rolling", false),
+         cancel_actions: Map.get(packet, "cancel_actions", false)
        }}
     else
       {:error, :invalid_input}
@@ -73,4 +89,11 @@ defmodule Wyram.Character.Input do
     do: is_integer(value) and value >= 0 and value <= 9_000_000_000_000_000
 
   defp bounded?({value, min, max}), do: is_number(value) and value >= min and value <= max
+
+  defp valid_flags?(packet),
+    do:
+      Enum.all?(
+        ["sneaking", "crawling", "climbing", "rolling", "cancel_actions"],
+        &is_boolean(Map.get(packet, &1, false))
+      )
 end

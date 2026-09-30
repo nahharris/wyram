@@ -17,7 +17,7 @@ Walking, Ctrl-running and Space-jumping already exist. Their tuning was hard-cod
 | Floor sliding | Implemented with crouched momentum and swept interruption | [#16](https://github.com/nahharris/wyram/issues/16) |
 | Wall sliding | Implemented with fresh deliberate contact and a descent cap | [#17](https://github.com/nahharris/wyram/issues/17) |
 | Swimming and diving | Deferred until public fluid semantics and water presentation exist | [#18](https://github.com/nahharris/wyram/issues/18) |
-| Four-direction rolling | Requires swept action movement, clearance and interruption rules | [#19](https://github.com/nahharris/wyram/issues/19) |
+| Four-direction rolling | Implemented as a timed four-direction swept action | [#19](https://github.com/nahharris/wyram/issues/19) |
 | Reusable body, rig and models | Design alongside movement; demonstrate a second character | [#20](https://github.com/nahharris/wyram/issues/20) |
 | Reusable animations | Requires rig and approved character state/phase snapshots | [#21](https://github.com/nahharris/wyram/issues/21) |
 | Third-person and front-facing cameras | Requires visible model and body coordinates independent of the camera | [#22](https://github.com/nahharris/wyram/issues/22) |
@@ -72,3 +72,10 @@ Releasing Ctrl/Shift, jumping, crawling, climbing, wall contact, lost support, o
 ### Wall sliding
 
 While descending, hold Shift and push a movement direction into a wall to cap fall speed (default 2 blocks/second). Every fixed step probes current horizontal contact in a batch; prior contact cannot keep the character attached to a removed wall. Steering away, releasing Shift, requesting another action, lost contact, landing and unavailable terrain end the state. Ascending contact does not activate it. Space does not introduce a wall jump. Profiles can disable wall sliding or tune the descent cap, and presentation follows the approved action.
+
+
+### Four-direction rolling
+
+Press Q with WASD to roll forward, backward, left or right relative to character facing. The dominant local axis resolves diagonals; ties and Q alone select forward. Default tuning covers 3 blocks over 0.35 seconds, with a 0.8-second cooldown measured from entry. Profiles can disable or tune the action. It uses the approved prone body and preserves its entry direction. A normal Q release allows completion; jumping, other traversal requests, focus/Escape release, teleport, walls, ledges, lost support and unavailable terrain interrupt it. Low tunnels retain prone posture when standing remains blocked.
+
+Input edges and cooldown prevent held/repeated Q from restarting it. A sticky cancellation flag survives input coalescing until a new key press; stale engine input also cancels the action. Prediction stays within the approved target. The action snapshot exposes direction, phase, elapsed time and duration for future reusable animation. Rolling adds no combat or invulnerability semantics.

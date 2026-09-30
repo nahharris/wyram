@@ -2,7 +2,7 @@ defmodule Wyram.Character.Posture do
   @moduledoc "Feet-anchored posture transitions, with full-body clearance before expansion."
 
   def request(body, input) do
-    posture = requested(input)
+    posture = requested(body, input)
     {height, eye} = dimensions(body.profile, posture)
     wanted = %{body | posture: posture, height: height, eye_height: eye}
     query = {body.position, {0.0, 0.0, 0.0}, body.radius, height}
@@ -37,7 +37,8 @@ defmodule Wyram.Character.Posture do
     {original.position, {true, true, true}, unavailable}
   end
 
-  defp requested(%{crawling: true}), do: :prone
-  defp requested(%{sneaking: true}), do: :crouch
-  defp requested(_), do: :stand
+  defp requested(%{action: %{kind: :roll}}, _), do: :prone
+  defp requested(_, %{crawling: true}), do: :prone
+  defp requested(_, %{sneaking: true}), do: :crouch
+  defp requested(_, _), do: :stand
 end
