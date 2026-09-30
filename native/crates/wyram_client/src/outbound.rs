@@ -52,7 +52,7 @@ impl Outbound {
     {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
-                pending: VecDeque::with_capacity(EDIT_CAPACITY + 1),
+                pending: VecDeque::with_capacity(EDIT_CAPACITY + 2),
                 edits: 0,
                 closing: false,
                 failed: false,
@@ -122,6 +122,16 @@ impl Outbound {
                 {
                     state.pending.remove(index);
                     state.stats.coalesced_poses += 1;
+                }
+            }
+            ClientPacket::MovementIntent { .. } => {
+                // Mode input is latest-state intent, with one bounded slot, just like pose.
+                if let Some(index) = state
+                    .pending
+                    .iter()
+                    .position(|p| matches!(p.packet, ClientPacket::MovementIntent { .. }))
+                {
+                    state.pending.remove(index);
                 }
             }
             ClientPacket::Edit { .. } => {
@@ -238,9 +248,14 @@ mod tests {
             for x in 0..EDIT_CAPACITY as i32 {
                 outbound.send(edit(x)).unwrap();
                 outbound.send(pose(x as f32)).unwrap();
+                outbound
+                    .send(ClientPacket::MovementIntent {
+                        running: x % 2 == 0,
+                    })
+                    .unwrap();
             }
             assert_eq!(outbound.send(edit(999)), Err(SendError::Full));
-            assert_eq!(outbound.snapshot().queued, EDIT_CAPACITY + 1);
+            assert_eq!(outbound.snapshot().queued, EDIT_CAPACITY + 2);
             assert_eq!(
                 outbound.snapshot().coalesced_poses,
                 EDIT_CAPACITY as u64 - 1
@@ -258,14 +273,16 @@ mod tests {
         let bytes = worker.join().unwrap().unwrap().bytes;
         assert!(finished_without_receiver, "producer waited for pipe I/O");
         let packets = decode(&bytes);
-        assert_eq!(packets.len(), EDIT_CAPACITY + 2);
+        assert_eq!(packets.len(), EDIT_CAPACITY + 3);
         for (index, packet) in packets[..EDIT_CAPACITY + 1].iter().enumerate() {
             assert_eq!(packet["type"], "edit");
             assert_eq!(packet["x"], index as i32 - 1);
             assert_eq!(packet["id"], 7);
         }
-        assert_eq!(packets.last().unwrap()["type"], "player");
-        assert_eq!(packets.last().unwrap()["x"], EDIT_CAPACITY as f32 - 1.0);
+        assert_eq!(packets[packets.len() - 2]["type"], "player");
+        assert_eq!(packets[packets.len() - 2]["x"], EDIT_CAPACITY as f32 - 1.0);
+        assert_eq!(packets.last().unwrap()["type"], "movement_intent");
+        assert_eq!(packets.last().unwrap()["running"], false);
     }
 
     struct ClosedWriter;

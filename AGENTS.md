@@ -6,3 +6,4 @@
 - Keep native calls and renderer messages batched. Never block the renderer on a GenServer call.
 - Use `mise run check` and `mise run test` before publishing changes. Keep Windows CI green.
 - Never commit downloaded tools, generated assets, saves, logs, or build outputs.
+- Make changes in an isolated worktree on a descriptive branch and publish through a PR targeting main. Never push changes directly to main; preserve unrelated checkout changes.

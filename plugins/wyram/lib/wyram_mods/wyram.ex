@@ -3,6 +3,9 @@ defmodule WyramMods.Wyram do
   @behaviour Wyram.Plugin
 
   @impl true
+  def player_profile, do: Wyram.Character.Profile.default()
+
+  @impl true
   def blocks do
     [
       %{name: "grass", color: [96, 150, 76]},

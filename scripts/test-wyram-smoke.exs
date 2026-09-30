@@ -17,3 +17,5 @@ true =
     )
 
 true = World.get_block(0, 0, 0) == blocks["wyram:stone"]
+
+true = PluginManager.player_profile() == Wyram.Character.Profile.default()
