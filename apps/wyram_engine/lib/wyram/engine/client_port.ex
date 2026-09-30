@@ -16,6 +16,9 @@ defmodule Wyram.Engine.ClientPort do
 
   def snapshot, do: GenServer.call(__MODULE__, :snapshot)
 
+  @spec await_exit() :: {:ok, non_neg_integer()} | {:error, :client_unavailable}
+  def await_exit, do: GenServer.call(__MODULE__, :await_exit, :infinity)
+
   def teleport(x, y, z, yaw, pitch),
     do: GenServer.call(__MODULE__, {:teleport, x, y, z, yaw, pitch})
 
@@ -32,12 +35,12 @@ defmodule Wyram.Engine.ClientPort do
           :hide
         ])
 
-      state = %{port: port, sent: MapSet.new(), center: {0, 0}, player: nil}
+      state = initial_state(port)
       send(self(), :initialize)
       {:ok, state}
     else
       Logger.warning("Native client unavailable at #{executable}; engine running headlessly")
-      {:ok, %{port: nil, sent: MapSet.new(), center: {0, 0}, player: nil}}
+      {:ok, initial_state(nil)}
     end
   end
 
@@ -60,13 +63,28 @@ defmodule Wyram.Engine.ClientPort do
   end
 
   def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
-    Logger.warning("Native client exited with status #{status}")
-    {:noreply, %{state | port: nil, sent: MapSet.new(), player: nil}}
+    if status != 0, do: Logger.warning("Native client exited with status #{status}")
+    Enum.each(state.exit_waiters, &GenServer.reply(&1, {:ok, status}))
+
+    {:noreply,
+     %{state | port: nil, sent: MapSet.new(), player: nil, exit_status: status, exit_waiters: []}}
   end
 
   @impl true
   def handle_call(:snapshot, _from, state) do
     {:reply, %{connected: state.port != nil, player: state.player}, state}
+  end
+
+  def handle_call(:await_exit, _from, %{exit_status: status} = state) when is_integer(status) do
+    {:reply, {:ok, status}, state}
+  end
+
+  def handle_call(:await_exit, _from, %{port: nil} = state) do
+    {:reply, {:error, :client_unavailable}, state}
+  end
+
+  def handle_call(:await_exit, from, state) do
+    {:noreply, %{state | exit_waiters: [from | state.exit_waiters]}}
   end
 
   def handle_call({:teleport, _, _, _, _, _}, _from, %{port: nil} = state) do
@@ -112,6 +130,17 @@ defmodule Wyram.Engine.ClientPort do
   end
 
   defp handle_packet(_, state), do: state
+
+  defp initial_state(port) do
+    %{
+      port: port,
+      sent: MapSet.new(),
+      center: {0, 0},
+      player: nil,
+      exit_status: nil,
+      exit_waiters: []
+    }
+  end
 
   defp stream(%{port: nil} = state, _), do: state
 

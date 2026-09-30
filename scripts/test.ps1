@@ -8,6 +8,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $testData 'plugins') | Out-
 & (Join-Path $PSScriptRoot 'test-plugin-archive.ps1')
 & (Join-Path $PSScriptRoot 'test-dev-plugin.ps1')
 & (Join-Path $PSScriptRoot 'test-dev-profile.ps1')
+& (Join-Path $PSScriptRoot 'test-dev-exit.ps1')
 Copy-Item -LiteralPath (Join-Path $root 'dist\test_terrain.wyrplug') -Destination (Join-Path $testData 'plugins\test_terrain.wyrplug') -Force
 Copy-Item -LiteralPath (Join-Path $root 'dist\test_addon.wyrplug') -Destination (Join-Path $testData 'plugins\test_addon.wyrplug') -Force
 & (Join-Path $PSScriptRoot 'test-plugin-upgrade.ps1')
