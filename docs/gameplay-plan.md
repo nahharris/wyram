@@ -12,7 +12,7 @@ Walking, Ctrl-running and Space-jumping already exist. Their tuning was hard-cod
 | Fixed-step character authority and batched swept collision | Implemented foundation; explicit unknown-terrain handling | [#11](https://github.com/nahharris/wyram/issues/11) |
 | Sneaking | Implemented; reduced height, slow movement, safe ledges | [#12](https://github.com/nahharris/wyram/issues/12) |
 | Prone crawling | Implemented through shared posture clearance | [#13](https://github.com/nahharris/wyram/issues/13) |
-| Guaranteed one-block jumping | Requires fixed-step collision; test clearance and landing across render schedules | [#14](https://github.com/nahharris/wyram/issues/14) |
+| Guaranteed one-block jumping | Collision-backed clearance and landing verified across render schedules | [#14](https://github.com/nahharris/wyram/issues/14) |
 | Climbing/mantling up to three blocks | Requires swept ledge queries, clearance and traversal phases | [#15](https://github.com/nahharris/wyram/issues/15) |
 | Floor sliding | Requires running, low posture, swept movement and friction | [#16](https://github.com/nahharris/wyram/issues/16) |
 | Wall sliding | Requires authoritative airborne contact and controlled descent | [#17](https://github.com/nahharris/wyram/issues/17) |
@@ -49,3 +49,7 @@ Hold Left Shift to request crouching. Elixir selects profile-specific body heigh
 ### Crawling
 
 Hold C to request prone crawling. Prone takes precedence over Shift and Ctrl; the default profile uses height 0.6, eye offset 0.45 and speed 1 block/second. Releasing C requests standing, but stays prone while the standing body is blocked. Shift can request a clearance-checked intermediate crouch. Feet never move as a side effect of posture changes. Crawling shares grounded ledge protection with sneaking, and solid voxel steps remain collision obstacles. Focus loss, Escape, teleport and stale input clear crawl intent; expansion remains subject to clearance.
+
+### One-block jumping
+
+Space uses a grounded input edge: release and press again after landing to jump again. Holding Space does not repeat or queue a landing jump. The initial policy has no coyote time and no input buffer. Default impulse 7 and gravity 20 clear and land on one-block obstacles at cardinal and diagonal approaches, but cannot clear two blocks. Swept ceiling hits cancel upward velocity. The public 20 ms timestep drives both integration and owner scheduling; render frequency does not select it. Collision-backed replays cover 30/60/144 Hz and skipped presentation frames. A stalled authority owner still slows simulation without accumulating catch-up debt.

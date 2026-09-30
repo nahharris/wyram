@@ -1,7 +1,8 @@
 defmodule Wyram.Character.State do
   @moduledoc "Pure fixed-step character authority, independent of actor ownership and presentation."
   alias Wyram.Character.{Input, Profile}
-  @dt 0.02
+  @tick_ms 20
+  @dt @tick_ms / 1000
   defstruct position: {0.5, 71.38, 0.5},
             velocity: {0.0, 0.0, 0.0},
             profile: nil,
@@ -49,6 +50,10 @@ defmodule Wyram.Character.State do
       height: profile.standing_height,
       eye_height: profile.standing_eye
     }
+
+  @doc "The authoritative timestep; render frequency never changes jump integration."
+  @spec tick_ms() :: pos_integer()
+  def tick_ms, do: @tick_ms
 
   @spec prepare(t(), Input.t()) :: {t(), query()}
   def prepare(state, input) do
