@@ -1,4 +1,5 @@
 mod animation;
+mod camera;
 mod characters;
 mod chunk_mesh;
 mod meshing;
@@ -17,7 +18,7 @@ use glam::{Mat4, Vec3};
 use serde::{Deserialize, Serialize};
 use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, ElementState, MouseButton, WindowEvent};
+use winit::event::{DeviceEvent, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
@@ -376,6 +377,7 @@ struct Game {
     pitch: f32,
     replica: Replica,
     characters: characters::Scene,
+    camera: camera::Camera,
     last_intent: Option<Intent>,
     input_sequence: u64,
     last_input: Instant,
@@ -402,6 +404,7 @@ impl Game {
             pitch: -0.15,
             replica: Replica::default(),
             characters: characters::Scene::default(),
+            camera: camera::Camera::default(),
             last_intent: None,
             input_sequence: 0,
             last_input: Instant::now() - Duration::from_secs(1),
@@ -612,6 +615,12 @@ impl ApplicationHandler<UserEvent> for Game {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     match event.state {
                         ElementState::Pressed => {
+                            if code == KeyCode::F5 {
+                                if !event.repeat {
+                                    self.camera.cycle();
+                                }
+                                return;
+                            }
                             self.cancel_actions = false;
                             self.pressed.insert(code);
                             if code == KeyCode::Escape {
@@ -646,6 +655,15 @@ impl ApplicationHandler<UserEvent> for Game {
                     }
                 }
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if self.cursor_locked && self.camera.mode != camera::Mode::First {
+                    let amount = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => y,
+                        MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.,
+                    };
+                    self.camera.zoom(amount);
+                }
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button,
@@ -666,10 +684,14 @@ impl ApplicationHandler<UserEvent> for Game {
                 self.last_redraw = start;
                 self.step();
                 let direction = self.direction();
+                let radius = self.replica.state.as_ref().map_or(0.28, |s| s.radius);
+                let view = self
+                    .camera
+                    .view(self.position, direction, &self.world, radius);
                 let character_vertices = self.characters.vertices(
                     &self.replica,
                     &self.world,
-                    false,
+                    view.show_player,
                     (frame_ms / 1000.) as f32,
                 );
                 if let Some(graphics) = self.graphics.as_mut() {
@@ -680,7 +702,7 @@ impl ApplicationHandler<UserEvent> for Game {
                         .update(&mut self.world, center, |key, vertices| {
                             graphics.replace_mesh(key, vertices)
                         });
-                    graphics.render(self.position, direction, &character_vertices);
+                    graphics.render(view.position, view.direction, &character_vertices);
                     let outbound = self
                         .outbound
                         .as_ref()
@@ -819,5 +841,48 @@ mod tests {
         game.apply_teleport(32.5, 90.0, -7.5, 1.0, -0.25);
         assert_eq!(game.position, Vec3::new(32.5, 90.0, -7.5));
         assert!(game.pressed.is_empty());
+    }
+    #[test]
+    fn all_camera_modes_preserve_the_character_edit_ray_and_reach() {
+        use base64::Engine;
+        for place in [false, true] {
+            let mut targets = Vec::new();
+            for mode in [
+                camera::Mode::First,
+                camera::Mode::Third,
+                camera::Mode::Front,
+            ] {
+                let (outbound, worker) =
+                    outbound::Outbound::start(Vec::<u8>::new(), |_| panic!("write failed"));
+                let mut game = Game::new();
+                game.outbound = Some(outbound);
+                game.camera.mode = mode;
+                game.position = Vec3::new(8.5, 3.5, 8.5);
+                game.pitch = 0.;
+                game.yaw = 0.;
+                let mut bytes = vec![0; wyram_core::BYTE_COUNT];
+                bytes[((3 * 16 + 4) * 16 + 8) * 2] = 1;
+                game.world.receive_chunk(
+                    [0, 0, 0],
+                    1,
+                    &base64::engine::general_purpose::STANDARD.encode(bytes),
+                );
+                let original = game.position;
+                let direction = game.direction();
+                let _ = game
+                    .camera
+                    .view(game.position, direction, &game.world, 0.28);
+                assert_eq!(game.position, original);
+                assert_eq!(game.direction(), direction);
+                game.edit(place);
+                drop(game);
+                let data = worker.join().unwrap().unwrap();
+                let packet: serde_json::Value = serde_json::from_slice(&data[4..]).unwrap();
+                targets.push(packet);
+            }
+            assert_eq!(targets[0], targets[1]);
+            assert_eq!(targets[0], targets[2]);
+            assert_eq!(targets[0]["z"], if place { 5 } else { 4 });
+        }
     }
 }

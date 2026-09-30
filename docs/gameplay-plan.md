@@ -4,7 +4,7 @@
 
 ## Feasibility and delivery order
 
-Walking, Ctrl-running and Space-jumping already exist. Their tuning was hard-coded in the native client, whose original frame-step collision checks sampled body corners. The authority slice replaces that solver with fixed-step Elixir state and packed swept-AABB queries. The posture slice adds variable character bodies. Fluid semantics and external cameras remain future work. Editable original rigs now render both the player and a second character through a shared pipeline. A continuous jump apex of 1.225 blocks does not establish that the existing collision solver reliably clears a one-block obstacle.
+Walking, Ctrl-running and Space-jumping already exist. Their tuning was hard-coded in the native client, whose original frame-step collision checks sampled body corners. The authority slice replaces that solver with fixed-step Elixir state and packed swept-AABB queries. The posture slice adds variable character bodies. Fluid semantics remain future work. Editable original rigs now render both the player and a second character through a shared pipeline. A continuous jump apex of 1.225 blocks does not establish that the existing collision solver reliably clears a one-block obstacle.
 
 | Work | Readiness and dependency | Issue |
 | --- | --- | --- |
@@ -20,9 +20,9 @@ Walking, Ctrl-running and Space-jumping already exist. Their tuning was hard-cod
 | Four-direction rolling | Implemented as a timed four-direction swept action | [#19](https://github.com/nahharris/wyram/issues/19) |
 | Reusable body, rig and models | Implemented; original role-based rigs and a second character | [#20](https://github.com/nahharris/wyram/issues/20) |
 | Reusable animations | Implemented; original procedural clips retarget by semantic roles | [#21](https://github.com/nahharris/wyram/issues/21) |
-| Third-person and front-facing cameras | Requires visible model and body coordinates independent of the camera | [#22](https://github.com/nahharris/wyram/issues/22) |
+| Third-person and front-facing cameras | Implemented; bounded collision-aware external views | [#22](https://github.com/nahharris/wyram/issues/22) |
 
-The requested second-person camera is provisionally interpreted as a front-facing external view looking back at the character. Confirm that meaning before the camera implementation. The movement direction, targeting origin and edit reach must have explicit rules when switching views.
+The requested second-person camera is implemented as a front-facing external view looking back at the character. Character facing still controls movement and the head-origin edit ray in every view.
 
 ## Shared locomotion policy
 
@@ -86,9 +86,14 @@ The public `Wyram.Character.Model`, `Definition` and `Catalog` values describe b
 
 `plugins/wyram/lib/wyram_mods/characters.ex` contains two original editable cuboid characters with different proportions and bone names. Semantic roles, rather than those names, define compatibility. Ordered parented bones carry local pivots and cuboids; named hand/head attachments reference existing bones. Catalogs allow at most 16 models and 16 characters, 32 bones and 64 cuboids per model. Both Elixir and Rust validate geometry, hierarchy and references. Plugin compilation exports the source values in the initial client batch; Rust imports them into a cached rig and evaluates posed vertices in one bounded character draw batch. The full test task exports the actual plugin catalog into ignored `.tools/character-models.json` and imports it with `wyram_client --validate-models`.
 
-Collision remains feet-space authority with profile dimensions. Rig evaluation anchors geometry at the approved feet and fits its height to the approved posture; meshes cannot choose collision or gameplay displacement. First person hides the player's body and renders the companion. External views and state-driven animation are the next slices.
+Collision remains feet-space authority with profile dimensions. Rig evaluation anchors geometry at the approved feet and fits its height to the approved posture; meshes cannot choose collision or gameplay displacement. First person hides the player's body and renders the companion. External views reveal the player body, and state-driven animation retargets poses to both characters.
 ### State-driven animation
 
 Rust selects original procedural idle, walk, run, sneak, crawl, jump, fall, landing, climb, floor-slide, wall-slide and four-direction roll poses from accepted snapshots. Semantic roles retarget the same poses onto both original rigs. Quaternion blending softens state changes; epoch/model changes reset blending. Landing recovery is a short presentation-only pose. Unsupported modes or rigs without humanoid capability use a rest-pose fallback. Missing individual roles safely remain at rest.
 
 Gait time follows authoritative sequence time with at most 40 ms extrapolation and freezes during stale snapshots. Rolls use approved elapsed time, duration and local direction. No animation translates a character root in gameplay; posed geometry remains anchored to approved feet and fitted to approved posture height. Swimming/diving clips await fluid gameplay. These are editable prototype animations, with visual polish still requiring playtesting.
+### Cameras
+
+Press F5 to cycle first person, third person behind the character and a front-facing view looking back at the character. Mouse look still changes character facing and pitch. In external views, the captured mouse wheel adjusts distance from 1 to 6 blocks (default 3). The camera follows the approved eye height as posture or profile changes. A small camera body probes a straight line against the cached packed voxel replica, stopping before walls or ceilings; at most 60 probes share one borrowed packed world. Unknown terrain or insufficient room falls back to first person and hides the player body. No renderer request waits on Elixir.
+
+Movement remains relative to character facing. Both breaking and placement always cast from the character's head along character look, retaining the existing six-block reach; switching to an external view never moves that ray to the camera. In front view the character's forward direction points away from the camera. F5 ignores key repeats and does not change held gameplay intent. Mouse capture and Escape retain their existing behavior. This prototype uses immediate follow and collision retraction; camera smoothing and art polish can follow playtesting.
