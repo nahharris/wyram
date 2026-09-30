@@ -21,5 +21,15 @@ try {
 } finally { Pop-Location }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
 if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination }
-Compress-Archive -Path (Join-Path $stage 'manifest.json'),(Join-Path $stage 'ebin') -DestinationPath $archive -Force
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive }
+$zip = [IO.Compression.ZipFile]::Open($archive, [IO.Compression.ZipArchiveMode]::Create)
+try {
+  [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $stage 'manifest.json'), 'manifest.json') | Out-Null
+  foreach ($beam in Get-ChildItem -LiteralPath (Join-Path $stage 'ebin') -File -Filter '*.beam' | Sort-Object Name) {
+    # ZIP names always use '/', including under Windows PowerShell 5.1.
+    [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $beam.FullName, ('ebin/' + $beam.Name)) | Out-Null
+  }
+} finally { $zip.Dispose() }
 Move-Item -LiteralPath $archive -Destination $destination

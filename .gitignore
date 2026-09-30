@@ -10,5 +10,6 @@ dist/
 bench/results/
 *.log
 *.crash
+erl_crash.dump
 *.wyrplug
 .DS_Store

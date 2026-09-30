@@ -6,13 +6,15 @@ The current slice supports procedural terrain, walking and jumping, block placem
 
 ## Windows development
 
-Install [mise](https://mise.jdx.dev/installing-mise.html), Git, GitHub CLI, and Visual Studio 2022 Build Tools with the C++ workload and Windows SDK. In PowerShell:
+Install [mise](https://mise.jdx.dev/installing-mise.html), Git, GitHub CLI, and Visual Studio 2022 Build Tools with the C++ workload and Windows SDK. Run these commands in PowerShell or Nushell:
 
 ```powershell
 mise install
 mise run setup
 mise run dev
 ```
+
+Run `setup` once to prepare dependencies and the native client. Both `dev` and `dev:agent` rebuild and temporarily stage the Wyram game plugin before launch. When the game exits, the temporary plugin is removed, or the previously installed package is restored. The mise tasks invoke Windows PowerShell themselves, so they work from either shell.
 
 Click the window to capture the mouse. Use WASD to move, Space to jump, Ctrl to sprint, the number keys to select a block, left click to remove a block, right click to place it, and Escape to release the mouse. Game data and installed plugins live in `%LOCALAPPDATA%\Wyram`, or the directory specified by `WYRAM_DATA_DIR`.
 
