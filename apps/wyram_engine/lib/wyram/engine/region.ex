@@ -19,6 +19,16 @@ defmodule Wyram.Engine.Region do
     {:reply, chunk, state}
   end
 
+  def handle_call({:chunks, keys}, _from, state) do
+    {chunks, state} =
+      Enum.map_reduce(keys, state, fn key, acc ->
+        {chunk, next} = ensure_chunk(acc, key)
+        {{key, chunk.data}, next}
+      end)
+
+    {:reply, chunks, state}
+  end
+
   def handle_call({:block, key, local}, _from, state) do
     {chunk, state} = ensure_chunk(state, key)
     {:ok, id} = apply(Native, :read_block, [chunk.data | Tuple.to_list(local)])

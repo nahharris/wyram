@@ -1,0 +1,75 @@
+use crate::world::VoxelWorld;
+use glam::Vec3;
+use serde::Deserialize;
+use std::time::Instant;
+
+#[derive(Debug, Deserialize)]
+pub struct Snapshot {
+    pub id: String,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub feet: [f32; 3],
+    pub velocity: [f32; 3],
+    pub radius: f32,
+    pub height: f32,
+    pub eye_height: f32,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub sequence: u64,
+    pub epoch: u64,
+    pub unavailable: bool,
+}
+
+pub struct Replica {
+    pub state: Option<Snapshot>,
+    received_at: Instant,
+}
+impl Default for Replica {
+    fn default() -> Self {
+        Self {
+            state: None,
+            received_at: Instant::now(),
+        }
+    }
+}
+impl Replica {
+    pub fn accept(&mut self, snapshot: Snapshot) -> bool {
+        if self.state.as_ref().is_some_and(|old| {
+            snapshot.epoch < old.epoch
+                || (snapshot.epoch == old.epoch && snapshot.sequence <= old.sequence)
+        }) {
+            return false;
+        }
+        self.state = Some(snapshot);
+        self.received_at = Instant::now();
+        true
+    }
+    pub fn epoch(&self) -> u64 {
+        self.state.as_ref().map_or(0, |state| state.epoch)
+    }
+    pub fn sample(&self, world: &VoxelWorld) -> Vec3 {
+        let Some(state) = &self.state else {
+            return Vec3::new(0.5, 73.0, 0.5);
+        };
+        let eye = Vec3::new(state.x, state.y, state.z);
+        if state.unavailable {
+            return eye;
+        }
+        // Predict only a short interval of approved velocity; actions stay in Elixir.
+        let seconds = self.received_at.elapsed().as_secs_f32().min(0.04);
+        world
+            .predict_body(
+                state.feet,
+                Vec3::from_array(state.velocity) * seconds,
+                state.radius,
+                state.height,
+                state.eye_height,
+            )
+            .unwrap_or(eye)
+    }
+}
+
+#[cfg(test)]
+#[path = "replica_tests.rs"]
+mod tests;

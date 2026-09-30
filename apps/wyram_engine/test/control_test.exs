@@ -43,9 +43,9 @@ defmodule Wyram.Engine.ControlTest do
        {:data, Jason.encode!(%{type: "player", x: 8.5, y: 80.5, z: 8.5, yaw: 1.0, pitch: 0.0})}}
     )
 
-    assert ClientPort.snapshot().player.x == 8.5
+    assert ClientPort.snapshot().player == nil
 
-    assert %{"ok" => true, "center" => [8, 80, 8]} =
+    assert %{"ok" => false, "error" => "no_player"} =
              request(endpoint, %{"op" => "inspect", "radius" => 0})
 
     assert %{"ok" => false, "error" => "invalid_request"} =

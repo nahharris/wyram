@@ -1,3 +1,5 @@
+mod process_watch;
+
 use rustler::{Binary, Env, OwnedBinary};
 
 fn binary_from_bytes<'a>(env: Env<'a>, bytes: &[u8]) -> Binary<'a> {
@@ -43,4 +45,31 @@ fn write_block<'a>(
         .map_err(|_| "invalid chunk or block position")
 }
 
+type Position = (f64, f64, f64);
+type Query = (Position, Position, f64, f64);
+type QueryResult = (Position, (bool, bool, bool), bool);
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn sweep_bodies(
+    chunks: Vec<((i32, i32, i32), Binary<'_>)>,
+    queries: Vec<Query>,
+) -> Result<Vec<QueryResult>, &'static str> {
+    if queries.len() > 256 {
+        return Err("oversized character batch");
+    }
+    let world = wyram_core::PackedWorld::new(
+        chunks
+            .iter()
+            .map(|(key, bytes)| ([key.0, key.1, key.2], bytes.as_slice())),
+    )?;
+    queries
+        .into_iter()
+        .map(|(p, d, r, h)| {
+            let result = world.sweep([p.0, p.1, p.2], [d.0, d.1, d.2], r, h)?;
+            let [x, y, z] = result.position;
+            let [a, b, c] = result.blocked;
+            Ok(((x, y, z), (a, b, c), result.unavailable))
+        })
+        .collect()
+}
 rustler::init!("Elixir.Wyram.Engine.Native");

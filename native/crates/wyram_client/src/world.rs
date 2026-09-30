@@ -211,6 +211,37 @@ impl VoxelWorld {
         u16::from_le_bytes([chunk.data[at], chunk.data[at + 1]])
     }
 
+    pub fn predict_body(
+        &self,
+        feet: [f32; 3],
+        delta: Vec3,
+        radius: f32,
+        height: f32,
+        eye_height: f32,
+    ) -> Option<Vec3> {
+        let center = feet.map(|v| (v.floor() as i32).div_euclid(16));
+        let chunks = self
+            .chunks
+            .iter()
+            .filter(|(key, _)| (0..3).all(|i| (key[i] - center[i]).abs() <= 1));
+        let world =
+            wyram_core::PackedWorld::new(chunks.map(|(key, chunk)| (*key, chunk.data.as_slice())))
+                .ok()?;
+        let result = world
+            .sweep(
+                feet.map(f64::from),
+                delta.to_array().map(f64::from),
+                f64::from(radius),
+                f64::from(height),
+            )
+            .ok()?;
+        if result.unavailable {
+            return None;
+        }
+        let [x, y, z] = result.position.map(|v| v as f32);
+        Some(Vec3::new(x, y + eye_height, z))
+    }
+    #[cfg(test)]
     pub fn collides(&self, eye: Vec3) -> bool {
         for x in [eye.x - 0.28, eye.x + 0.28] {
             for z in [eye.z - 0.28, eye.z + 0.28] {

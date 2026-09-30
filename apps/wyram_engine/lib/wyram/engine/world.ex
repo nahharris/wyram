@@ -15,6 +15,16 @@ defmodule Wyram.Engine.World do
     GenServer.call(region_pid(cx, cz), {:chunk, {cx, cy, cz}})
   end
 
+  @spec get_chunks([{integer(), integer(), integer()}]) :: [
+          {{integer(), integer(), integer()}, binary()}
+        ]
+  def get_chunks(keys) do
+    keys
+    |> Enum.uniq()
+    |> Enum.group_by(fn {cx, _cy, cz} -> region_pid(cx, cz) end)
+    |> Enum.flat_map(fn {pid, owned} -> GenServer.call(pid, {:chunks, owned}) end)
+  end
+
   @spec get_block(integer(), integer(), integer()) :: non_neg_integer()
   def get_block(x, y, z) do
     {key, local} = address({x, y, z})

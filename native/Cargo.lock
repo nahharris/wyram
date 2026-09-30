@@ -2556,6 +2556,7 @@ name = "wyram_nif"
 version = "0.1.0"
 dependencies = [
  "rustler",
+ "windows-sys 0.61.2",
  "wyram_core",
 ]
 

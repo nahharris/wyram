@@ -2,7 +2,7 @@
 
 Wyram is an experimental local voxel game built around an Elixir actor simulation and a Rust graphics and computation layer. The default creative game is a compiled plugin using the same API available to other trusted plugins. All artwork and world generation in this repository are original placeholders.
 
-The current slice supports procedural terrain, walking and jumping, block placement and removal, save/load, and a separately packaged example block. It is Windows-first. The renderer currently uses shaded block colors; textures, lighting propagation, more robust movement authority, and the full benchmark targets are upcoming work.
+The current slice supports procedural terrain, walking and jumping, block placement and removal, save/load, and a separately packaged example block. It is Windows-first. The renderer currently uses shaded block colors; textures, lighting propagation, expanded traversal, and the full benchmark targets are upcoming work.
 
 ## Windows development
 
@@ -24,7 +24,7 @@ Use `mise run dev:agent` and the [local automation interface](docs/automation.md
 
 Use `mise run dev:perf` or `mise run dev:agent:perf` for an optimized native client with debug symbols. These use the same plugin staging and cleanup as ordinary development; normal `dev` remains unoptimized. `mise run bench:mesh` compares greedy meshing against the simple test oracle in the same optimized profile. The [performance issue plan](docs/performance-plan.md) lists the remaining approaches and verification gates.
 
-The [gameplay roadmap](docs/gameplay-plan.md) tracks reusable character movement, models, animations and cameras. Walk/run policy and movement tuning live in the public Elixir character profile; additional traversal depends on the character authority and collision foundation. Use isolated worktrees and PRs targeting the protected main branch for changes.
+The [gameplay roadmap](docs/gameplay-plan.md) tracks reusable character movement, models, animations and cameras. Walk/run policy and movement tuning live in the public Elixir character profile; a shared fixed-step Elixir owner now controls position and grounded jumping through batched swept collision, providing the foundation for additional traversal. Use isolated worktrees and PRs targeting the protected main branch for changes.
 
 ## Plugins
 

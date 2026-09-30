@@ -14,3 +14,7 @@ if ($samples[-1].PSObject.Properties.Name -contains 'outbound_sent') {
   $last = $samples[-1]
   Write-Host ('Outbound: sent={0}; queued={1}; coalesced poses={2}; lifetime queue max={3:F3} ms; write max={4:F3} ms' -f $last.outbound_sent, $last.outbound_queued, $last.outbound_coalesced_poses, $last.outbound_queue_max_ms, $last.outbound_write_max_ms)
 }
+
+if ($samples[-1].PSObject.Properties.Name -contains 'outbound_coalesced_inputs') {
+  Write-Host ('Coalesced character inputs: {0}' -f $samples[-1].outbound_coalesced_inputs)
+}

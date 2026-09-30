@@ -16,7 +16,7 @@ pub enum SendError {
 #[derive(Clone, Copy, Default)]
 pub struct Snapshot {
     pub queued: usize,
-    pub coalesced_poses: u64,
+    pub coalesced_inputs: u64,
     pub sent: u64,
     pub queue_max_ms: f64,
     pub write_max_ms: f64,
@@ -52,7 +52,7 @@ impl Outbound {
     {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
-                pending: VecDeque::with_capacity(EDIT_CAPACITY + 2),
+                pending: VecDeque::with_capacity(EDIT_CAPACITY + 1),
                 edits: 0,
                 closing: false,
                 failed: false,
@@ -113,25 +113,14 @@ impl Outbound {
             return Err(SendError::Closed);
         }
         match packet {
-            ClientPacket::Player { .. } => {
-                // Keep the newest pose in its submission order relative to edits.
+            ClientPacket::Input { .. } => {
                 if let Some(index) = state
                     .pending
                     .iter()
-                    .position(|p| matches!(p.packet, ClientPacket::Player { .. }))
+                    .position(|p| matches!(p.packet, ClientPacket::Input { .. }))
                 {
                     state.pending.remove(index);
-                    state.stats.coalesced_poses += 1;
-                }
-            }
-            ClientPacket::MovementIntent { .. } => {
-                // Mode input is latest-state intent, with one bounded slot, just like pose.
-                if let Some(index) = state
-                    .pending
-                    .iter()
-                    .position(|p| matches!(p.packet, ClientPacket::MovementIntent { .. }))
-                {
-                    state.pending.remove(index);
+                    state.stats.coalesced_inputs += 1;
                 }
             }
             ClientPacket::Edit { .. } => {
@@ -188,13 +177,18 @@ mod tests {
         }
     }
 
-    fn pose(x: f32) -> ClientPacket {
-        ClientPacket::Player {
-            x,
-            y: 73.0,
-            z: 0.5,
-            yaw: 0.0,
-            pitch: -0.15,
+    fn input(sequence: u64, running: bool) -> ClientPacket {
+        ClientPacket::Input {
+            sequence,
+            epoch: 0,
+            intent: crate::Intent {
+                forward: 1.0,
+                right: 0.0,
+                yaw: 0.0,
+                pitch: 0.0,
+                running,
+                jump: false,
+            },
         }
     }
 
@@ -247,17 +241,12 @@ mod tests {
         let producer = std::thread::spawn(move || {
             for x in 0..EDIT_CAPACITY as i32 {
                 outbound.send(edit(x)).unwrap();
-                outbound.send(pose(x as f32)).unwrap();
-                outbound
-                    .send(ClientPacket::MovementIntent {
-                        running: x % 2 == 0,
-                    })
-                    .unwrap();
+                outbound.send(input(x as u64, x % 2 == 0)).unwrap();
             }
             assert_eq!(outbound.send(edit(999)), Err(SendError::Full));
-            assert_eq!(outbound.snapshot().queued, EDIT_CAPACITY + 2);
+            assert_eq!(outbound.snapshot().queued, EDIT_CAPACITY + 1);
             assert_eq!(
-                outbound.snapshot().coalesced_poses,
+                outbound.snapshot().coalesced_inputs,
                 EDIT_CAPACITY as u64 - 1
             );
             outbound
@@ -273,15 +262,17 @@ mod tests {
         let bytes = worker.join().unwrap().unwrap().bytes;
         assert!(finished_without_receiver, "producer waited for pipe I/O");
         let packets = decode(&bytes);
-        assert_eq!(packets.len(), EDIT_CAPACITY + 3);
+        assert_eq!(packets.len(), EDIT_CAPACITY + 2);
         for (index, packet) in packets[..EDIT_CAPACITY + 1].iter().enumerate() {
             assert_eq!(packet["type"], "edit");
             assert_eq!(packet["x"], index as i32 - 1);
             assert_eq!(packet["id"], 7);
         }
-        assert_eq!(packets[packets.len() - 2]["type"], "player");
-        assert_eq!(packets[packets.len() - 2]["x"], EDIT_CAPACITY as f32 - 1.0);
-        assert_eq!(packets.last().unwrap()["type"], "movement_intent");
+        assert_eq!(packets.last().unwrap()["type"], "input");
+        assert_eq!(
+            packets.last().unwrap()["sequence"],
+            EDIT_CAPACITY as u64 - 1
+        );
         assert_eq!(packets.last().unwrap()["running"], false);
     }
 
