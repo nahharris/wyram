@@ -36,5 +36,8 @@ run = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/control.ps1"
 [tasks.bench]
 run = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bench.ps1"
 
+[tasks."perf:report"]
+run = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/client-perf-report.ps1"
+
 [tasks.package]
 run = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1"

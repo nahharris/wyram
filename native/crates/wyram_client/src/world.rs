@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use base64::Engine;
 use bytemuck::{Pod, Zeroable};
@@ -40,16 +41,46 @@ struct Chunk {
 
 #[derive(Default)]
 pub struct VoxelWorld {
-    chunks: HashMap<[i32; 3], Chunk>,
-    colors: HashMap<u16, [u8; 3]>,
+    chunks: HashMap<[i32; 3], Arc<Chunk>>,
+    colors: Arc<HashMap<u16, [u8; 3]>>,
+    generations: HashMap<[i32; 3], u64>,
+    dirty: HashSet<[i32; 3]>,
+    epoch: u64,
 }
+
+pub struct MeshJob {
+    pub key: [i32; 3],
+    pub generation: u64,
+    snapshot: VoxelWorld,
+}
+
+impl MeshJob {
+    pub fn build(&self) -> Vec<Vertex> {
+        self.snapshot.mesh_chunk(self.key)
+    }
+}
+
+const NEIGHBORS: [[i32; 3]; 6] = [
+    [1, 0, 0],
+    [-1, 0, 0],
+    [0, 1, 0],
+    [0, -1, 0],
+    [0, 0, 1],
+    [0, 0, -1],
+];
 
 impl VoxelWorld {
     pub fn set_palette(&mut self, colors: HashMap<String, [u8; 3]>) {
-        self.colors = colors
-            .into_iter()
-            .filter_map(|(key, value)| key.parse::<u16>().ok().map(|id| (id, value)))
-            .collect();
+        self.colors = Arc::new(
+            colors
+                .into_iter()
+                .filter_map(|(key, value)| key.parse::<u16>().ok().map(|id| (id, value)))
+                .collect(),
+        );
+        let keys: Vec<_> = self.chunks.keys().copied().collect();
+        for key in keys {
+            self.invalidate(key);
+        }
     }
 
     pub fn has_block_id(&self, id: u16) -> bool {
@@ -60,7 +91,7 @@ impl VoxelWorld {
         if self
             .chunks
             .get(&key)
-            .is_some_and(|old| old.revision > revision)
+            .is_some_and(|old| old.revision >= revision)
         {
             return false;
         }
@@ -72,16 +103,86 @@ impl VoxelWorld {
         }
         self.chunks.insert(
             key,
-            Chunk {
+            Arc::new(Chunk {
                 revision,
                 data: bytes,
-            },
+            }),
         );
+        self.invalidate_neighborhood(key);
         true
     }
 
     pub fn forget(&mut self, key: [i32; 3]) {
         self.chunks.remove(&key);
+        self.generations.remove(&key);
+        self.dirty.remove(&key);
+        self.invalidate_neighborhood(key);
+    }
+
+    fn invalidate(&mut self, key: [i32; 3]) {
+        if self.chunks.contains_key(&key) {
+            self.epoch = self
+                .epoch
+                .checked_add(1)
+                .expect("mesh generation exhausted");
+            self.generations.insert(key, self.epoch);
+            self.dirty.insert(key);
+        }
+    }
+
+    fn invalidate_neighborhood(&mut self, key: [i32; 3]) {
+        self.invalidate(key);
+        for offset in NEIGHBORS {
+            self.invalidate(std::array::from_fn(|i| key[i] + offset[i]));
+        }
+    }
+
+    pub fn mesh_is_current(&self, key: [i32; 3], generation: u64) -> bool {
+        self.generations.get(&key) == Some(&generation)
+    }
+
+    pub fn mesh_job(&mut self, key: [i32; 3]) -> Option<MeshJob> {
+        let generation = *self.generations.get(&key)?;
+        let mut chunks = HashMap::new();
+        chunks.insert(key, Arc::clone(self.chunks.get(&key)?));
+        for offset in NEIGHBORS {
+            let neighbor = std::array::from_fn(|i| key[i] + offset[i]);
+            if let Some(chunk) = self.chunks.get(&neighbor) {
+                chunks.insert(neighbor, Arc::clone(chunk));
+            }
+        }
+        self.dirty.remove(&key);
+        Some(MeshJob {
+            key,
+            generation,
+            snapshot: Self {
+                chunks,
+                colors: Arc::clone(&self.colors),
+                ..Self::default()
+            },
+        })
+    }
+
+    pub fn next_mesh_job(&mut self, center: [i32; 3], busy: &HashSet<[i32; 3]>) -> Option<MeshJob> {
+        let key = self
+            .dirty
+            .iter()
+            .filter(|key| !busy.contains(*key))
+            .min_by_key(|key| {
+                let distance: i64 = (0..3)
+                    .map(|i| (i64::from(key[i]) - i64::from(center[i])).abs())
+                    .sum();
+                (distance, **key)
+            })
+            .copied()?;
+        self.mesh_job(key)
+    }
+
+    pub fn chunk_count(&self) -> usize {
+        self.chunks.len()
+    }
+    pub fn dirty_count(&self) -> usize {
+        self.dirty.len()
     }
 
     pub fn block(&self, x: i32, y: i32, z: i32) -> u16 {
@@ -113,7 +214,7 @@ impl VoxelWorld {
         false
     }
 
-    pub fn mesh(&self) -> Vec<Vertex> {
+    fn mesh_chunk(&self, key: [i32; 3]) -> Vec<Vertex> {
         const FACES: [([i32; 3], [[f32; 3]; 4], f32); 6] = [
             (
                 [1, 0, 0],
@@ -147,7 +248,7 @@ impl VoxelWorld {
             ),
         ];
         let mut result = Vec::new();
-        for (key, chunk) in &self.chunks {
+        if let Some(chunk) = self.chunks.get(&key) {
             for index in 0..BLOCK_COUNT {
                 let at = index * 2;
                 let id = u16::from_le_bytes([chunk.data[at], chunk.data[at + 1]]);
@@ -188,13 +289,76 @@ impl VoxelWorld {
 mod tests {
     use super::*;
 
+    fn encoded_block(x: usize) -> String {
+        let mut data = vec![0; BYTE_COUNT];
+        data[x * 2] = 1;
+        base64::engine::general_purpose::STANDARD.encode(data)
+    }
+
+    #[test]
+    fn chunk_mesh_culls_and_restores_neighbor_faces() {
+        let mut world = VoxelWorld::default();
+        world.receive_chunk([0, 0, 0], 0, &encoded_block(15));
+        assert_eq!(world.mesh_job([0, 0, 0]).unwrap().build().len(), 36);
+        world.receive_chunk([1, 0, 0], 0, &encoded_block(0));
+        assert_eq!(world.mesh_job([0, 0, 0]).unwrap().build().len(), 30);
+        world.forget([1, 0, 0]);
+        assert_eq!(world.mesh_job([0, 0, 0]).unwrap().build().len(), 36);
+    }
+
+    #[test]
+    fn every_chunk_face_uses_neighbor_data_at_negative_coordinates() {
+        let key = [-2, -3, -4];
+        for offset in NEIGHBORS {
+            let local: [usize; 3] = std::array::from_fn(|i| if offset[i] > 0 { 15 } else { 0 });
+            let neighbor_local: [usize; 3] =
+                std::array::from_fn(|i| if offset[i] < 0 { 15 } else { 0 });
+            let index = |p: [usize; 3]| (p[1] * CHUNK_SIDE + p[2]) * CHUNK_SIDE + p[0];
+            let mut world = VoxelWorld::default();
+            world.receive_chunk(key, 0, &encoded_block(index(local)));
+            let neighbor = std::array::from_fn(|i| key[i] + offset[i]);
+            world.receive_chunk(neighbor, 0, &encoded_block(index(neighbor_local)));
+            assert_eq!(world.mesh_job(key).unwrap().build().len(), 30);
+            assert_eq!(world.mesh_job(neighbor).unwrap().build().len(), 30);
+            world.forget(neighbor);
+            assert_eq!(world.mesh_job(key).unwrap().build().len(), 36);
+        }
+    }
+
+    #[test]
+    fn snapshots_are_immutable_and_neighbor_changes_invalidate_results() {
+        let mut world = VoxelWorld::default();
+        world.receive_chunk([0, 0, 0], 0, &encoded_block(15));
+        let job = world.mesh_job([0, 0, 0]).unwrap();
+        world.receive_chunk([1, 0, 0], 0, &encoded_block(0));
+        assert!(!world.mesh_is_current(job.key, job.generation));
+        assert_eq!(job.build().len(), 36);
+        assert_eq!(world.mesh_job([0, 0, 0]).unwrap().build().len(), 30);
+    }
+
+    #[test]
+    fn unload_reload_and_palette_changes_reject_old_results() {
+        let mut world = VoxelWorld::default();
+        world.receive_chunk([0, 0, 0], 7, &encoded_block(0));
+        let job = world.mesh_job([0, 0, 0]).unwrap();
+        world.forget([0, 0, 0]);
+        assert!(!world.mesh_is_current(job.key, job.generation));
+        world.receive_chunk([0, 0, 0], 7, &encoded_block(0));
+        assert!(!world.mesh_is_current(job.key, job.generation));
+        let job = world.mesh_job([0, 0, 0]).unwrap();
+        world.set_palette(HashMap::from([("1".into(), [1, 2, 3])]));
+        assert!(!world.mesh_is_current(job.key, job.generation));
+        assert!(!world.receive_chunk([0, 0, 0], 6, &encoded_block(0)));
+        assert!(!world.receive_chunk([0, 0, 0], 7, &encoded_block(0)));
+    }
+
     #[test]
     fn collision_uses_negative_chunk_coordinates() {
         let mut world = VoxelWorld::default();
         let data = wyram_core::generate_chunk(3, -1, 3, -1, [1, 2, 3]);
         world
             .chunks
-            .insert([-1, 3, -1], Chunk { revision: 0, data });
+            .insert([-1, 3, -1], Arc::new(Chunk { revision: 0, data }));
         assert_eq!(world.block(-1, 48, -1), 3);
         assert!(world.collides(Vec3::new(-0.5, 49.0, -0.5)));
     }

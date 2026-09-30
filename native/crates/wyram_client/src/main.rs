@@ -1,3 +1,5 @@
+mod meshing;
+mod telemetry;
 mod world;
 
 use std::collections::{HashMap, HashSet};
@@ -14,6 +16,8 @@ use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
+use crate::meshing::MeshPipeline;
+use crate::telemetry::{FrameSample, FrameTelemetry};
 use crate::world::{Vertex, VoxelWorld};
 
 #[derive(Debug, Deserialize)]
@@ -109,8 +113,7 @@ struct Graphics {
     depth: wgpu::TextureView,
     camera: wgpu::Buffer,
     camera_group: wgpu::BindGroup,
-    vertices: wgpu::Buffer,
-    vertex_count: u32,
+    meshes: HashMap<[i32; 3], (wgpu::Buffer, u32)>,
 }
 
 impl Graphics {
@@ -204,11 +207,6 @@ impl Graphics {
             cache: None,
         });
         let depth = Self::create_depth(&device, &config);
-        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Empty voxel mesh"),
-            contents: &[0; 24],
-            usage: wgpu::BufferUsages::VERTEX,
-        });
         Ok(Self {
             surface,
             device,
@@ -218,8 +216,7 @@ impl Graphics {
             depth,
             camera,
             camera_group,
-            vertices,
-            vertex_count: 0,
+            meshes: HashMap::new(),
         })
     }
 
@@ -252,16 +249,18 @@ impl Graphics {
         self.depth = Self::create_depth(&self.device, &self.config);
     }
 
-    fn replace_mesh(&mut self, vertices: &[Vertex]) {
-        self.vertex_count = vertices.len() as u32;
-        if !vertices.is_empty() {
-            self.vertices = self
+    fn replace_mesh(&mut self, key: [i32; 3], vertices: &[Vertex]) {
+        if vertices.is_empty() {
+            self.meshes.remove(&key);
+        } else {
+            let buffer = self
                 .device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Voxel mesh"),
+                    label: Some("Chunk mesh"),
                     contents: bytemuck::cast_slice(vertices),
                     usage: wgpu::BufferUsages::VERTEX,
                 });
+            self.meshes.insert(key, (buffer, vertices.len() as u32));
         }
     }
 
@@ -325,8 +324,10 @@ impl Graphics {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.camera_group, &[]);
-            pass.set_vertex_buffer(0, self.vertices.slice(..));
-            pass.draw(0..self.vertex_count, 0..1);
+            for (buffer, count) in self.meshes.values() {
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                pass.draw(0..*count, 0..1);
+            }
         }
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(frame);
@@ -348,8 +349,10 @@ struct Game {
     last_frame: Instant,
     last_view: (i32, i32),
     last_report: Instant,
-    mesh_dirty: bool,
-    last_mesh: Instant,
+    meshing: MeshPipeline,
+    telemetry: FrameTelemetry,
+    decode_ms: f64,
+    last_redraw: Instant,
 }
 
 impl Game {
@@ -369,8 +372,10 @@ impl Game {
             last_frame: Instant::now(),
             last_view: (i32::MAX, i32::MAX),
             last_report: Instant::now() - Duration::from_secs(1),
-            mesh_dirty: false,
-            last_mesh: Instant::now() - Duration::from_secs(1),
+            meshing: MeshPipeline::new(),
+            telemetry: FrameTelemetry::from_env(),
+            decode_ms: 0.0,
+            last_redraw: Instant::now(),
         }
     }
 
@@ -526,13 +531,15 @@ impl ApplicationHandler<UserEvent> for Game {
                 revision,
                 data,
             }) => {
-                if self.world.receive_chunk(key, revision, &data) {
-                    self.mesh_dirty = true;
-                }
+                let start = Instant::now();
+                self.world.receive_chunk(key, revision, &data);
+                self.decode_ms += start.elapsed().as_secs_f64() * 1000.0;
             }
             UserEvent::Packet(ServerPacket::Forget { key }) => {
                 self.world.forget(key);
-                self.mesh_dirty = true;
+                if let Some(graphics) = self.graphics.as_mut() {
+                    graphics.meshes.remove(&key);
+                }
             }
             UserEvent::Disconnected => event_loop.exit(),
         }
@@ -600,15 +607,34 @@ impl ApplicationHandler<UserEvent> for Game {
                 }
             }
             WindowEvent::RedrawRequested => {
+                let start = Instant::now();
+                let frame_ms = (start - self.last_redraw).as_secs_f64() * 1000.0;
+                self.last_redraw = start;
                 self.step();
                 let direction = self.direction();
                 if let Some(graphics) = self.graphics.as_mut() {
-                    if self.mesh_dirty && self.last_mesh.elapsed() >= Duration::from_millis(80) {
-                        graphics.replace_mesh(&self.world.mesh());
-                        self.mesh_dirty = false;
-                        self.last_mesh = Instant::now();
-                    }
+                    let center = [self.position.x, self.position.y, self.position.z]
+                        .map(|v| (v.floor() as i32).div_euclid(16));
+                    let stats = self
+                        .meshing
+                        .update(&mut self.world, center, |key, vertices| {
+                            graphics.replace_mesh(key, vertices)
+                        });
                     graphics.render(self.position, direction);
+                    self.telemetry.record(FrameSample {
+                        frame_ms,
+                        redraw_cpu_ms: start.elapsed().as_secs_f64() * 1000.0,
+                        decode_ms: std::mem::take(&mut self.decode_ms),
+                        worker_mesh_ms: stats.mesh_ms,
+                        upload_cpu_ms: stats.upload_ms,
+                        uploaded_meshes: stats.uploads,
+                        uploaded_bytes: stats.upload_bytes,
+                        stale_meshes: stats.stale,
+                        loaded_chunks: self.world.chunk_count(),
+                        dirty_chunks: self.world.dirty_count(),
+                        in_flight: self.meshing.in_flight(),
+                        ..FrameSample::default()
+                    });
                 }
             }
             _ => {}
