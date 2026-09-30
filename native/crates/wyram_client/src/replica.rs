@@ -6,6 +6,8 @@ use std::time::Instant;
 #[derive(Debug, Deserialize)]
 pub struct Snapshot {
     pub id: String,
+    #[serde(default = "default_model")]
+    pub model: String,
     pub x: f32,
     pub y: f32,
     pub z: f32,
@@ -47,6 +49,10 @@ impl Snapshot {
         delta.clamp(remaining.min(Vec3::ZERO), remaining.max(Vec3::ZERO))
     }
 }
+fn default_model() -> String {
+    "default".into()
+}
+
 pub struct Replica {
     pub state: Option<Snapshot>,
     received_at: Instant,

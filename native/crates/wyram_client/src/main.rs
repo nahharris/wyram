@@ -1,7 +1,9 @@
+mod characters;
 mod chunk_mesh;
 mod meshing;
 mod outbound;
 mod replica;
+mod rig;
 mod telemetry;
 mod world;
 
@@ -40,6 +42,8 @@ enum ServerPacket {
     Hello {
         colors: HashMap<String, [u8; 3]>,
         characters: Vec<Snapshot>,
+        #[serde(default)]
+        models: Vec<rig::Source>,
     },
     Chunk {
         key: [i32; 3],
@@ -125,6 +129,7 @@ struct Graphics {
     camera: wgpu::Buffer,
     camera_group: wgpu::BindGroup,
     meshes: HashMap<[i32; 3], (wgpu::Buffer, u32)>,
+    characters: wgpu::Buffer,
 }
 
 impl Graphics {
@@ -218,6 +223,12 @@ impl Graphics {
             cache: None,
         });
         let depth = Self::create_depth(&device, &config);
+        let characters = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Character vertex batch"),
+            size: (rig::MAX_VERTICES * size_of::<Vertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         Ok(Self {
             surface,
             device,
@@ -228,6 +239,7 @@ impl Graphics {
             camera,
             camera_group,
             meshes: HashMap::new(),
+            characters,
         })
     }
 
@@ -275,7 +287,12 @@ impl Graphics {
         }
     }
 
-    fn render(&mut self, position: Vec3, direction: Vec3) {
+    fn render(&mut self, position: Vec3, direction: Vec3, characters: &[Vertex]) {
+        let characters = &characters[..characters.len().min(rig::MAX_VERTICES)];
+        if !characters.is_empty() {
+            self.queue
+                .write_buffer(&self.characters, 0, bytemuck::cast_slice(characters));
+        }
         let aspect = self.config.width as f32 / self.config.height as f32;
         let matrix = Mat4::perspective_rh(70f32.to_radians(), aspect, 0.05, 512.0)
             * Mat4::look_to_rh(position, direction, Vec3::Y);
@@ -339,6 +356,10 @@ impl Graphics {
                 pass.set_vertex_buffer(0, buffer.slice(..));
                 pass.draw(0..*count, 0..1);
             }
+            if !characters.is_empty() {
+                pass.set_vertex_buffer(0, self.characters.slice(..));
+                pass.draw(0..characters.len() as u32, 0..1);
+            }
         }
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(frame);
@@ -353,6 +374,7 @@ struct Game {
     yaw: f32,
     pitch: f32,
     replica: Replica,
+    characters: characters::Scene,
     last_intent: Option<Intent>,
     input_sequence: u64,
     last_input: Instant,
@@ -378,6 +400,7 @@ impl Game {
             yaw: 0.0,
             pitch: -0.15,
             replica: Replica::default(),
+            characters: characters::Scene::default(),
             last_intent: None,
             input_sequence: 0,
             last_input: Instant::now() - Duration::from_secs(1),
@@ -457,7 +480,7 @@ impl Game {
     }
 
     fn accept_characters(&mut self, characters: Vec<Snapshot>) {
-        for snapshot in characters.into_iter().filter(|state| state.id == "player") {
+        if let Some(snapshot) = self.characters.receive(characters) {
             let reset = snapshot.epoch != self.replica.epoch();
             let (x, y, z, yaw, pitch) = (
                 snapshot.x,
@@ -541,8 +564,13 @@ impl ApplicationHandler<UserEvent> for Game {
                 yaw,
                 pitch,
             }) => self.apply_teleport(x, y, z, yaw, pitch),
-            UserEvent::Packet(ServerPacket::Hello { colors, characters }) => {
+            UserEvent::Packet(ServerPacket::Hello {
+                colors,
+                characters,
+                models,
+            }) => {
                 self.world.set_palette(colors);
+                self.characters.models(models);
                 self.accept_characters(characters);
             }
             UserEvent::Packet(ServerPacket::CharacterStates { characters }) => {
@@ -637,6 +665,8 @@ impl ApplicationHandler<UserEvent> for Game {
                 self.last_redraw = start;
                 self.step();
                 let direction = self.direction();
+                let character_vertices =
+                    self.characters.vertices(&self.replica, &self.world, false);
                 if let Some(graphics) = self.graphics.as_mut() {
                     let center = [self.position.x, self.position.y, self.position.z]
                         .map(|v| (v.floor() as i32).div_euclid(16));
@@ -645,7 +675,7 @@ impl ApplicationHandler<UserEvent> for Game {
                         .update(&mut self.world, center, |key, vertices| {
                             graphics.replace_mesh(key, vertices)
                         });
-                    graphics.render(self.position, direction);
+                    graphics.render(self.position, direction, &character_vertices);
                     let outbound = self
                         .outbound
                         .as_ref()
@@ -702,6 +732,21 @@ impl ApplicationHandler<UserEvent> for Game {
 }
 
 fn main() {
+    let args: Vec<_> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "--validate-models") {
+        match args
+            .get(2)
+            .ok_or("missing model file".to_string())
+            .and_then(|path| rig::validate_file(path))
+        {
+            Ok(count) => println!("validated {count} character models"),
+            Err(reason) => {
+                eprintln!("model import failed: {reason}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .expect("event loop creation failed");

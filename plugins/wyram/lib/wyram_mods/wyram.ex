@@ -6,6 +6,12 @@ defmodule WyramMods.Wyram do
   def player_profile, do: Wyram.Character.Profile.default()
 
   @impl true
+  def character_models, do: WyramMods.Characters.models()
+
+  @impl true
+  def characters, do: WyramMods.Characters.definitions()
+
+  @impl true
   def blocks do
     [
       %{name: "grass", color: [96, 150, 76]},

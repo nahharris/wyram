@@ -52,7 +52,8 @@ defmodule Wyram.Engine.ClientPort do
       type: "hello",
       blocks: PluginManager.blocks(),
       colors: PluginManager.block_colors(),
-      characters: Characters.latest()
+      characters: Characters.latest(),
+      models: PluginManager.character_models()
     })
 
     Characters.connect()
