@@ -56,7 +56,7 @@ defmodule Wyram.Engine.Characters do
     if table == @table and Process.whereis(ClientPort),
       do: GenServer.cast(ClientPort, :characters_restarted)
 
-    if state.tick, do: Process.send_after(self(), :tick, 20)
+    if state.tick, do: Process.send_after(self(), :tick, State.tick_ms())
     {:ok, state}
   end
 
@@ -118,7 +118,7 @@ defmodule Wyram.Engine.Characters do
 
   @impl true
   def handle_info(:tick, state) do
-    if state.tick, do: Process.send_after(self(), :tick, 20)
+    if state.tick, do: Process.send_after(self(), :tick, State.tick_ms())
     next = if state.active, do: advance(state), else: state
     {:noreply, next}
   end
