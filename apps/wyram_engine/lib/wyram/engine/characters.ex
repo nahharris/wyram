@@ -1,7 +1,7 @@
 defmodule Wyram.Engine.Characters do
   @moduledoc "A shared fixed-step owner of dense character state and coalesced presentation snapshots."
   use GenServer
-  alias Wyram.Character.{Input, State}
+  alias Wyram.Character.{Input, State, Step}
   alias Wyram.Engine.{ClientPort, Collision, PluginManager}
   @table :wyram_character_snapshots
 
@@ -128,34 +128,30 @@ defmodule Wyram.Engine.Characters do
 
     input =
       if stale,
-        do: %{state.input | forward: 0.0, right: 0.0, jump: false, running: false},
+        do: %{
+          state.input
+          | forward: 0.0,
+            right: 0.0,
+            jump: false,
+            running: false,
+            sneaking: false
+        },
         else: state.input
 
-    entries =
-      Enum.map(state.bodies, fn {id, body} ->
-        {prepared, query} = State.prepare(body, input)
-        {id, prepared, query}
-      end)
-
-    results = resolve(state, entries)
+    entries = Enum.map(state.bodies, fn {id, body} -> {id, body, input} end)
 
     bodies =
-      Enum.zip(entries, results)
-      |> Map.new(fn {{id, body, _}, result} -> {id, State.finish(body, result)} end)
+      case Step.advance(entries, state.collision) do
+        {:ok, bodies} ->
+          bodies
+
+        {:error, _} ->
+          Map.new(state.bodies, fn {id, body} ->
+            {id, State.finish(body, {body.position, {false, false, false}, true})}
+          end)
+      end
 
     notify(%{state | bodies: bodies})
-  end
-
-  defp resolve(state, entries) do
-    queries = Enum.map(entries, &elem(&1, 2))
-
-    case state.collision.(queries) do
-      {:ok, results} ->
-        results
-
-      {:error, _} ->
-        Enum.map(entries, fn {_, body, _} -> {body.position, {false, false, false}, true} end)
-    end
   end
 
   defp notify(state) do

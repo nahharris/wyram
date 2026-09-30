@@ -9,6 +9,7 @@ defmodule Wyram.Character.State do
             jump_held: false,
             unavailable: false,
             mode: :walk,
+            posture: :stand,
             radius: 0.28,
             height: 1.8,
             eye_height: 1.62,
@@ -27,6 +28,7 @@ defmodule Wyram.Character.State do
           jump_held: boolean(),
           unavailable: boolean(),
           mode: atom(),
+          posture: atom(),
           radius: number(),
           height: number(),
           eye_height: number(),
@@ -39,11 +41,24 @@ defmodule Wyram.Character.State do
   @type query :: {vector(), vector(), number(), number()}
   @type result :: {vector(), {boolean(), boolean(), boolean()}, boolean()}
   @spec new(Profile.t(), vector()) :: t()
-  def new(profile, position), do: %__MODULE__{profile: profile, position: position}
+  def new(profile, position),
+    do: %__MODULE__{
+      profile: profile,
+      position: position,
+      radius: profile.radius,
+      height: profile.standing_height,
+      eye_height: profile.standing_eye
+    }
 
   @spec prepare(t(), Input.t()) :: {t(), query()}
   def prepare(state, input) do
     motion = Profile.motion(state.profile, input.running)
+
+    motion =
+      if state.posture == :crouch,
+        do: %{motion | mode: :sneak, speed: state.profile.sneak_speed},
+        else: motion
+
     length = max(1.0, :math.sqrt(input.forward * input.forward + input.right * input.right))
 
     vx =
@@ -116,7 +131,8 @@ defmodule Wyram.Character.State do
       epoch: state.epoch,
       grounded: state.grounded,
       unavailable: state.unavailable,
-      mode: state.mode
+      mode: state.mode,
+      posture: state.posture
     }
   end
 end
