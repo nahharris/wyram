@@ -211,6 +211,42 @@ impl VoxelWorld {
         u16::from_le_bytes([chunk.data[at], chunk.data[at + 1]])
     }
 
+    /// Short straight camera sweep, sharing a single borrowed packed world for <=60 probes.
+    /// Stop before first contact; never slide around a wall or treat missing chunks as air.
+    pub fn camera_eye(&self, eye: Vec3, delta: Vec3) -> Option<Vec3> {
+        if !eye.is_finite() || !delta.is_finite() || delta.length() > 6.001 {
+            return None;
+        }
+        let center = eye.to_array().map(|v| (v.floor() as i32).div_euclid(16));
+        let chunks = self
+            .chunks
+            .iter()
+            .filter(|(key, _)| (0..3).all(|i| (key[i] - center[i]).abs() <= 1));
+        let packed =
+            wyram_core::PackedWorld::new(chunks.map(|(key, c)| (*key, c.data.as_slice()))).ok()?;
+        let count = (delta.length() / 0.1).ceil().clamp(1., 60.) as usize;
+        let mut position = eye - Vec3::Y * 0.12;
+        for step in 1..=count {
+            let target = eye - Vec3::Y * 0.12 + delta * (step as f32 / count as f32);
+            let result = packed
+                .sweep(
+                    position.to_array().map(f64::from),
+                    (target - position).to_array().map(f64::from),
+                    0.12,
+                    0.24,
+                )
+                .ok()?;
+            if result.unavailable {
+                return None;
+            }
+            if result.blocked.into_iter().any(|b| b) {
+                break;
+            }
+            position = Vec3::from_array(result.position.map(|v| v as f32));
+        }
+        Some(position + Vec3::Y * 0.12)
+    }
+
     pub fn predict_body(
         &self,
         feet: [f32; 3],
