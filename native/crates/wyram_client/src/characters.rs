@@ -1,19 +1,22 @@
 use crate::{
+    animation::Animator,
     replica::{Replica, Snapshot},
-    rig::{BonePose, MAX_VERTICES, Rig, Source},
+    rig::{MAX_VERTICES, Rig, Source},
     world::{Vertex, VoxelWorld},
 };
-use glam::{Quat, Vec3};
+use glam::Vec3;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
 pub struct Scene {
     models: HashMap<String, Rig>,
     peers: HashMap<String, Replica>,
+    animators: HashMap<String, Animator>,
 }
 impl Scene {
     pub fn models(&mut self, sources: Vec<Source>) {
         self.models.clear();
+        self.animators.clear();
         for source in sources.into_iter().take(16) {
             match Rig::import(source) {
                 Ok(rig) => {
@@ -26,6 +29,7 @@ impl Scene {
     pub fn receive(&mut self, snapshots: Vec<Snapshot>) -> Option<Snapshot> {
         let present: HashSet<_> = snapshots.iter().take(16).map(|s| s.id.clone()).collect();
         self.peers.retain(|id, _| present.contains(id));
+        self.animators.retain(|id, _| present.contains(id));
         let mut player = None;
         for snapshot in snapshots.into_iter().take(16) {
             if snapshot.id == "player" {
@@ -39,7 +43,13 @@ impl Scene {
         }
         player
     }
-    pub fn vertices(&self, player: &Replica, world: &VoxelWorld, show_player: bool) -> Vec<Vertex> {
+    pub fn vertices(
+        &mut self,
+        player: &Replica,
+        world: &VoxelWorld,
+        show_player: bool,
+        dt: f32,
+    ) -> Vec<Vertex> {
         let mut vertices = Vec::new();
         let characters = self.peers.values().chain(show_player.then_some(player));
         for replica in characters {
@@ -50,10 +60,12 @@ impl Scene {
                 continue;
             };
             let feet = replica.sample(world) - Vec3::Y * state.eye_height;
-            let mut poses = vec![BonePose::default(); model.source.bones.len()];
-            if let Some(head) = model.role("head") {
-                poses[head].rotation = Quat::from_rotation_x(state.pitch);
-            }
+            let poses = self.animators.entry(state.id.clone()).or_default().sample(
+                model,
+                state,
+                dt,
+                replica.age(),
+            );
             vertices.extend(model.vertices(feet, state.yaw, state.height, &poses));
         }
         vertices.truncate(MAX_VERTICES);

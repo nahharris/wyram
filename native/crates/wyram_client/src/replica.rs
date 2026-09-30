@@ -8,6 +8,12 @@ pub struct Snapshot {
     pub id: String,
     #[serde(default = "default_model")]
     pub model: String,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub posture: String,
+    #[serde(default)]
+    pub grounded: bool,
     pub x: f32,
     pub y: f32,
     pub z: f32,
@@ -29,6 +35,12 @@ pub struct Action {
     pub kind: String,
     pub phase: String,
     pub target: Option<[f32; 3]>,
+    #[serde(default)]
+    pub elapsed: f32,
+    #[serde(default)]
+    pub duration: f32,
+    #[serde(default)]
+    pub local_direction: String,
 }
 
 impl Snapshot {
@@ -76,6 +88,9 @@ impl Replica {
         self.state = Some(snapshot);
         self.received_at = Instant::now();
         true
+    }
+    pub fn age(&self) -> f32 {
+        self.received_at.elapsed().as_secs_f32()
     }
     pub fn epoch(&self) -> u64 {
         self.state.as_ref().map_or(0, |state| state.epoch)

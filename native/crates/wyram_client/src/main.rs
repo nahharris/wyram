@@ -1,3 +1,4 @@
+mod animation;
 mod characters;
 mod chunk_mesh;
 mod meshing;
@@ -665,8 +666,12 @@ impl ApplicationHandler<UserEvent> for Game {
                 self.last_redraw = start;
                 self.step();
                 let direction = self.direction();
-                let character_vertices =
-                    self.characters.vertices(&self.replica, &self.world, false);
+                let character_vertices = self.characters.vertices(
+                    &self.replica,
+                    &self.world,
+                    false,
+                    (frame_ms / 1000.) as f32,
+                );
                 if let Some(graphics) = self.graphics.as_mut() {
                     let center = [self.position.x, self.position.y, self.position.z]
                         .map(|v| (v.floor() as i32).div_euclid(16));
