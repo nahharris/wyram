@@ -20,7 +20,9 @@ defmodule Wyram.Character.Profile do
             slide_enabled: true,
             slide_entry_speed: 6.0,
             slide_friction: 10.0,
-            slide_duration: 0.6
+            slide_duration: 0.6,
+            wall_slide_enabled: true,
+            wall_slide_speed: 2.0
 
   @type t :: %__MODULE__{
           walk_speed: number(),
@@ -42,7 +44,9 @@ defmodule Wyram.Character.Profile do
           slide_enabled: boolean(),
           slide_entry_speed: number(),
           slide_friction: number(),
-          slide_duration: number()
+          slide_duration: number(),
+          wall_slide_enabled: boolean(),
+          wall_slide_speed: number()
         }
   @type motion :: %{
           mode: :walk | :run,
@@ -67,12 +71,14 @@ defmodule Wyram.Character.Profile do
       profile.climb_speed,
       profile.slide_entry_speed,
       profile.slide_friction,
-      profile.slide_duration
+      profile.slide_duration,
+      profile.wall_slide_speed
     ]
 
     if Enum.all?(values, &(is_number(&1) and &1 > 0 and &1 <= 100)) and
          profile.run_speed >= profile.walk_speed and valid_geometry?(profile) and
-         valid_climb?(profile) and is_boolean(profile.slide_enabled) do
+         valid_climb?(profile) and is_boolean(profile.slide_enabled) and
+         is_boolean(profile.wall_slide_enabled) do
       :ok
     else
       {:error, :invalid_character_profile}

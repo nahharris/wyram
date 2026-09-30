@@ -15,7 +15,7 @@ Walking, Ctrl-running and Space-jumping already exist. Their tuning was hard-cod
 | Guaranteed one-block jumping | Collision-backed clearance and landing verified across render schedules | [#14](https://github.com/nahharris/wyram/issues/14) |
 | Climbing/mantling up to three blocks | Implemented through supported swept traversal phases | [#15](https://github.com/nahharris/wyram/issues/15) |
 | Floor sliding | Implemented with crouched momentum and swept interruption | [#16](https://github.com/nahharris/wyram/issues/16) |
-| Wall sliding | Requires authoritative airborne contact and controlled descent | [#17](https://github.com/nahharris/wyram/issues/17) |
+| Wall sliding | Implemented with fresh deliberate contact and a descent cap | [#17](https://github.com/nahharris/wyram/issues/17) |
 | Swimming and diving | Deferred until public fluid semantics and water presentation exist | [#18](https://github.com/nahharris/wyram/issues/18) |
 | Four-direction rolling | Requires swept action movement, clearance and interruption rules | [#19](https://github.com/nahharris/wyram/issues/19) |
 | Reusable body, rig and models | Design alongside movement; demonstrate a second character | [#20](https://github.com/nahharris/wyram/issues/20) |
@@ -67,3 +67,8 @@ Release E, request a lower posture, teleport, loss of landing support, blocked p
 While running with Ctrl, press Shift to slide if grounded and already moving at least the profile entry speed (default 6 blocks/second). Slide preserves the entry direction, shrinks to the approved crouched body, and decelerates with friction (default 10 blocks/second squared) for at most 0.6 seconds. Slow entry falls back to ordinary sneaking. Profiles can disable sliding.
 
 Releasing Ctrl/Shift, jumping, crawling, climbing, wall contact, lost support, or unavailable terrain ends the slide. Grounded ledge protection prevents sliding off an edge. On exit, standing still requires clearance; a low tunnel retains crouching. Holding the controls does not repeatedly restart the slide. Timers and displacement share authoritative fixed steps; presentation consumes the approved action independently.
+
+
+### Wall sliding
+
+While descending, hold Shift and push a movement direction into a wall to cap fall speed (default 2 blocks/second). Every fixed step probes current horizontal contact in a batch; prior contact cannot keep the character attached to a removed wall. Steering away, releasing Shift, requesting another action, lost contact, landing and unavailable terrain end the state. Ascending contact does not activate it. Space does not introduce a wall jump. Profiles can disable wall sliding or tune the descent cap, and presentation follows the approved action.
