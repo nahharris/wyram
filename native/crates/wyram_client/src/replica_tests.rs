@@ -33,3 +33,11 @@ fn traversal_prediction_stays_within_the_approved_target() {
         Vec3::new(0.04, 0.0, 0.0)
     );
 }
+
+#[test]
+fn other_action_snapshots_decode_without_a_climb_target() {
+    let mut value = serde_json::to_value(serde_json::json!({"id":"player","x":0.5,"y":1.62,"z":0.5,"feet":[0.5,0.0,0.5],"velocity":[1.0,0.0,0.0],"radius":0.28,"height":1.0,"eye_height":0.85,"yaw":0.0,"pitch":0.0,"sequence":1,"epoch":0,"unavailable":false})).unwrap();
+    value["action"] = serde_json::json!({"kind":"slide","phase":"active","elapsed":0.02,"speed":9.0,"direction":[1.0,0.0]});
+    let state: Snapshot = serde_json::from_value(value).unwrap();
+    assert_eq!(state.approved_delta(0.04), Vec3::new(0.04, 0.0, 0.0));
+}

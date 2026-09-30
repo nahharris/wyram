@@ -26,11 +26,11 @@ defmodule Wyram.Character.Climb do
   defp maintain(entries, collision) do
     entries =
       Enum.map(entries, fn {id, body, input} ->
-        action = if input.climbing and body.posture == :stand, do: body.action, else: nil
+        action = keep_action(body, input)
         {id, %{body | action: action}, input}
       end)
 
-    active = Enum.filter(entries, fn {_, body, _} -> body.action != nil end)
+    active = Enum.filter(entries, fn {_, body, _} -> match?(%{kind: :climb}, body.action) end)
 
     queries =
       Enum.map(active, fn {_, b, _} ->
@@ -159,4 +159,10 @@ defmodule Wyram.Character.Climb do
 
   defp reached?({x, y, z}, {a, b, c}),
     do: abs(x - a) < 1.0e-8 and abs(y - b) < 1.0e-8 and abs(z - c) < 1.0e-8
+
+  defp keep_action(%{action: %{kind: :climb}} = body, input) do
+    if input.climbing and body.posture == :stand, do: body.action, else: nil
+  end
+
+  defp keep_action(body, _), do: body.action
 end
