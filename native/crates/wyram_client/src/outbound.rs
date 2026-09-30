@@ -191,6 +191,8 @@ mod tests {
                 sneaking: false,
                 crawling: false,
                 climbing: false,
+                rolling: false,
+                cancel_actions: false,
             },
         }
     }

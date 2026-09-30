@@ -22,7 +22,11 @@ defmodule Wyram.Character.Profile do
             slide_friction: 10.0,
             slide_duration: 0.6,
             wall_slide_enabled: true,
-            wall_slide_speed: 2.0
+            wall_slide_speed: 2.0,
+            roll_enabled: true,
+            roll_distance: 3.0,
+            roll_duration: 0.35,
+            roll_cooldown: 0.8
 
   @type t :: %__MODULE__{
           walk_speed: number(),
@@ -46,7 +50,11 @@ defmodule Wyram.Character.Profile do
           slide_friction: number(),
           slide_duration: number(),
           wall_slide_enabled: boolean(),
-          wall_slide_speed: number()
+          wall_slide_speed: number(),
+          roll_enabled: boolean(),
+          roll_distance: number(),
+          roll_duration: number(),
+          roll_cooldown: number()
         }
   @type motion :: %{
           mode: :walk | :run,
@@ -72,13 +80,15 @@ defmodule Wyram.Character.Profile do
       profile.slide_entry_speed,
       profile.slide_friction,
       profile.slide_duration,
-      profile.wall_slide_speed
+      profile.wall_slide_speed,
+      profile.roll_distance,
+      profile.roll_duration,
+      profile.roll_cooldown
     ]
 
     if Enum.all?(values, &(is_number(&1) and &1 > 0 and &1 <= 100)) and
          profile.run_speed >= profile.walk_speed and valid_geometry?(profile) and
-         valid_climb?(profile) and is_boolean(profile.slide_enabled) and
-         is_boolean(profile.wall_slide_enabled) do
+         valid_capabilities?(profile) do
       :ok
     else
       {:error, :invalid_character_profile}
@@ -140,4 +150,15 @@ defmodule Wyram.Character.Profile do
         p.prone_height <= p.crouch_height
 
   defp valid_climb?(p), do: is_integer(p.climb_height) and p.climb_height in 0..3
+
+  defp valid_roll?(p),
+    do:
+      is_boolean(p.roll_enabled) and p.roll_duration >= 0.1 and p.roll_duration <= 3 and
+        p.roll_distance <= 8 and p.roll_cooldown >= p.roll_duration and
+        p.roll_distance / p.roll_duration <= 100
+
+  defp valid_capabilities?(p),
+    do:
+      Enum.all?([p.slide_enabled, p.wall_slide_enabled, p.roll_enabled], &is_boolean/1) and
+        valid_climb?(p) and valid_roll?(p)
 end

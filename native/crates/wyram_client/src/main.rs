@@ -62,6 +62,8 @@ struct Intent {
     sneaking: bool,
     crawling: bool,
     climbing: bool,
+    rolling: bool,
+    cancel_actions: bool,
 }
 
 #[derive(Serialize)]
@@ -354,6 +356,7 @@ struct Game {
     last_intent: Option<Intent>,
     input_sequence: u64,
     last_input: Instant,
+    cancel_actions: bool,
     pressed: HashSet<KeyCode>,
     cursor_locked: bool,
     selected: u16,
@@ -379,6 +382,7 @@ impl Game {
             input_sequence: 0,
             last_input: Instant::now() - Duration::from_secs(1),
             pressed: HashSet::new(),
+            cancel_actions: false,
             cursor_locked: false,
             selected: 1,
             meshing: MeshPipeline::new(),
@@ -415,6 +419,7 @@ impl Game {
 
     fn release_input(&mut self) {
         self.pressed.clear();
+        self.cancel_actions = true;
         self.update_input(true);
     }
 
@@ -433,6 +438,8 @@ impl Game {
             sneaking: self.pressed.contains(&KeyCode::ShiftLeft),
             crawling: self.pressed.contains(&KeyCode::KeyC),
             climbing: self.pressed.contains(&KeyCode::KeyE),
+            rolling: self.pressed.contains(&KeyCode::KeyQ),
+            cancel_actions: self.cancel_actions,
         };
         if force
             || self.last_intent != Some(intent)
@@ -576,6 +583,7 @@ impl ApplicationHandler<UserEvent> for Game {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     match event.state {
                         ElementState::Pressed => {
+                            self.cancel_actions = false;
                             self.pressed.insert(code);
                             if code == KeyCode::Escape {
                                 self.cursor_locked = false;
@@ -728,6 +736,7 @@ mod tests {
         game.pressed.insert(KeyCode::ShiftLeft);
         game.pressed.insert(KeyCode::KeyC);
         game.pressed.insert(KeyCode::KeyE);
+        game.pressed.insert(KeyCode::KeyQ);
         game.release_input();
         game.update_input(false);
         assert!(game.pressed.is_empty());
@@ -741,6 +750,8 @@ mod tests {
         assert_eq!(packet["sneaking"], false);
         assert_eq!(packet["crawling"], false);
         assert_eq!(packet["climbing"], false);
+        assert_eq!(packet["rolling"], false);
+        assert_eq!(packet["cancel_actions"], true);
         assert_eq!(packet["forward"], 0.0);
     }
     #[test]

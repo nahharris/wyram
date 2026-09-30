@@ -35,7 +35,9 @@ impl Snapshot {
         let Some(action) = &self.action else {
             return delta;
         };
-        if action.kind != "climb" || !matches!(action.phase.as_str(), "rise" | "cross") {
+        if !matches!(action.kind.as_str(), "climb" | "roll")
+            || !matches!(action.phase.as_str(), "rise" | "cross" | "active")
+        {
             return delta;
         }
         let Some(target) = action.target else {

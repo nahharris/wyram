@@ -41,3 +41,9 @@ fn other_action_snapshots_decode_without_a_climb_target() {
     let state: Snapshot = serde_json::from_value(value).unwrap();
     assert_eq!(state.approved_delta(0.04), Vec3::new(0.04, 0.0, 0.0));
 }
+
+#[test]
+fn roll_prediction_cannot_overshoot_a_negative_target() {
+    let state: Snapshot = serde_json::from_value(serde_json::json!({"id":"player","x":0.5,"y":0.85,"z":0.5,"feet":[0.5,0.0,0.5],"velocity":[-9.0,0.0,0.0],"radius":0.28,"height":0.6,"eye_height":0.45,"yaw":0.0,"pitch":0.0,"sequence":1,"epoch":0,"unavailable":false,"action":{"kind":"roll","phase":"active","target":[0.46,0.0,0.5],"elapsed":0.34,"duration":0.35}})).unwrap();
+    assert!((state.approved_delta(0.04).x + 0.04).abs() < 1e-6);
+}

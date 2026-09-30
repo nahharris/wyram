@@ -98,6 +98,7 @@ defmodule Wyram.Engine.Characters do
           grounded: false,
           jump_held: false,
           climb_held: false,
+          roll_held: false,
           action: nil,
           sequence: body.sequence + 1,
           input_sequence: 0,
@@ -128,19 +129,7 @@ defmodule Wyram.Engine.Characters do
   defp advance(state) do
     stale = System.monotonic_time(:millisecond) - state.received_at > 250
 
-    input =
-      if stale,
-        do: %{
-          state.input
-          | forward: 0.0,
-            right: 0.0,
-            jump: false,
-            running: false,
-            sneaking: false,
-            crawling: false,
-            climbing: false
-        },
-        else: state.input
+    input = if stale, do: Input.release(state.input), else: state.input
 
     entries = Enum.map(state.bodies, fn {id, body} -> {id, body, input} end)
 

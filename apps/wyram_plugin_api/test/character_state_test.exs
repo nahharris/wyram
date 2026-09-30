@@ -20,6 +20,9 @@ defmodule Wyram.Character.StateTest do
     packet =
       Map.from_struct(input) |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
 
+    assert {:ok, %{rolling: true}} = Input.decode(Map.put(packet, "rolling", true))
+    assert {:error, :invalid_input} = Input.decode(Map.put(packet, "rolling", "yes"))
+    assert {:error, :invalid_input} = Input.decode(Map.put(packet, "cancel_actions", "yes"))
     assert {:ok, %{climbing: true}} = Input.decode(Map.put(packet, "climbing", true))
     assert {:error, :invalid_input} = Input.decode(Map.put(packet, "climbing", "yes"))
     assert {:ok, %{crawling: true}} = Input.decode(Map.put(packet, "crawling", true))
@@ -67,5 +70,30 @@ defmodule Wyram.Character.StateTest do
     assert frozen.position == state.position
     assert frozen.velocity == {0.0, 0.0, 0.0}
     assert frozen.unavailable
+  end
+
+  test "releasing controls preserves acknowledgement and look while cancelling actions" do
+    input = %{
+      Input.idle()
+      | sequence: 7,
+        epoch: 2,
+        yaw: 1.0,
+        pitch: 0.5,
+        forward: 1.0,
+        rolling: true,
+        climbing: true,
+        running: true
+    }
+
+    released = Input.release(input)
+    assert released.sequence == 7
+    assert released.epoch == 2
+    assert released.yaw == 1.0
+    assert released.pitch == 0.5
+    assert released.forward == 0.0
+    refute released.rolling
+    refute released.climbing
+    refute released.running
+    assert released.cancel_actions
   end
 end

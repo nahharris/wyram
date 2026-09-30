@@ -3,6 +3,8 @@ defmodule Wyram.Character.Step do
   alias Wyram.Character.{Actions, Posture}
 
   def advance(entries, collision) do
+    entries = Actions.begin(entries)
+
     with {:ok, entries} <- postures(entries, collision),
          {:ok, entries} <- Actions.choose(entries, collision),
          prepared =
