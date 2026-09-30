@@ -83,7 +83,9 @@ defmodule Wyram.Character.ProfileTest do
           slide_enabled: "yes",
           slide_entry_speed: 0,
           slide_friction: 0,
-          slide_duration: 0
+          slide_duration: 0,
+          wall_slide_enabled: "yes",
+          wall_slide_speed: 0
         ] do
       assert Profile.validate(Map.put(Profile.default(), key, value)) ==
                {:error, :invalid_character_profile}
