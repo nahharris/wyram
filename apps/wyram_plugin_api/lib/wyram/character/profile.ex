@@ -11,7 +11,10 @@ defmodule Wyram.Character.Profile do
             standing_eye: 1.62,
             crouch_height: 1.0,
             crouch_eye: 0.85,
-            sneak_speed: 2.0
+            sneak_speed: 2.0,
+            prone_height: 0.6,
+            prone_eye: 0.45,
+            crawl_speed: 1.0
 
   @type t :: %__MODULE__{
           walk_speed: number(),
@@ -24,7 +27,10 @@ defmodule Wyram.Character.Profile do
           standing_eye: number(),
           crouch_height: number(),
           crouch_eye: number(),
-          sneak_speed: number()
+          sneak_speed: number(),
+          prone_height: number(),
+          prone_eye: number(),
+          crawl_speed: number()
         }
   @type motion :: %{
           mode: :walk | :run,
@@ -44,7 +50,8 @@ defmodule Wyram.Character.Profile do
       profile.jump_speed,
       profile.gravity,
       profile.terminal_speed,
-      profile.sneak_speed
+      profile.sneak_speed,
+      profile.crawl_speed
     ]
 
     if Enum.all?(values, &(is_number(&1) and &1 > 0 and &1 <= 100)) and
@@ -82,17 +89,30 @@ defmodule Wyram.Character.Profile do
 
   defp valid_geometry?(p) do
     Enum.all?(
-      [p.radius, p.standing_height, p.standing_eye, p.crouch_height, p.crouch_eye],
+      [
+        p.radius,
+        p.standing_height,
+        p.standing_eye,
+        p.crouch_height,
+        p.crouch_eye,
+        p.prone_height,
+        p.prone_eye
+      ],
       &is_number/1
     ) and
       p.radius >= 0.1 and p.radius <= 2.0 and
       p.standing_height <= 8.0 and p.crouch_height >= 0.1 and
-      p.crouch_height <= p.standing_height and
+      valid_heights?(p) and
       valid_eyes?(p)
   end
 
   defp valid_eyes?(p),
     do:
       p.standing_eye > 0 and p.standing_eye < p.standing_height and p.crouch_eye > 0 and
-        p.crouch_eye < p.crouch_height
+        p.crouch_eye < p.crouch_height and p.prone_eye > 0 and p.prone_eye < p.prone_height
+
+  defp valid_heights?(p),
+    do:
+      p.crouch_height <= p.standing_height and p.prone_height >= 0.1 and
+        p.prone_height <= p.crouch_height
 end

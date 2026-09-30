@@ -134,7 +134,8 @@ defmodule Wyram.Engine.Characters do
             right: 0.0,
             jump: false,
             running: false,
-            sneaking: false
+            sneaking: false,
+            crawling: false
         },
         else: state.input
 

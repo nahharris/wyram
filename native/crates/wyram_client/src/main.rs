@@ -60,6 +60,7 @@ struct Intent {
     running: bool,
     jump: bool,
     sneaking: bool,
+    crawling: bool,
 }
 
 #[derive(Serialize)]
@@ -429,6 +430,7 @@ impl Game {
             running: self.pressed.contains(&KeyCode::ControlLeft),
             jump: self.pressed.contains(&KeyCode::Space),
             sneaking: self.pressed.contains(&KeyCode::ShiftLeft),
+            crawling: self.pressed.contains(&KeyCode::KeyC),
         };
         if force
             || self.last_intent != Some(intent)
@@ -722,6 +724,7 @@ mod tests {
         game.outbound = Some(outbound);
         game.pressed.insert(KeyCode::ControlLeft);
         game.pressed.insert(KeyCode::ShiftLeft);
+        game.pressed.insert(KeyCode::KeyC);
         game.release_input();
         game.update_input(false);
         assert!(game.pressed.is_empty());
@@ -733,6 +736,7 @@ mod tests {
         assert_eq!(packet["type"], "input");
         assert_eq!(packet["running"], false);
         assert_eq!(packet["sneaking"], false);
+        assert_eq!(packet["crawling"], false);
         assert_eq!(packet["forward"], 0.0);
     }
     #[test]

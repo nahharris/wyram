@@ -8,7 +8,8 @@ defmodule Wyram.Character.Input do
             pitch: 0.0,
             running: false,
             jump: false,
-            sneaking: false
+            sneaking: false,
+            crawling: false
 
   @type t :: %__MODULE__{
           sequence: non_neg_integer(),
@@ -19,7 +20,8 @@ defmodule Wyram.Character.Input do
           pitch: number(),
           running: boolean(),
           jump: boolean(),
-          sneaking: boolean()
+          sneaking: boolean(),
+          crawling: boolean()
         }
   @spec idle() :: t()
   def idle, do: %__MODULE__{}
@@ -41,7 +43,8 @@ defmodule Wyram.Character.Input do
     values = [{forward, -1, 1}, {right, -1, 1}, {yaw, -1000, 1000}, {pitch, -1.55, 1.55}]
 
     if valid_sequence?(sequence) and valid_sequence?(epoch) and Enum.all?(values, &bounded?/1) and
-         is_boolean(Map.get(packet, "sneaking", false)) do
+         is_boolean(Map.get(packet, "sneaking", false)) and
+         is_boolean(Map.get(packet, "crawling", false)) do
       {:ok,
        %__MODULE__{
          sequence: sequence,
@@ -52,7 +55,8 @@ defmodule Wyram.Character.Input do
          pitch: pitch,
          running: running,
          jump: jump,
-         sneaking: Map.get(packet, "sneaking", false)
+         sneaking: Map.get(packet, "sneaking", false),
+         crawling: Map.get(packet, "crawling", false)
        }}
     else
       {:error, :invalid_input}

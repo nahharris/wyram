@@ -189,6 +189,7 @@ mod tests {
                 running,
                 jump: false,
                 sneaking: false,
+                crawling: false,
             },
         }
     }

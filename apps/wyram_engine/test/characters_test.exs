@@ -49,4 +49,32 @@ defmodule Wyram.Engine.CharactersTest do
     assert teleported.input_sequence == 0
     assert_in_delta teleported.z, 10.0, 1.0e-9
   end
+
+  test "expired input clears crawl intent and permits standing when clearance is available" do
+    collision = fn queries ->
+      {:ok,
+       Enum.map(queries, fn {position, _, _, _} -> {position, {false, false, false}, false} end)}
+    end
+
+    pid =
+      start_supervised!(
+        {Characters,
+         name: nil,
+         tick: false,
+         profile: Profile.default(),
+         collision: collision,
+         publish: fn _ -> :ok end}
+      )
+
+    Characters.connect(pid)
+    Characters.input(Map.put(intent(1, 0), "crawling", true), pid)
+    send(pid, :tick)
+    assert Characters.snapshot(pid).posture == :prone
+    :sys.replace_state(pid, &%{&1 | received_at: System.monotonic_time(:millisecond) - 300})
+    send(pid, :tick)
+    snapshot = Characters.snapshot(pid)
+    assert snapshot.posture == :stand
+    assert snapshot.mode == :walk
+    assert elem(:sys.get_state(pid).bodies["player"].velocity, 0) == 0.0
+  end
 end

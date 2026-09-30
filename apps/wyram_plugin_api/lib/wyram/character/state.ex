@@ -54,10 +54,7 @@ defmodule Wyram.Character.State do
   def prepare(state, input) do
     motion = Profile.motion(state.profile, input.running)
 
-    motion =
-      if state.posture == :crouch,
-        do: %{motion | mode: :sneak, speed: state.profile.sneak_speed},
-        else: motion
+    motion = posture_motion(state, motion)
 
     length = max(1.0, :math.sqrt(input.forward * input.forward + input.right * input.right))
 
@@ -135,4 +132,12 @@ defmodule Wyram.Character.State do
       posture: state.posture
     }
   end
+
+  defp posture_motion(%{posture: :crouch, profile: p}, motion),
+    do: %{motion | mode: :sneak, speed: p.sneak_speed}
+
+  defp posture_motion(%{posture: :prone, profile: p}, motion),
+    do: %{motion | mode: :crawl, speed: p.crawl_speed}
+
+  defp posture_motion(_, motion), do: motion
 end
