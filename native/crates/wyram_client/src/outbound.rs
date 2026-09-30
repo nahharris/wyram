@@ -188,6 +188,7 @@ mod tests {
                 pitch: 0.0,
                 running,
                 jump: false,
+                sneaking: false,
             },
         }
     }

@@ -59,6 +59,7 @@ struct Intent {
     pitch: f32,
     running: bool,
     jump: bool,
+    sneaking: bool,
 }
 
 #[derive(Serialize)]
@@ -427,6 +428,7 @@ impl Game {
             pitch: self.pitch,
             running: self.pressed.contains(&KeyCode::ControlLeft),
             jump: self.pressed.contains(&KeyCode::Space),
+            sneaking: self.pressed.contains(&KeyCode::ShiftLeft),
         };
         if force
             || self.last_intent != Some(intent)
@@ -719,6 +721,7 @@ mod tests {
         let mut game = Game::new();
         game.outbound = Some(outbound);
         game.pressed.insert(KeyCode::ControlLeft);
+        game.pressed.insert(KeyCode::ShiftLeft);
         game.release_input();
         game.update_input(false);
         assert!(game.pressed.is_empty());
@@ -729,6 +732,7 @@ mod tests {
         let packet: serde_json::Value = serde_json::from_slice(&bytes[4..]).unwrap();
         assert_eq!(packet["type"], "input");
         assert_eq!(packet["running"], false);
+        assert_eq!(packet["sneaking"], false);
         assert_eq!(packet["forward"], 0.0);
     }
     #[test]

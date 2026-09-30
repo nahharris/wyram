@@ -7,7 +7,8 @@ defmodule Wyram.Character.Input do
             yaw: 0.0,
             pitch: 0.0,
             running: false,
-            jump: false
+            jump: false,
+            sneaking: false
 
   @type t :: %__MODULE__{
           sequence: non_neg_integer(),
@@ -17,26 +18,30 @@ defmodule Wyram.Character.Input do
           yaw: number(),
           pitch: number(),
           running: boolean(),
-          jump: boolean()
+          jump: boolean(),
+          sneaking: boolean()
         }
   @spec idle() :: t()
   def idle, do: %__MODULE__{}
 
   @spec decode(term()) :: {:ok, t()} | {:error, :invalid_input}
-  def decode(%{
-        "sequence" => sequence,
-        "epoch" => epoch,
-        "forward" => forward,
-        "right" => right,
-        "yaw" => yaw,
-        "pitch" => pitch,
-        "running" => running,
-        "jump" => jump
-      })
+  def decode(
+        %{
+          "sequence" => sequence,
+          "epoch" => epoch,
+          "forward" => forward,
+          "right" => right,
+          "yaw" => yaw,
+          "pitch" => pitch,
+          "running" => running,
+          "jump" => jump
+        } = packet
+      )
       when is_boolean(running) and is_boolean(jump) do
     values = [{forward, -1, 1}, {right, -1, 1}, {yaw, -1000, 1000}, {pitch, -1.55, 1.55}]
 
-    if valid_sequence?(sequence) and valid_sequence?(epoch) and Enum.all?(values, &bounded?/1) do
+    if valid_sequence?(sequence) and valid_sequence?(epoch) and Enum.all?(values, &bounded?/1) and
+         is_boolean(Map.get(packet, "sneaking", false)) do
       {:ok,
        %__MODULE__{
          sequence: sequence,
@@ -46,7 +51,8 @@ defmodule Wyram.Character.Input do
          yaw: yaw,
          pitch: pitch,
          running: running,
-         jump: jump
+         jump: jump,
+         sneaking: Map.get(packet, "sneaking", false)
        }}
     else
       {:error, :invalid_input}

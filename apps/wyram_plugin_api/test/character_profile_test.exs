@@ -1,7 +1,7 @@
 defmodule Wyram.Character.ProfileTest do
   use ExUnit.Case, async: true
 
-  alias Wyram.Character.Profile
+  alias Wyram.Character.{Input, Posture, Profile, State}
 
   defmodule LegacyPlugin do
   end
@@ -60,5 +60,31 @@ defmodule Wyram.Character.ProfileTest do
 
     assert Profile.validate(%{Profile.default() | walk_speed: 10.0, run_speed: 5.0}) ==
              {:error, :invalid_character_profile}
+  end
+
+  test "body geometry and sneak tuning are safe and reusable per character" do
+    for {key, value} <- [
+          radius: 0.09,
+          radius: 2.1,
+          standing_height: 9,
+          crouch_height: 0,
+          crouch_height: 3,
+          crouch_eye: 1.0,
+          standing_eye: 1.8,
+          sneak_speed: 0
+        ] do
+      assert Profile.validate(Map.put(Profile.default(), key, value)) ==
+               {:error, :invalid_character_profile}
+    end
+
+    profile = %{Profile.default() | crouch_height: 0.8, crouch_eye: 0.65, sneak_speed: 1.3}
+    assert :ok = Profile.validate(profile)
+    body = State.new(profile, {0, 0, 0})
+
+    {wanted, _} =
+      Posture.request(body, %{Input.idle() | sneaking: true})
+
+    assert wanted.height == 0.8
+    assert wanted.eye_height == 0.65
   end
 end

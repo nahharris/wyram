@@ -16,6 +16,12 @@ defmodule Wyram.Character.StateTest do
              })
 
     assert input.sequence == 3
+
+    packet =
+      Map.from_struct(input) |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+
+    assert {:ok, %{sneaking: true}} = Input.decode(Map.put(packet, "sneaking", true))
+    assert {:error, :invalid_input} = Input.decode(Map.put(packet, "sneaking", "yes"))
     assert Input.decode(%{"sequence" => -1}) == {:error, :invalid_input}
 
     assert Input.decode(%{
