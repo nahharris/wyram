@@ -4,7 +4,7 @@
 
 ## Feasibility and delivery order
 
-Walking, Ctrl-running and Space-jumping already exist. Their tuning was hard-coded in the native client, whose original frame-step collision checks sampled body corners. The authority slice replaces that solver with fixed-step Elixir state and packed swept-AABB queries. The posture slice adds variable character bodies. Fluid semantics, character models, skeletons, animation clips and external cameras remain future work. A continuous jump apex of 1.225 blocks does not establish that the existing collision solver reliably clears a one-block obstacle.
+Walking, Ctrl-running and Space-jumping already exist. Their tuning was hard-coded in the native client, whose original frame-step collision checks sampled body corners. The authority slice replaces that solver with fixed-step Elixir state and packed swept-AABB queries. The posture slice adds variable character bodies. Fluid semantics, animation and external cameras remain future work. Editable original rigs now render both the player and a second character through a shared pipeline. A continuous jump apex of 1.225 blocks does not establish that the existing collision solver reliably clears a one-block obstacle.
 
 | Work | Readiness and dependency | Issue |
 | --- | --- | --- |
@@ -18,7 +18,7 @@ Walking, Ctrl-running and Space-jumping already exist. Their tuning was hard-cod
 | Wall sliding | Implemented with fresh deliberate contact and a descent cap | [#17](https://github.com/nahharris/wyram/issues/17) |
 | Swimming and diving | Deferred until public fluid semantics and water presentation exist | [#18](https://github.com/nahharris/wyram/issues/18) |
 | Four-direction rolling | Implemented as a timed four-direction swept action | [#19](https://github.com/nahharris/wyram/issues/19) |
-| Reusable body, rig and models | Design alongside movement; demonstrate a second character | [#20](https://github.com/nahharris/wyram/issues/20) |
+| Reusable body, rig and models | Implemented; original role-based rigs and a second character | [#20](https://github.com/nahharris/wyram/issues/20) |
 | Reusable animations | Requires rig and approved character state/phase snapshots | [#21](https://github.com/nahharris/wyram/issues/21) |
 | Third-person and front-facing cameras | Requires visible model and body coordinates independent of the camera | [#22](https://github.com/nahharris/wyram/issues/22) |
 
@@ -79,3 +79,11 @@ While descending, hold Shift and push a movement direction into a wall to cap fa
 Press Q with WASD to roll forward, backward, left or right relative to character facing. The dominant local axis resolves diagonals; ties and Q alone select forward. Default tuning covers 3 blocks over 0.35 seconds, with a 0.8-second cooldown measured from entry. Profiles can disable or tune the action. It uses the approved prone body and preserves its entry direction. A normal Q release allows completion; jumping, other traversal requests, focus/Escape release, teleport, walls, ledges, lost support and unavailable terrain interrupt it. Low tunnels retain prone posture when standing remains blocked.
 
 Input edges and cooldown prevent held/repeated Q from restarting it. A sticky cancellation flag survives input coalescing until a new key press; stale engine input also cancels the action. Prediction stays within the approved target. The action snapshot exposes direction, phase, elapsed time and duration for future reusable animation. Rolling adds no combat or invulnerability semantics.
+
+### Models and reusable rigs
+
+The public `Wyram.Character.Model`, `Definition` and `Catalog` values describe bounded models and character rosters. Optional game callbacks `character_models/0` and `characters/0` use only the public API; older plugins receive a default cuboid and player definition. The shared owner simulates every definition with its own profile, body and model reference. Player intent affects only the player; the companion currently remains idle under gravity and collision.
+
+`plugins/wyram/lib/wyram_mods/characters.ex` contains two original editable cuboid characters with different proportions and bone names. Semantic roles, rather than those names, define compatibility. Ordered parented bones carry local pivots and cuboids; named hand/head attachments reference existing bones. Catalogs allow at most 16 models and 16 characters, 32 bones and 64 cuboids per model. Both Elixir and Rust validate geometry, hierarchy and references. Plugin compilation exports the source values in the initial client batch; Rust imports them into a cached rig and evaluates posed vertices in one bounded character draw batch. The full test task exports the actual plugin catalog into ignored `.tools/character-models.json` and imports it with `wyram_client --validate-models`.
+
+Collision remains feet-space authority with profile dimensions. Rig evaluation anchors geometry at the approved feet and fits its height to the approved posture; meshes cannot choose collision or gameplay displacement. First person hides the player's body and renders the companion. External views and state-driven animation are the next slices.

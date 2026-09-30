@@ -1,7 +1,7 @@
 defmodule Wyram.Engine.Characters do
   @moduledoc "A shared fixed-step owner of dense character state and coalesced presentation snapshots."
   use GenServer
-  alias Wyram.Character.{Input, State, Step}
+  alias Wyram.Character.{Definition, Input, State, Step}
   alias Wyram.Engine.{ClientPort, Collision, PluginManager}
   @table :wyram_character_snapshots
 
@@ -24,11 +24,15 @@ defmodule Wyram.Engine.Characters do
 
   @impl true
   def init(options) do
-    profile =
-      case Keyword.fetch(options, :profile) do
-        {:ok, profile} -> profile
-        :error -> PluginManager.player_profile()
-      end
+    definitions = definitions(options)
+
+    bodies =
+      Map.new(definitions, fn definition ->
+        body = State.new(definition.profile, definition.position)
+
+        {definition.id,
+         %{body | model: definition.model, yaw: definition.yaw, pitch: definition.pitch}}
+      end)
 
     table =
       if Keyword.get(options, :name, __MODULE__) == __MODULE__,
@@ -36,7 +40,7 @@ defmodule Wyram.Engine.Characters do
         else: :ets.new(@table, [:set, :protected])
 
     state = %{
-      bodies: %{"player" => State.new(profile, {0.5, 71.38, 0.5})},
+      bodies: bodies,
       input: Input.idle(),
       received_at: 0,
       active: false,
@@ -49,9 +53,10 @@ defmodule Wyram.Engine.Characters do
     }
 
     epoch = if table == @table, do: System.unique_integer([:positive, :monotonic]), else: 0
-    body = %{state.bodies["player"] | epoch: epoch}
-    state = %{state | bodies: %{"player" => body}, input: %{state.input | epoch: epoch}}
-    :ets.insert(table, {:latest, [Map.put(State.snapshot(body), :id, "player")]})
+    bodies = Map.new(state.bodies, fn {id, body} -> {id, %{body | epoch: epoch}} end)
+    state = %{state | bodies: bodies, input: %{state.input | epoch: epoch}}
+    batch = Enum.map(bodies, fn {id, body} -> Map.put(State.snapshot(body), :id, id) end)
+    :ets.insert(table, {:latest, batch})
 
     if table == @table and Process.whereis(ClientPort),
       do: GenServer.cast(ClientPort, :characters_restarted)
@@ -131,7 +136,11 @@ defmodule Wyram.Engine.Characters do
 
     input = if stale, do: Input.release(state.input), else: state.input
 
-    entries = Enum.map(state.bodies, fn {id, body} -> {id, body, input} end)
+    entries =
+      Enum.map(state.bodies, fn {id, body} ->
+        {id, body,
+         if(id == "player", do: input, else: %{Input.idle() | yaw: body.yaw, pitch: body.pitch})}
+      end)
 
     bodies =
       case Step.advance(entries, state.collision) do
@@ -153,5 +162,19 @@ defmodule Wyram.Engine.Characters do
     :ets.insert(state.table, {:latest, batch})
     if not state.notified, do: state.publish.(batch)
     %{state | notified: true}
+  end
+
+  defp definitions(options) do
+    case Keyword.fetch(options, :definitions) do
+      {:ok, definitions} -> definitions
+      :error -> profile_definition(options)
+    end
+  end
+
+  defp profile_definition(options) do
+    case Keyword.fetch(options, :profile) do
+      {:ok, profile} -> [Definition.player(profile)]
+      :error -> PluginManager.character_definitions()
+    end
   end
 end

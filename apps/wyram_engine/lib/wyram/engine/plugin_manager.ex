@@ -2,7 +2,7 @@ defmodule Wyram.Engine.PluginManager do
   @moduledoc "Validates and loads trusted compiled plugin packages at startup."
   use GenServer
 
-  alias Wyram.Character.Profile
+  alias Wyram.Character.{Catalog, Model, Profile}
 
   @max_package_bytes 16 * 1024 * 1024
   @max_files 128
@@ -24,6 +24,9 @@ defmodule Wyram.Engine.PluginManager do
   @spec player_profile() :: Profile.t()
   def player_profile, do: GenServer.call(__MODULE__, :player_profile)
 
+  def character_definitions, do: GenServer.call(__MODULE__, :character_definitions)
+  def character_models, do: GenServer.call(__MODULE__, :character_models)
+
   @impl true
   def init(options) do
     directory = Keyword.fetch!(options, :directory)
@@ -40,6 +43,13 @@ defmodule Wyram.Engine.PluginManager do
 
   @impl true
   def handle_call(:player_profile, _from, state), do: {:reply, state.player_profile, state}
+
+  def handle_call(:character_definitions, _from, state),
+    do: {:reply, state.character_definitions, state}
+
+  def handle_call(:character_models, _from, state),
+    do: {:reply, Enum.map(state.character_models, &Model.to_wire/1), state}
+
   def handle_call(:blocks, _from, state), do: {:reply, state.blocks, state}
   def handle_call(:block_colors, _from, state), do: {:reply, state.colors, state}
   def handle_call(:terrain_palette, _from, state), do: {:reply, state.palette, state}
@@ -264,17 +274,21 @@ defmodule Wyram.Engine.PluginManager do
 
     with {%{surface: surface, soil: soil, rock: rock}, game_module} <- terrain,
          {:ok, palette} <- palette(blocks, [surface, soil, rock]),
-         {:ok, player_profile} <- Profile.from_plugin(game_module) do
+         {:ok, player_profile} <- Profile.from_plugin(game_module),
+         {:ok, catalog} <- Catalog.from_plugin(game_module, player_profile) do
       {:ok,
        %{
          blocks: blocks,
          colors: colors,
          palette: palette,
          player_profile: player_profile,
+         character_definitions: catalog.definitions,
+         character_models: catalog.models,
          versions: Map.new(plugins, fn {manifest, _} -> {manifest["id"], manifest["version"]} end)
        }}
     else
       {:error, :invalid_character_profile} = error -> error
+      {:error, :invalid_character_catalog} = error -> error
       _ -> {:error, :missing_terrain_profile}
     end
   end

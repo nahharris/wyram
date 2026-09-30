@@ -11,7 +11,9 @@ defmodule Wyram.Plugin do
            }}
 
   @callback player_profile() :: Wyram.Character.Profile.t()
-  @optional_callbacks player_profile: 0
+  @callback character_models() :: [Wyram.Character.Model.t()]
+  @callback characters() :: [Wyram.Character.Definition.t()]
+  @optional_callbacks player_profile: 0, character_models: 0, characters: 0
 
   @callback blocks() :: [block_definition()]
   @callback terrain() :: terrain_profile() | :none

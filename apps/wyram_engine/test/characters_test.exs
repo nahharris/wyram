@@ -1,6 +1,6 @@
 defmodule Wyram.Engine.CharactersTest do
   use ExUnit.Case, async: true
-  alias Wyram.Character.Profile
+  alias Wyram.Character.{Definition, Profile}
   alias Wyram.Engine.Characters
 
   defp intent(sequence, epoch) do
@@ -76,5 +76,48 @@ defmodule Wyram.Engine.CharactersTest do
     assert snapshot.posture == :stand
     assert snapshot.mode == :walk
     assert elem(:sys.get_state(pid).bodies["player"].velocity, 0) == 0.0
+  end
+
+  test "one dense owner simulates distinct profiles without applying player input to peers" do
+    profile = %{
+      Profile.default()
+      | walk_speed: 2.0,
+        run_speed: 4.0,
+        standing_height: 1.4,
+        standing_eye: 1.26
+    }
+
+    definitions = [
+      Definition.player(Profile.default()),
+      %Definition{id: "other", profile: profile, position: {2.5, 71.38, 0.5}}
+    ]
+
+    collision = fn queries ->
+      {:ok,
+       Enum.map(queries, fn {{x, y, z}, {dx, dy, dz}, _, _} ->
+         {{x + dx, y + dy, z + dz}, {false, false, false}, false}
+       end)}
+    end
+
+    pid =
+      start_supervised!(
+        {Characters,
+         name: nil,
+         tick: false,
+         definitions: definitions,
+         collision: collision,
+         publish: fn _ -> :ok end}
+      )
+
+    Characters.connect(pid)
+    Characters.input(intent(1, 0), pid)
+    send(pid, :tick)
+    _ = Characters.snapshot(pid)
+    bodies = :sys.get_state(pid).bodies
+    assert bodies["player"].profile.run_speed == 9.0
+    assert bodies["other"].profile.run_speed == 4.0
+    assert bodies["other"].height == 1.4
+    assert elem(bodies["player"].position, 2) < 0.5
+    assert elem(bodies["other"].position, 2) == 0.5
   end
 end
