@@ -139,8 +139,8 @@ fn pose(rig: &Rig, s: &Snapshot, clip: Clip, seconds: f32) -> Vec<BonePose> {
         Clip::Crawl => {
             root = Quat::from_rotation_x(-FRAC_PI_2);
             angles[1] = FRAC_PI_2 + s.pitch * 0.3;
-            angles[2] = -1.4 + swing * 0.25;
-            angles[3] = -1.4 - swing * 0.25;
+            angles[2] = 2.5 + swing * 0.15;
+            angles[3] = 2.5 - swing * 0.15;
             angles[4] = swing * 0.2;
             angles[5] = -swing * 0.2;
         }
