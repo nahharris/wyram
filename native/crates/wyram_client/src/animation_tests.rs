@@ -131,7 +131,7 @@ fn landing_recovers_and_traversal_clips_have_finite_role_poses() {
         assert!(
             poses
                 .iter()
-                .all(|p| p.rotation.is_finite() && p.offset == Vec3::ZERO)
+                .all(|p| p.rotation.is_finite() && p.offset.is_finite())
         );
     }
 }
@@ -149,4 +149,183 @@ fn approved_takeoff_and_landing_transitions_have_a_short_anticipation_pose() {
     s.posture = "stand".into();
     s.transition = "move".into();
     assert_eq!(Clip::select(&s), Clip::Walk);
+}
+
+#[test]
+fn rolls_tip_toward_the_approved_direction_and_climbing_reaches_forward() {
+    let r = rig("direction");
+    let mut s = state();
+    for (direction, expected) in [
+        ("forward", Vec3::NEG_Z),
+        ("back", Vec3::Z),
+        ("left", Vec3::NEG_X),
+        ("right", Vec3::X),
+    ] {
+        s.action=Some(serde_json::from_value(json!({"kind":"roll","phase":"active","elapsed":0.1,"duration":0.4,"local_direction":direction})).unwrap());
+        let p = Animator::default().sample(&r, &s, 0.02, 0.);
+        assert!(
+            (p[r.role("root").unwrap()].rotation * Vec3::Y).abs_diff_eq(expected, 1e-5),
+            "{direction}"
+        );
+    }
+    s.action = Some(serde_json::from_value(json!({"kind":"climb","phase":"rise"})).unwrap());
+    let p = Animator::default().sample(&r, &s, 0.02, 0.);
+    for role in ["left_arm", "right_arm"] {
+        let hand = p[r.role(role).unwrap()].rotation * Vec3::NEG_Y;
+        assert!(
+            hand.z < 0. && hand.y > 0.,
+            "hands must reach forward and up"
+        );
+    }
+}
+
+#[test]
+fn gait_phase_is_continuous_and_cadence_matches_distance_at_different_frame_rates() {
+    let r = rig("cadence");
+    for fps in [50, 100, 200] {
+        let mut s = state();
+        s.sequence = 0;
+        s.velocity = [0., 0., -5.];
+        let mut a = Animator::default();
+        a.sample(&r, &s, 0., 0.);
+        for frame in 1..=fps {
+            let time = frame as f32 / fps as f32;
+            s.sequence = (time / 0.02).floor() as u64;
+            a.sample(&r, &s, 1. / fps as f32, time - s.sequence as f32 * 0.02);
+        }
+        let stride = 4. * (r.source.base_height * 0.2) * 0.65_f32.sin();
+        let expected = (5. / stride * TAU).rem_euclid(TAU);
+        assert!(
+            (a.phase - expected).abs() < 0.001,
+            "fps {fps}: {} expected {expected}",
+            a.phase
+        );
+        let phase = a.phase;
+        s.velocity = [0., 0., -9.];
+        s.mode = "run".into();
+        a.sample(&r, &s, 0., 0.);
+        assert_eq!(
+            a.phase, phase,
+            "changing speed without elapsed time cannot change phase"
+        );
+        a.sample(&r, &s, 1., 1.);
+        assert_eq!(a.phase, phase, "stale snapshots must freeze gait");
+    }
+}
+
+#[test]
+fn stance_foot_matches_distance_and_fast_steps_are_not_filtered_away() {
+    let length = 0.25;
+    let amplitude = 0.65_f32;
+    let stride = 4. * length * amplitude.sin();
+    let phase0 = 0.2 * PI;
+    let phase1 = 0.4 * PI;
+    let foot_z = |phase| -length * leg_angle(phase, amplitude, 0.).sin();
+    assert!((foot_z(phase1) - foot_z(phase0) - stride * (phase1 - phase0) / TAU).abs() < 1e-6);
+    let r = rig("steps");
+    let mut s = state();
+    s.velocity = [0., 0., -9.];
+    s.mode = "run".into();
+    let mut a = Animator::default();
+    a.sample(&r, &s, 0.02, 0.);
+    s.sequence += 1;
+    let p = a.sample(&r, &s, 0.02, 0.);
+    let target = pose(&r, &s, Clip::Run, a.phase);
+    assert!(
+        p[r.role("left_leg").unwrap()]
+            .rotation
+            .abs_diff_eq(target[r.role("left_leg").unwrap()].rotation, 1e-6)
+    );
+}
+
+#[test]
+fn dwarf_low_postures_keep_rigid_parts_within_their_clearance_heights() {
+    let part = |center: [f32; 3], size: [f32; 3]| json!({"center":center,"size":size,"color":[100,100,100]});
+    let bone = |name: &str,
+                parent: Option<&str>,
+                role: &str,
+                pivot: [f32; 3],
+                boxes: Vec<serde_json::Value>| json!({"name":name,"parent":parent,"role":role,"pivot":pivot,"boxes":boxes});
+    let bones = vec![
+        bone("root", None, "root", [0.; 3], vec![]),
+        bone(
+            "hips",
+            Some("root"),
+            "hips",
+            [0., 0.25, 0.],
+            vec![part([0., 0.03125, 0.], [0.4375, 0.0625, 0.3125])],
+        ),
+        bone(
+            "body",
+            Some("hips"),
+            "torso",
+            [0.; 3],
+            vec![part([0., 0.1875, 0.], [0.4375, 0.375, 0.3125])],
+        ),
+        bone(
+            "head",
+            Some("body"),
+            "head",
+            [0., 0.375, 0.],
+            vec![part([0., 0.375, 0.], [0.75, 0.75, 0.625])],
+        ),
+        bone(
+            "arm_l",
+            Some("body"),
+            "left_arm",
+            [0.3, 0.375, 0.],
+            vec![part([0., -0.1875, 0.], [0.15, 0.375, 0.225])],
+        ),
+        bone(
+            "arm_r",
+            Some("body"),
+            "right_arm",
+            [-0.3, 0.375, 0.],
+            vec![part([0., -0.1875, 0.], [0.15, 0.375, 0.225])],
+        ),
+        bone(
+            "leg_l",
+            Some("hips"),
+            "left_leg",
+            [0.125, 0., 0.],
+            vec![part([0., -0.125, -0.025], [0.2, 0.25, 0.3])],
+        ),
+        bone(
+            "leg_r",
+            Some("hips"),
+            "right_leg",
+            [-0.125, 0., 0.],
+            vec![part([0., -0.125, -0.025], [0.2, 0.25, 0.3])],
+        ),
+    ];
+    let r=Rig::import(serde_json::from_value(json!({"id":"dwarf","base_height":1.375,"bones":bones,"attachments":{},"capabilities":["humanoid"]})).unwrap()).unwrap();
+    assert!((r.leg_length() - 0.25).abs() < 1e-6);
+    let rest = r.vertices(Vec3::ZERO, 0., 1.375, &[]);
+    for (posture, height, speed) in [("crouch", 1.25, 2.), ("prone", 0.875, 0.65)] {
+        let mut s = state();
+        s.posture = posture.into();
+        s.height = height;
+        s.standing_height = Some(1.375);
+        s.velocity = [0., 0., -speed];
+        let mut a = Animator::default();
+        for frame in 0..100 {
+            s.sequence = frame;
+            s.pitch = if frame < 50 { -0.8 } else { 0.8 };
+            let p = a.sample(&r, &s, 0.02, 0.);
+            let vertices = r.vertices(Vec3::ZERO, 0., s.standing_height.unwrap(), &p);
+            let high = vertices.iter().map(|v| v.position[1]).fold(0_f32, f32::max);
+            assert!(high <= height + 1e-5, "{posture}: {high} exceeds {height}");
+            for (original, posed) in rest
+                .as_chunks::<36>()
+                .0
+                .iter()
+                .zip(vertices.as_chunks::<36>().0)
+            {
+                let distance = |v: &[crate::world::Vertex]| {
+                    Vec3::from_array(v[0].position).distance(Vec3::from_array(v[2].position))
+                };
+                assert!((distance(original) - distance(posed)).abs() < 1e-5);
+            }
+        }
+    }
 }

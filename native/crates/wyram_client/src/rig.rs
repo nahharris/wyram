@@ -127,7 +127,26 @@ impl Rig {
     pub fn role(&self, name: &str) -> Option<usize> {
         self.roles.get(name).copied()
     }
-    pub fn vertices(&self, feet: Vec3, yaw: f32, height: f32, poses: &[BonePose]) -> Vec<Vertex> {
+    pub fn leg_length(&self) -> f32 {
+        let length = ["left_leg", "right_leg"]
+            .iter()
+            .filter_map(|role| self.role(role))
+            .flat_map(|at| &self.source.bones[at].boxes)
+            .map(|part| part.size[1] * 0.5 - part.center[1])
+            .fold(0.0_f32, f32::max);
+        if length > 0. {
+            length
+        } else {
+            self.source.base_height * 0.2
+        }
+    }
+    pub fn vertices(
+        &self,
+        feet: Vec3,
+        yaw: f32,
+        standing_height: f32,
+        poses: &[BonePose],
+    ) -> Vec<Vertex> {
         let mut transforms: Vec<Mat4> = Vec::with_capacity(self.source.bones.len());
         let mut local = Vec::new();
         for (index, bone) in self.source.bones.iter().enumerate() {
@@ -144,15 +163,13 @@ impl Rig {
             .iter()
             .map(|v| v.position[1])
             .fold(f32::INFINITY, f32::min);
-        let high = local
-            .iter()
-            .map(|v| v.position[1])
-            .fold(f32::NEG_INFINITY, f32::max);
-        let scale = height.max(0.1) / (high - low).max(0.001);
+        // Immutable uniform size, independent of posture and posed bounds.
+        let scale = standing_height.max(0.1) / self.source.base_height;
         let world = Mat4::from_translation(feet) * Mat4::from_rotation_y(-yaw);
         for vertex in &mut local {
             let mut point = Vec3::from_array(vertex.position);
-            point.y = (point.y - low) * scale;
+            point.y -= low;
+            point *= scale;
             vertex.position = world.transform_point3(point).to_array();
         }
         local

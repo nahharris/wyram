@@ -23,6 +23,8 @@ pub struct Snapshot {
     pub velocity: [f32; 3],
     pub radius: f32,
     pub height: f32,
+    #[serde(default)]
+    pub standing_height: Option<f32>,
     pub eye_height: f32,
     pub yaw: f32,
     pub pitch: f32,

@@ -34,6 +34,8 @@ profile = PluginManager.player_profile()
 true = profile.standing_height == Wyram.Units.blocks(1, 3)
 true = Wyram.Units.blocks(1, 4) - profile.standing_height == Wyram.Units.pixels(1)
 true = profile.standing_eye < profile.standing_height
+true = profile.crouch_height == Wyram.Units.pixels(10)
+true = profile.prone_height == Wyram.Units.pixels(7)
 true = Enum.all?(source_models, &(&1.base_height == profile.standing_height))
 
 for model <- source_models do

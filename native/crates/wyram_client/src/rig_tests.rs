@@ -36,3 +36,32 @@ fn invalid_hierarchy_geometry_and_attachment_references_are_rejected() {
     model.attachments.insert("head".into(), "missing".into());
     assert!(Rig::import(model).is_err());
 }
+
+#[test]
+fn rotated_cuboids_keep_lengths_and_right_angles() {
+    use crate::rig::BonePose;
+    use glam::Quat;
+    let r = Rig::import(source("rigid")).unwrap();
+    let rest = r.vertices(Vec3::ZERO, 0., 1.8, &[]);
+    for angle in [0.3, 0.9, 1.57, 2.1] {
+        let poses = [
+            BonePose::default(),
+            BonePose {
+                rotation: Quat::from_rotation_x(angle),
+                offset: Vec3::ZERO,
+            },
+        ];
+        let posed = r.vertices(Vec3::ZERO, 0.7, 1.8, &poses);
+        for i in 0..36 {
+            for j in i + 1..36 {
+                let distance = |v: &[crate::world::Vertex]| {
+                    Vec3::from_array(v[i].position).distance(Vec3::from_array(v[j].position))
+                };
+                assert!(
+                    (distance(&rest) - distance(&posed)).abs() < 1e-5,
+                    "pose {angle} distorts cuboid"
+                );
+            }
+        }
+    }
+}
