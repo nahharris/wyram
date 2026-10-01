@@ -1,14 +1,14 @@
-defmodule WyramCrossPluginBase.Plugin do
+defmodule WyramMods.CrossPluginBase.Plugin do
   use Wyram.Plugin,
     id: "fixture-base",
-    declarations: [WyramCrossPluginBase.Blocks],
-    providers: [WyramCrossPluginBase.ProviderHelper]
+    declarations: [WyramMods.CrossPluginBase.Blocks],
+    providers: [WyramMods.CrossPluginBase.ProviderHelper]
 end
 
-defmodule WyramCrossPluginBase.Blocks do
-  use Wyram.Plugin.Declarations, plugin: WyramCrossPluginBase.Plugin
+defmodule WyramMods.CrossPluginBase.Blocks do
+  use Wyram.Plugin.Declarations, plugin: WyramMods.CrossPluginBase.Plugin
 
   defblock Stone, id: "stone" do
-    capability(%WyramCrossPluginBase.TintConfig{channel: :base})
+    capability(%WyramMods.CrossPluginBase.TintConfig{channel: :base})
   end
 end

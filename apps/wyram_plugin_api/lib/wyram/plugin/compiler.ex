@@ -21,6 +21,7 @@ defmodule Wyram.Plugin.Compiler do
          {:ok, declarations} <- collect_declarations(entry, metadata),
          {:ok, modules, module_hashes} <-
            owned_modules(Keyword.get(options, :compile_path, Mix.Project.compile_path())),
+         :ok <- validate_module_namespace(modules, entry),
          :ok <- validate_owned_modules(entry, metadata, declarations, modules),
          {:ok, dependency_interfaces} <-
            dependency_inputs(metadata, Keyword.get(options, :dependencies, :discover)),
@@ -178,6 +179,21 @@ defmodule Wyram.Plugin.Compiler do
        Diagnostic.new!(
          :module_ownership_mismatch,
          "plugin metadata references modules outside its compiled application: #{inspect(missing)}",
+         source(entry)
+       )}
+    end
+  end
+
+  defp validate_module_namespace(modules, entry) do
+    invalid = Enum.reject(modules, &String.starts_with?(Atom.to_string(&1), "Elixir.WyramMods."))
+
+    if invalid == [] do
+      :ok
+    else
+      {:error,
+       Diagnostic.new!(
+         :invalid_plugin_module_namespace,
+         "plugin-owned modules must use the WyramMods namespace: #{inspect(invalid)}",
          source(entry)
        )}
     end

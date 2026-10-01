@@ -94,6 +94,29 @@ defmodule Wyram.Plugin.CompilerTest do
     refute File.exists?(path)
   end
 
+  test "compiler rejects plugin modules outside the runtime package namespace" do
+    fixture =
+      compile_fixture("bad_namespace", "compiler-bad-namespace", [], nil,
+        prefix: "Wyram.Plugin.CompilerFixtureBadNamespace"
+      )
+
+    path = temp_path("bad-namespace")
+
+    on_exit(fn ->
+      File.rm(path)
+      File.rm_rf(fixture.compile_path)
+    end)
+
+    assert {:error, [diagnostic]} =
+             Compiler.compile_entry(fixture.entry,
+               catalog_path: path,
+               compile_path: fixture.compile_path
+             )
+
+    assert diagnostic.code == :invalid_plugin_module_namespace
+    refute File.exists?(path)
+  end
+
   test "dependent compilation preserves exact interface fingerprints and expands dependency templates" do
     base = compile_fixture("base", "compiler-base", [], nil)
     addon = compile_fixture("addon", "compiler-addon", ["compiler-base"], base.block_module)
@@ -135,8 +158,10 @@ defmodule Wyram.Plugin.CompilerTest do
     assert addon_artifact.interface_fingerprint == Compiler.fingerprint(addon_artifact.interface)
   end
 
-  defp compile_fixture(suffix, plugin_id, dependencies, template_module) do
-    module_prefix = "Wyram.Plugin.CompilerFixture#{String.capitalize(suffix)}"
+  defp compile_fixture(suffix, plugin_id, dependencies, template_module, options \\ []) do
+    module_prefix =
+      Keyword.get(options, :prefix, "WyramMods.CompilerFixture#{String.capitalize(suffix)}")
+
     entry_name = "#{module_prefix}.Entry"
     blocks_name = "#{module_prefix}.Blocks"
     body = if template_module, do: "template(#{inspect(template_module)})", else: ""
