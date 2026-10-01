@@ -3,7 +3,7 @@ defmodule WyramMods.Wyram do
   @behaviour Wyram.Plugin
 
   @impl true
-  def player_profile, do: Wyram.Character.Profile.default()
+  def player_profile, do: WyramMods.Characters.player_profile()
 
   @impl true
   def character_models, do: WyramMods.Characters.models()

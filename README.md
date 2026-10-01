@@ -37,3 +37,5 @@ The plugin API and engine architecture are described in [docs/architecture.md](d
 ## License
 
 The original Wyram code is MIT licensed. Minecraft and its assets are not included or required.
+
+Character sizes use an eight-pixel design grid per block. The player is 1\3 (1.375 blocks) tall; see Wyram.Units and the gameplay plan for block/pixel notation.
