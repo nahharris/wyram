@@ -9,10 +9,10 @@ defmodule WyramMods.Characters do
       | radius: Units.pixels(3),
         standing_height: Units.blocks(1, 3),
         standing_eye: Units.blocks(1, 1),
-        crouch_height: Units.pixels(7),
-        crouch_eye: Units.pixels(5),
-        prone_height: Units.pixels(5),
-        prone_eye: Units.pixels(3)
+        crouch_height: Units.pixels(10),
+        crouch_eye: Units.pixels(7),
+        prone_height: Units.pixels(7),
+        prone_eye: Units.pixels(4)
     }
   end
 

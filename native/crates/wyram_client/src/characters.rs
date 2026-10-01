@@ -66,7 +66,12 @@ impl Scene {
                 dt,
                 replica.age(),
             );
-            vertices.extend(model.vertices(feet, state.yaw, state.height, &poses));
+            vertices.extend(model.vertices(
+                feet,
+                state.yaw,
+                state.standing_height.unwrap_or(model.source.base_height),
+                &poses,
+            ));
         }
         vertices.truncate(MAX_VERTICES);
         vertices
