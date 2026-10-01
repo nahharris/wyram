@@ -19,7 +19,7 @@ This is a pre-alpha replacement. Break existing callbacks, packages, protocol ta
 
 Use `Wyram.Plugin` as the framework entry point, replacing its current callback contract. Mix names the entry module and enables the Wyram compiler; identity and content dependencies are declared once in that entry module. Packaging derives them from its compiled interface.
 
-Illustrative target syntax, to be finalized in phase 1:
+Each `defblock` produces a named declaration module, giving authors an importable symbol similar to a registered Java block constant. Illustrative target syntax, to be finalized in phase 1:
 
 ~~~elixir
 defmodule WyramMods.Wyram do
@@ -28,20 +28,42 @@ defmodule WyramMods.Wyram do
   alias Wyram.Capability.{Geometry, Collision, Material, Surface}
   alias Wyram.Shape.Cube
 
-  defblock :ice do
+  defblock SolidBlock, id: "solid_block" do
     capability %Geometry{shape: %Cube{}}
     capability %Collision{shape: %Cube{}}
-    capability %Material{color: {180, 220, 255}, mode: :opaque}
-    capability %Surface{friction: 0.08}
+    capability %Material{color: {160, 160, 160}, mode: :opaque}
+    capability %Surface{friction: 0.50}
+  end
+
+  defblock Ice, id: "ice" do
+    template WyramMods.Wyram.Blocks.SolidBlock
+    capability %Material{color: {180, 220, 255}, mode: :opaque}, override: true
+    capability %Surface{friction: 0.08}, override: true
   end
 end
 ~~~
 
-The generated `WyramMods.Wyram.Blocks.ice()` accessor returns a `Wyram.Block.Ref`. References store logical identity, not numeric runtime handles. Local forward references use a DSL form such as `block_ref(:ice)`, resolved after collection. Cross-plugin declaration references use exported symbols in a DSL form such as `block_ref(OtherPlugin.Blocks, :ice)`; the catalog linker checks those symbols against dependency interfaces. Generated accessors are convenient for ordinary Elixir consumers; declarations do not execute accessors just to obtain references.
+This generates `WyramMods.Wyram.Blocks.SolidBlock` and `WyramMods.Wyram.Blocks.Ice`. Authors may alias these modules and use the symbols directly in DSL expressions such as `template SolidBlock`. The explicit local ID separates the Elixir symbol from the persistent identity: `Ice` identifies the declaration module, while `"wyram:ice"` identifies the content externally. Renaming a module does not implicitly rename its content ID.
 
-For larger plugins, `use Wyram.Plugin.Declarations, plugin: WyramMods.Wyram` lets separate modules contribute catalogs explicitly listed by the entry. Splitting a plugin does not change its namespace. Discover declarations through that explicit module list, rather than executing arbitrary catalog callbacks or depending on filesystem ordering.
+Generated modules expose compiler-owned declaration metadata and `ref/0`. Ordinary gameplay code uses `WyramMods.Wyram.Blocks.Ice.ref()` to obtain a `Wyram.Block.Ref`. These modules are declarations, not world instances, actors or registration side effects. They never allocate numeric registry handles during source compilation.
 
-Shared declarations may use approved templates and constants with deterministic expansion. Keep the accepted expression language small: literals, named structs, references, state selectors and registered templates. Unsupported dynamic expressions fail with a source diagnostic instead of silently becoming runtime declarations.
+Within the DSL, reference-bearing fields consume module symbols and resolve them against collected declarations or dependency interfaces; they do not execute `ref/0` or arbitrary functions to discover their target. The compiler verifies that the symbol exists, is a Wyram declaration, has the required kind, is exported when crossing a plugin boundary and belongs to this plugin or an explicit dependency. An Elixir alias by itself is not proof of any of these conditions.
+
+Support local forward references independently of source order, including references across explicitly listed declaration modules. Collect and normalize symbols first, then resolve them. Do not call `Code.ensure_compiled!` on sibling declaration modules from inside macros or introduce circular BEAM compilation dependencies merely to reference declarations. Cross-plugin symbols resolve through dependency interfaces after required dependencies build.
+
+For larger plugins, `use Wyram.Plugin.Declarations, plugin: WyramMods.Wyram` lets separate modules contribute catalogs explicitly listed by the entry. All contributions use the plugin's generated declaration namespace; splitting a source module does not change the symbol or content ID. Reject duplicate generated module names and collisions with handwritten modules as well as duplicate content IDs. Discover declarations through that explicit module list, rather than executing arbitrary catalog callbacks or depending on filesystem ordering.
+
+Shared declarations may use approved templates and constants with deterministic expansion. Keep the accepted expression language small: literals, named structs, declaration-module symbols, state selectors and registered templates. Unsupported dynamic expressions fail with a source diagnostic instead of silently becoming runtime declarations.
+
+### Template declaration syntax remains open
+
+A registered block may supply reusable declaration data, as `SolidBlock` does above. A template-only declaration supplies reusable data without becoming a placeable block or receiving a registry handle. Both have named module symbols and compiler metadata, but their roles remain distinct.
+
+Leave the choice between a separate `defblock_template` macro and a `defblock` option such as `template_only: true` to phase 1. These are candidate spellings, not two APIs to implement. Define one spelling before phase 2; the reference and composition contracts do not depend on the choice.
+
+The `template` operation accepts an eligible block or block-template symbol; a placement field accepts a registered block only. Template-only symbols cannot masquerade as `Wyram.Block.Ref` values. Copy approved declaration data, never source identity, registry handles or mutable instance data. Define composition rules for each inherited field; do not make inheritance a generic map merge.
+
+Check template cycles and expansion budgets independently of plugin dependency cycles, including cycles between declarations in one plugin. Report the expansion path and original source locations.
 
 A plugin may also export providers and explicit behaviour handlers. The framework should make data declarations easy and imperative gameplay exceptional, without forbidding it.
 
@@ -51,8 +73,9 @@ Terrain settings, character models/profiles and the initial roster become named 
 
 | Concern | Representation and guarantee |
 | --- | --- |
-| Plugin/block identity | Validated namespace plus local name. Canonical strings such as `wyram:ice` at persistence/import boundaries; generated references in code. |
-| Local symbols | Finite source-authored atoms such as `:ice`, `:facing` and `:north`. An atom alone does not prove that a declaration exists. |
+| Plugin/block identity | Validated namespace plus explicit local ID. Canonical strings such as `wyram:ice` at persistence/import boundaries; generated declaration modules in the DSL and `Wyram.Block.Ref` values in gameplay code. |
+| Declaration symbols | Generated modules such as `WyramMods.Wyram.Blocks.Ice`. Metadata/linking verifies existence, kind, role, export and dependency ownership; a module alias alone is not validation. |
+| Local state symbols | Finite source-authored atoms such as `:facing` and `:north`. An atom alone does not prove that a state field or value exists. |
 | Capability identity | Imported provider/configuration modules, never free-form capability-name strings. The compiler verifies registration and provider contracts. |
 | Configuration | Named structs with required fields, public typespecs and domain schemas. Struct field checks are supplemented by value/range/reference validation. |
 | Native handles | Opaque registry-assigned integers. Plugins never hard-code IDs or rely on their width/order. |
@@ -60,13 +83,13 @@ Terrain settings, character models/profiles and the initial roster become named 
 
 Elixir 1.20 adds gradual inference, but it does not give these declarations a complete static proof merely through typespecs. Wyram's domain compiler must enforce its own schema and linking guarantees. Keep typespecs for documentation and analysis; use compiler warnings and Dialyzer as complementary checks. See the [Elixir 1.20 release](https://elixir-lang.org/blog/2026/06/03/elixir-v1-20-0-released/).
 
-Compilation should reject unknown configuration fields, invalid scalar values, duplicate declarations, wrong reference kinds, unresolved required references, invalid state defaults/transitions, unsupported provider combinations and exceeded expansion budgets. It cannot prove arbitrary handler behaviour, future installed packages, world conditions or incoming commands correct.
+Compilation should reject unknown configuration fields, invalid scalar values, duplicate declarations/module symbols, unintended capability replacement, missing override targets, template cycles, wrong reference kinds/roles, unresolved required references, invalid state defaults/transitions, unsupported provider combinations and exceeded expansion budgets. It cannot prove arbitrary handler behaviour, future installed packages, world conditions or incoming commands correct.
 
 ## Compiler and registry pipeline
 
-1. **Collect:** macros retain source locations and collect declarations into a typed intermediate representation (IR), with one symbol table per plugin. Resolve local forward references after collection. Do not evaluate arbitrary declaration AST.
-2. **Validate:** declaration kinds and providers check fields, domains, finite states, required capabilities and conflicts. Provider validators/compilers are trusted build code; declarative restrictions are not an Elixir sandbox.
-3. **Link for build:** after Elixir modules compile, resolve declared dependencies, provider exports, content references, tags, assets and handlers through their exported interfaces. Required dependencies must be available to build. Detect cycles and report the dependency path; do not recursively force compilation from inside macros.
+1. **Collect:** macros retain source locations and collect declarations into a typed intermediate representation (IR), with one symbol table per plugin. Resolve local module-symbol forward references after collection; retain template and override provenance. Do not evaluate arbitrary declaration AST.
+2. **Validate locally:** declaration kinds and providers check syntax, fields, value domains and finite state declarations. Retain unresolved declaration symbols for linking; defer composition checks that require dependency/template data. Provider validators/compilers are trusted build code; declarative restrictions are not an Elixir sandbox.
+3. **Link and validate composition:** after Elixir modules compile, resolve declared dependencies, provider exports, declaration symbols, tags, assets and handlers through their exported interfaces. Check reference kinds/roles and cycles, expand local/dependency templates deterministically, apply explicit replacements and validate the final peer requirements and field ownership. Required dependencies must be available to build. Report cycle paths; do not recursively force compilation from inside macros.
 4. **Lower:** compile declarations to immutable logical catalog data and supported backend descriptors. Preserve source information for diagnostics. Bounds and deterministic ordering apply to both compilation and emitted data.
 5. **Package:** ship the validated catalog, dependency interface, assets, handler/provider BEAM modules and generated manifest. The packager consumes compiler output rather than independently interpreting declarations.
 6. **Link installed set:** verify the actual installed dependency graph, module ownership, exports, backend support and cross-package consistency. Allocate packed state handles and publish one coherent registry. Reject failure before world startup.
@@ -76,13 +99,28 @@ Implement `Mix.Tasks.Compile.Wyram` after the Elixir compiler. Plain `mix compil
 
 Distinguish build dependencies needed for provider code/interface availability from installed plugin dependencies needed in the game. Package modules owned by this plugin only; never copy a dependency's BEAM modules into multiple packages. Initially require explicit acyclic dependencies; optional dependencies and hot reload are deferred.
 
-Diagnostic example: `blocks.ex:18: block :lamp / Light.emission: expected integer 0..15, received 20`. Diagnostics retain the originating declaration even after template expansion and identify both sides of a conflict.
+Diagnostic example: `blocks.ex:18: block Lamp (wyram:lamp) / Light.emission: expected integer 0..15, received 20`. Diagnostics retain the originating declaration even after template expansion and identify both sides of a conflict.
 
 ## Capability provider contract
 
 A provider has a configuration struct/schema, supported declaration kinds, required peer capabilities, owned descriptor fields, compile validation/lowering and optional event subscriptions. Core providers and extension providers use the same public contract. The framework separates author configuration from provider output and validates both.
 
 Composition is explicit: a descriptor field has one owner unless it defines a documented combining operator. For example, multiple contact effects may append in a stable order; two competing collision shapes are an error. Never choose a winner from map traversal order. Behaviour ordering follows declared phases/dependencies, with cycle checks and deterministic tie breaking.
+
+### Explicit capability replacement
+
+`capability %Surface{friction: 0.08}, override: true` intentionally replaces an already declared or inherited capability. Resolve capability identity to its registered provider module before checking duplicates, so aliases cannot evade validation.
+
+- Without `override: true`, a second declaration of the same capability is a compile error, including duplicates introduced by template expansion.
+- With `override: true`, a previous capability must exist in the composed declaration. A missing target is a compile error, catching stale or misspelled override intent.
+- Replacement uses the complete new configuration; do not merge unspecified fields from the previous value.
+- Replacement is limited to the same capability identity. It does not authorize conflicts with other providers, invalid configuration or missing required peers.
+- Options are schema-checked too: unknown options and nonboolean override values fail compilation.
+
+Expand templates in explicit source order and retain provenance for every contribution and replacement. Resolve each contribution using these rules, then validate the final composition's peer requirements and descriptor-field ownership. Two templates that introduce the same capability without explicit replacement fail; never silently select the last one. Diagnostics point to both definitions and their expansion sites.
+
+Apply framework defaults only after authored/template composition. Implicit defaults do not count as an existing capability for `override: true`; authors can declare their first geometry or surface capability normally. Repeated providers such as multiple contact effects need a dedicated documented composition contract, rather than an accidental exception to duplicate rejection.
+
 
 Extension providers lower into supported generic native primitives or register bounded Elixir behaviour. A new native rendering/collision primitive needs engine support; registering a provider does not make arbitrary Elixir executable inside meshing or collision loops.
 
@@ -127,8 +165,8 @@ The sequence creates the framework before expanding block mechanics. Every phase
 
 | Phase | Deliverable and affected areas | Acceptance gate |
 | --- | --- | --- |
-| 1. Public contracts and IR | New reference, schema, declaration, diagnostic and provider contracts under `apps/wyram_plugin_api/lib/wyram/`. Finalize defaults, composition, units and dependency ownership. | Schema validation rejects wrong values/reference kinds; reference identity and deterministic normalization have focused tests. Existing game remains usable until the integration replacement. |
-| 2. Declaration DSL and compiler | `use Wyram.Plugin`, split declaration modules, `defblock`, generated accessors and Mix compiler. Add isolated source fixture builds. | Plain compilation rejects misspellings, duplicate symbols, unknown providers, invalid defaults and variant budgets with file/line diagnostics; forward refs succeed. Incremental rebuild detects changed/deleted declarations and assets. |
+| 1. Public contracts and IR | New reference, schema, declaration, diagnostic and provider contracts under `apps/wyram_plugin_api/lib/wyram/`. Finalize generated module namespaces/metadata and reference-kind contracts, template-only syntax, override rules, defaults, composition, units and dependency ownership. | Schema validation rejects wrong values/reference kinds; module symbols and reference identity are distinct from handles; block/template-only roles and deterministic normalization have focused tests. Existing game remains usable until the integration replacement. |
+| 2. Declaration DSL and compiler | `use Wyram.Plugin`, split declaration modules, `defblock`, generated declaration modules/ref factories, template expansion, capability override checks and Mix compiler. Add isolated source fixture builds. | Plain compilation rejects misspellings, duplicate IDs/module symbols, module collisions, unknown providers, capability duplicates/missing override targets, wrong reference kinds/roles, template cycles, invalid defaults and variant budgets with file/line diagnostics. Local and dependency module references, forward refs, aliases and intentional replacements succeed. Incremental rebuild detects changed/deleted declarations and assets. |
 | 3. Package/linker and complete replacement | Update manifest generator, packager/dev pipeline, `PluginManager`, Wyram/example/test plugins, terrain and character catalog registration. Replace legacy callbacks and API-version checks. The first end-to-end slice supports existing colored cubes. | Package/build/install errors cover missing dependencies, cycles, module collisions and duplicate IDs. The official plugin imports only public API. Development launch and fresh-world smoke tests pass. Remove superseded compatibility tests/code in this PR. |
 | 4. State registry and native descriptors | Engine registry/regions/world/client-port plus core/NIF/client tables. Represent finite states independently from definition IDs; decide capacity from measured budgets. | Deterministic handle mapping, state validation, fresh-save round trip and authoritative edits work. Native consumers agree on the same registry; stale worker output cannot apply after descriptor changes. Cube behaviour remains correct. |
 | 5. Geometry, material and orientation | Canonical slabs/stairs, rotated shapes, custom mesh assets with supported collision proxies; shared selection/collision/meshing semantics. | Slab/stair bounds, every supported rotation, noncollision selection, cutout/blended rendering and asset rejection are tested. Playtest walking in a 1.5-block tunnel with the 11-pixel player. Measure batch query/meshing cost against cubes. |
@@ -150,7 +188,7 @@ Add `defitem`, `defentity`, `defparticle`, `defeffect`, `defevent` and GUI decla
 
 | Area | Planned change | Depends on |
 | --- | --- | --- |
-| `apps/wyram_plugin_api/lib/wyram/plugin.ex`, `plugin_api.ex`, new compiler/schema/provider/reference modules | Replace behaviour with declarative framework; public contracts and build integration | Phases 1-2 |
+| `apps/wyram_plugin_api/lib/wyram/plugin.ex`, `plugin_api.ex`, new compiler/schema/provider/reference/generated-declaration modules | Replace behaviour with declarative framework; public contracts and build integration | Phases 1-2 |
 | `plugins/*/mix.exs`, entry/content modules, `test/fixtures/plugins/*` | Configure compiler, declare content and exports, remove callback catalogs | Phases 2-3 |
 | `scripts/generate-plugin-manifest.exs`, `pack-plugin.ps1`, `development-plugin.ps1` | Consume compiler artifacts and package owned modules/assets | Phase 2 |
 | `apps/wyram_engine/lib/wyram/engine/plugin_manager.ex` and new registry/linker modules | Dependency graph, installed-set validation, immutable compiled registry | Phases 1-3 |
@@ -161,7 +199,7 @@ Add `defitem`, `defentity`, `defparticle`, `defeffect`, `defevent` and GUI decla
 
 ## Risks and rollback
 
-The main risks are macro complexity, stale build artifacts, state explosion, conflicting provider composition, backend divergence and event/ownership loops. Mitigate them with a small expression grammar, one normalized IR, build fingerprints, explicit budgets/field ownership, shared descriptor fixtures and bounded command scheduling.
+The main risks are macro complexity, stale build artifacts, state explosion, conflicting provider composition, backend divergence and event/ownership loops. Mitigate them with a small expression grammar, one normalized IR, declaration-symbol provenance, build fingerprints, explicit budgets/field ownership, shared descriptor fixtures and bounded command scheduling.
 
 Keep generated catalogs and build outputs out of Git. Benchmark compile/link duration, catalog memory/variant count and matched runtime batch costs before claiming improvements. Performance gates should target the changed path, not require unsupported FPS claims.
 
