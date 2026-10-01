@@ -1,5 +1,15 @@
 defmodule Wyram.Plugin do
-  @moduledoc "Public contract implemented by installed game plugins."
+  @moduledoc "Public contracts and declaration entry point for installed game plugins."
+
+  @doc "Defines explicit plugin compiler metadata for an entry module."
+  defmacro __using__(options) do
+    metadata = Wyram.Plugin.DSL.Entry.options!(options, __CALLER__)
+
+    quote do
+      @doc false
+      def __wyram_plugin__, do: unquote(Macro.escape(metadata))
+    end
+  end
 
   @type block_definition :: %{required(:name) => String.t(), required(:color) => [integer()]}
   @type terrain_profile ::
