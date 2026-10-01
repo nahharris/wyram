@@ -496,7 +496,11 @@ defmodule Wyram.Plugin.Compiler do
       game: maybe_module_name(plugin.game)
     }
 
-    interface = interface |> Map.drop([:symbols]) |> serialize_interface()
+    interface =
+      interface
+      |> Map.drop([:symbols])
+      |> serialize_interface()
+      |> Map.put(:compiled_blocks, serialized_catalog.blocks)
 
     payload = %{
       magic: @magic,

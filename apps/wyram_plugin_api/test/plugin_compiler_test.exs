@@ -34,6 +34,16 @@ defmodule Wyram.Plugin.CompilerTest do
     assert first.interface.modules == first.plugin.owned_modules
     assert first.interface_fingerprint == Compiler.fingerprint(first.interface)
     refute Map.has_key?(hd(first.catalog.blocks), :entries)
+    assert first.interface.compiled_blocks == first.catalog.blocks
+
+    changed_descriptor =
+      put_in(
+        first.interface,
+        [:compiled_blocks, Access.at(0), :descriptor, :material, :color],
+        {1, 2, 3}
+      )
+
+    refute Compiler.fingerprint(changed_descriptor) == first.interface_fingerprint
 
     assert {:ok, _second} =
              Compiler.compile_entry(fixture.entry,
