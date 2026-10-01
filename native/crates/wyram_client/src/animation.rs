@@ -36,6 +36,12 @@ impl Clip {
                 _ => {}
             }
         }
+        if matches!(s.transition.as_str(), "jump_start" | "landing")
+            && s.grounded
+            && s.posture != "prone"
+        {
+            return Self::Land;
+        }
         if !s.grounded {
             return if s.velocity[1] > 0. {
                 Self::Jump
@@ -174,7 +180,7 @@ fn pose(rig: &Rig, s: &Snapshot, clip: Clip, seconds: f32) -> Vec<BonePose> {
             if let Some(action) = &s.action {
                 let t = (action.elapsed / action.duration.max(0.1)).clamp(0., 1.) * TAU;
                 root = match action.local_direction.as_str() {
-                    "backward" => Quat::from_rotation_x(-t),
+                    "back" | "backward" => Quat::from_rotation_x(-t),
                     "left" => Quat::from_rotation_z(-t),
                     "right" => Quat::from_rotation_z(t),
                     _ => Quat::from_rotation_x(t),
