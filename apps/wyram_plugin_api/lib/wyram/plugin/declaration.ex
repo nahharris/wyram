@@ -3,6 +3,7 @@ defmodule Wyram.Plugin.Declaration do
 
   alias Wyram.Block.Ref
   alias Wyram.Plugin.{CapabilityContribution, Diagnostic, ModuleName, SourceLocation}
+  alias Wyram.Plugin.Declaration.Template
 
   @enforce_keys [:plugin_id, :module, :kind, :role, :source]
   defstruct [:plugin_id, :local_id, :module, :kind, :role, :source, entries: []]

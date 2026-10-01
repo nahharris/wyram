@@ -66,18 +66,7 @@ defmodule Wyram.Plugin.Providers.Material do
 
   def lower(config, context), do: validate(config, context)
 
-  defp unknown_fields(config) do
-    if is_map(config) do
-      allowed =
-        if Map.get(config, :__struct__) == Material,
-          do: [:__struct__, :color, :mode],
-          else: [:color, :mode]
-
-      Map.keys(config) -- allowed
-    else
-      []
-    end
-  end
+  defp unknown_fields(config), do: Map.keys(config) -- [:__struct__, :color, :mode]
 
   defp valid_rgb?({r, g, b}),
     do: Enum.all?([r, g, b], &(is_integer(&1) and &1 >= 0 and &1 <= 255))
