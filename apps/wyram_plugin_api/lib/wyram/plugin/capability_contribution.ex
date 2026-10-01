@@ -1,7 +1,7 @@
 defmodule Wyram.Plugin.CapabilityContribution do
   @moduledoc "One ordered provider configuration within a declaration."
 
-  alias Wyram.Plugin.SourceLocation
+  alias Wyram.Plugin.{ModuleName, SourceLocation}
 
   @enforce_keys [:provider, :config, :source]
   defstruct [:provider, :config, :source, override: false, origin: :authored]
@@ -19,7 +19,7 @@ defmodule Wyram.Plugin.CapabilityContribution do
       when is_map(config) do
     allowed = [:override, :origin]
 
-    unless Wyram.Plugin.ModuleName.valid?(provider) and SourceLocation.valid?(source) and
+    unless ModuleName.valid?(provider) and SourceLocation.valid?(source) and
              Keyword.keyword?(opts) and Keyword.keys(opts) -- allowed == [],
            do: raise(ArgumentError, "invalid capability provider, source or options")
 
@@ -46,7 +46,7 @@ defmodule Wyram.Plugin.CapabilityContribution do
         override: override,
         origin: origin
       }) do
-    Wyram.Plugin.ModuleName.valid?(provider) and is_map(config) and SourceLocation.valid?(source) and
+    ModuleName.valid?(provider) and is_map(config) and SourceLocation.valid?(source) and
       is_boolean(override) and origin in [:authored, :template, :default]
   end
 

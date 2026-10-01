@@ -3,7 +3,7 @@ defmodule Wyram.Plugin.Providers.Collision do
   @behaviour Wyram.Plugin.Provider
 
   alias Wyram.Capability.Collision
-  alias Wyram.Plugin.Diagnostic
+  alias Wyram.Plugin.{Diagnostic, SourceLocation}
   alias Wyram.Shape.Cube
 
   @impl true
@@ -81,12 +81,12 @@ defmodule Wyram.Plugin.Providers.Collision do
   defp valid_cube?(%Cube{} = cube), do: Map.keys(cube) == [:__struct__]
   defp valid_cube?(_), do: false
 
-  defp diagnostic(code, message, %Wyram.Plugin.SourceLocation{} = source),
+  defp diagnostic(code, message, %SourceLocation{} = source),
     do:
       Diagnostic.new!(
         code,
         message,
-        if(Wyram.Plugin.SourceLocation.valid?(source), do: source, else: fallback_source())
+        if(SourceLocation.valid?(source), do: source, else: fallback_source())
       )
 
   defp diagnostic(code, message, _source), do: Diagnostic.new!(code, message, fallback_source())

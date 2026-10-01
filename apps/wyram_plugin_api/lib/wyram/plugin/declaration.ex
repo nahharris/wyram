@@ -42,68 +42,113 @@ defmodule Wyram.Plugin.Declaration do
 
   @spec new(map()) :: {:ok, t()} | {:error, Diagnostic.t() | {atom(), String.t()}}
   def new(attrs) when is_map(attrs) do
-    plugin_id = Map.get(attrs, :plugin_id)
-    local_id = Map.get(attrs, :local_id)
-    kind = Map.get(attrs, :kind)
-    role = Map.get(attrs, :role)
-    source = Map.get(attrs, :source)
-    allowed_keys = [:plugin_id, :local_id, :module, :kind, :role, :source, :entries]
+    with :ok <- validate_attrs(attrs) do
+      {:ok, struct!(__MODULE__, attrs)}
+    end
+  end
 
-    cond do
-      Map.keys(attrs) -- allowed_keys != [] ->
+  def new(_attrs), do: error(:invalid_declaration, "declaration must be a map", nil)
+
+  defp validate_attrs(attrs) do
+    with :ok <- validate_allowed_fields(attrs),
+         :ok <- validate_identity(attrs),
+         :ok <- validate_kind(attrs),
+         :ok <- validate_role(attrs),
+         :ok <- validate_source(attrs) do
+      validate_entries(attrs)
+    end
+  end
+
+  defp validate_allowed_fields(attrs) do
+    allowed = [:plugin_id, :local_id, :module, :kind, :role, :source, :entries]
+    unknown = Map.keys(attrs) -- allowed
+
+    if unknown == [],
+      do: :ok,
+      else:
         error(
           :unknown_declaration_field,
-          "unknown declaration fields: #{inspect(Map.keys(attrs) -- allowed_keys)}",
-          source
+          "unknown declaration fields: #{inspect(unknown)}",
+          Map.get(attrs, :source)
         )
+  end
 
-      not Ref.valid_plugin_id?(plugin_id) ->
+  defp validate_identity(attrs) do
+    source = Map.get(attrs, :source)
+
+    cond do
+      not Ref.valid_plugin_id?(Map.get(attrs, :plugin_id)) ->
         error(:invalid_plugin_id, "invalid plugin ID", source)
 
       not ModuleName.valid?(Map.get(attrs, :module)) ->
         error(:invalid_declaration_module, "declaration module must be a module", source)
 
-      kind != :block ->
-        error(:invalid_declaration_kind, "unsupported declaration kind #{inspect(kind)}", source)
-
-      role not in [:registered, :template] ->
-        error(:invalid_declaration_role, "unsupported declaration role #{inspect(role)}", source)
-
-      role == :registered and not Ref.valid_local_id?(local_id) ->
-        error(:invalid_local_id, "registered blocks require a valid local ID", source)
-
-      role == :template and not is_nil(local_id) ->
-        error(
-          :invalid_local_id,
-          "template declarations cannot have a persistent local ID",
-          source
-        )
-
-      not SourceLocation.valid?(source) ->
-        error(:invalid_source_location, "declaration needs a valid source location", nil)
-
-      not valid_entries?(Map.get(attrs, :entries, [])) ->
-        error(
-          :invalid_declaration_entry,
-          "entries must be ordered templates or capability contributions",
-          source
-        )
-
       true ->
-        {:ok,
-         %__MODULE__{
-           plugin_id: plugin_id,
-           local_id: local_id,
-           module: Map.fetch!(attrs, :module),
-           kind: kind,
-           role: role,
-           source: source,
-           entries: Map.get(attrs, :entries, [])
-         }}
+        :ok
     end
   end
 
-  def new(_attrs), do: error(:invalid_declaration, "declaration must be a map", nil)
+  defp validate_kind(attrs) do
+    case Map.get(attrs, :kind) do
+      :block ->
+        :ok
+
+      kind ->
+        error(
+          :invalid_declaration_kind,
+          "unsupported declaration kind #{inspect(kind)}",
+          Map.get(attrs, :source)
+        )
+    end
+  end
+
+  defp validate_role(attrs) do
+    source = Map.get(attrs, :source)
+    local_id = Map.get(attrs, :local_id)
+
+    case Map.get(attrs, :role) do
+      :registered ->
+        if Ref.valid_local_id?(local_id),
+          do: :ok,
+          else: error(:invalid_local_id, "registered blocks require a valid local ID", source)
+
+      :template ->
+        if is_nil(local_id),
+          do: :ok,
+          else:
+            error(
+              :invalid_local_id,
+              "template declarations cannot have a persistent local ID",
+              source
+            )
+
+      role ->
+        error(:invalid_declaration_role, "unsupported declaration role #{inspect(role)}", source)
+    end
+  end
+
+  defp validate_source(attrs) do
+    case Map.get(attrs, :source) do
+      %SourceLocation{} = source ->
+        if SourceLocation.valid?(source),
+          do: :ok,
+          else: error(:invalid_source_location, "declaration needs a valid source location", nil)
+
+      _ ->
+        error(:invalid_source_location, "declaration needs a valid source location", nil)
+    end
+  end
+
+  defp validate_entries(attrs) do
+    if valid_entries?(Map.get(attrs, :entries, [])),
+      do: :ok,
+      else:
+        error(
+          :invalid_declaration_entry,
+          "entries must be ordered templates or capability contributions",
+          Map.get(attrs, :source)
+        )
+  end
 
   defp valid_entries?(entries) when is_list(entries),
     do: Enum.all?(entries, &(Template.valid?(&1) or CapabilityContribution.valid?(&1)))

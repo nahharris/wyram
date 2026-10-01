@@ -3,7 +3,7 @@ defmodule Wyram.Plugin.Providers.Material do
   @behaviour Wyram.Plugin.Provider
 
   alias Wyram.Capability.Material
-  alias Wyram.Plugin.Diagnostic
+  alias Wyram.Plugin.{Diagnostic, SourceLocation}
 
   @modes [:opaque]
 
@@ -89,8 +89,8 @@ defmodule Wyram.Plugin.Providers.Material do
     {:error, [Diagnostic.new!(code, message, source(context))]}
   end
 
-  defp source(%{source: %Wyram.Plugin.SourceLocation{} = source}) do
-    if Wyram.Plugin.SourceLocation.valid?(source), do: source, else: source(%{})
+  defp source(%{source: %SourceLocation{} = source}) do
+    if SourceLocation.valid?(source), do: source, else: source(%{})
   end
 
   defp source(_context), do: %Wyram.Plugin.SourceLocation{file: "<plugin>", line: 1}

@@ -1,6 +1,8 @@
 defmodule Wyram.Plugin.SourceLocation do
   @moduledoc "Source position retained by plugin declarations and diagnostics."
 
+  alias Wyram.Plugin.ModuleName
+
   @enforce_keys [:file, :line]
   defstruct [:file, :line, :column, :module]
 
@@ -31,7 +33,7 @@ defmodule Wyram.Plugin.SourceLocation do
   def valid?(%__MODULE__{file: file, line: line, column: column, module: module}) do
     is_binary(file) and file != "" and is_integer(line) and line > 0 and
       (is_nil(column) or (is_integer(column) and column > 0)) and
-      (is_nil(module) or Wyram.Plugin.ModuleName.valid?(module))
+      (is_nil(module) or ModuleName.valid?(module))
   end
 
   def valid?(_), do: false

@@ -1,7 +1,7 @@
 defmodule Wyram.Plugin.Provider do
   @moduledoc "Public contract implemented by capability providers."
 
-  alias Wyram.Plugin.Diagnostic
+  alias Wyram.Plugin.{Diagnostic, ModuleName}
 
   @type context :: %{
           optional(:source) => Wyram.Plugin.SourceLocation.t(),
@@ -28,7 +28,7 @@ defmodule Wyram.Plugin.Provider do
   @spec for_config(module(), [module()]) ::
           {:ok, module()} | {:error, :unknown_provider | :ambiguous_provider}
   def for_config(config_module, providers) when is_atom(config_module) and is_list(providers) do
-    if Wyram.Plugin.ModuleName.valid?(config_module) do
+    if ModuleName.valid?(config_module) do
       matches =
         Enum.filter(providers, fn provider ->
           valid_provider?(provider) and safe_config_module(provider) == config_module
@@ -60,7 +60,7 @@ defmodule Wyram.Plugin.Provider do
   end
 
   defp valid_provider?(provider) do
-    Wyram.Plugin.ModuleName.valid?(provider) and Code.ensure_loaded?(provider) and
+    ModuleName.valid?(provider) and Code.ensure_loaded?(provider) and
       Enum.all?(
         [config_module: 0, kinds: 0, config_schema: 0, owned_fields: 0, validate: 2, lower: 2],
         fn {name, arity} ->
@@ -77,16 +77,22 @@ defmodule Wyram.Plugin.Provider do
     schema = provider.config_schema()
     fields = provider.owned_fields()
 
-    Wyram.Plugin.ModuleName.valid?(config_module) and Code.ensure_loaded?(config_module) and
-      function_exported?(config_module, :__struct__, 0) and is_list(kinds) and kinds != [] and
-      Enum.all?(kinds, &(&1 == :block)) and length(Enum.uniq(kinds)) == length(kinds) and
-      valid_schema?(schema, config_module) and is_map(fields) and
-      Enum.all?(fields, fn {field, ownership} ->
-        is_atom(field) and field not in [nil, false, true] and ownership == :exclusive
-      end)
+    valid_config_module?(config_module) and valid_kinds?(kinds) and
+      valid_schema?(schema, config_module) and valid_owned_fields?(fields)
   rescue
     _ -> false
   end
+
+  defp valid_config_module?(config_module) do
+    ModuleName.valid?(config_module) and Code.ensure_loaded?(config_module) and
+      function_exported?(config_module, :__struct__, 0)
+  end
+
+  defp valid_kinds?(kinds) when is_list(kinds) and kinds != [] do
+    Enum.all?(kinds, &(&1 == :block)) and length(Enum.uniq(kinds)) == length(kinds)
+  end
+
+  defp valid_kinds?(_kinds), do: false
 
   defp valid_schema?(schema, config_module) when is_map(schema) do
     allowed = config_module.__struct__() |> Map.keys() |> List.delete(:__struct__)
@@ -94,6 +100,14 @@ defmodule Wyram.Plugin.Provider do
   end
 
   defp valid_schema?(_, _), do: false
+
+  defp valid_owned_fields?(fields) when is_map(fields) do
+    Enum.all?(fields, fn {field, ownership} ->
+      is_atom(field) and field not in [nil, false, true] and ownership == :exclusive
+    end)
+  end
+
+  defp valid_owned_fields?(_fields), do: false
 
   defp safe_config_module(provider) do
     provider.config_module()

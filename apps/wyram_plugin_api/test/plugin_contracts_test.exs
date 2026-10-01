@@ -3,6 +3,7 @@ defmodule Wyram.PluginContractsTest do
 
   alias Wyram.Block.Ref
   alias Wyram.Capability.{Collision, Geometry, Material}
+  alias Wyram.Plugin.BlockDefaults
   alias Wyram.Plugin.{CapabilityContribution, Declaration, Diagnostic, Provider, SourceLocation}
 
   defmodule ExtensionConfig do
@@ -245,7 +246,7 @@ defmodule Wyram.PluginContractsTest do
   end
 
   test "block defaults are explicit solid opaque contributions" do
-    defaults = Wyram.Plugin.BlockDefaults.entries(source())
+    defaults = BlockDefaults.entries(source())
 
     assert Enum.map(defaults, & &1.provider) == [
              Wyram.Plugin.Providers.Geometry,
