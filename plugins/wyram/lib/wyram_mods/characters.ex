@@ -63,7 +63,7 @@ defmodule WyramMods.Characters do
         box([0, 0.25, 0], [3.5, 0.5, 2.5], boots)
       ]),
       bone.("body", "hips", "torso", [0, 0, 0], [
-        box([0, 1.5, 0], [3.5, 3, 2.5], shirt)
+        box([0, 1.75, 0], [3.5, 2.5, 2.5], shirt)
       ]),
       bone.("head", "body", "head", [0, 3, 0], [
         box([0, 3, 0], [6, 6, 5], skin),
@@ -83,11 +83,11 @@ defmodule WyramMods.Characters do
         box([0, -2.5, 0], [1.2, 1, 1.8], skin)
       ]),
       bone.("leg_l", "hips", "left_leg", [1, 0, 0], [
-        box([0, -0.75, 0], [1.5, 1.5, 2], pants),
+        box([0, -0.775, 0], [1.5, 1.45, 2], pants),
         box([0, -1.75, -0.2], [1.6, 0.5, 2.4], boots)
       ]),
       bone.("leg_r", "hips", "right_leg", [-1, 0, 0], [
-        box([0, -0.75, 0], [1.5, 1.5, 2], pants),
+        box([0, -0.775, 0], [1.5, 1.45, 2], pants),
         box([0, -1.75, -0.2], [1.6, 0.5, 2.4], boots)
       ]),
       bone.("grip_l", "arm_l", "", [0, -3, 0], []),

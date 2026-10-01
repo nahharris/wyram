@@ -38,7 +38,19 @@ true = profile.crouch_height == Wyram.Units.pixels(10)
 true = profile.prone_height == Wyram.Units.pixels(7)
 true = Enum.all?(source_models, &(&1.base_height == profile.standing_height))
 
+y_min = fn box -> Enum.at(box.center, 1) - Enum.at(box.size, 1) / 2 end
+y_max = fn box -> Enum.at(box.center, 1) + Enum.at(box.size, 1) / 2 end
+
 for model <- source_models do
+  [belt] = Enum.find(model.bones, &(&1.role == "hips")).boxes
+  [shirt] = Enum.find(model.bones, &(&1.role == "torso")).boxes
+  true = y_min.(shirt) >= y_max.(belt)
+
+  for role <- ["left_leg", "right_leg"] do
+    leg = Enum.find(model.bones, &(&1.role == role))
+    true = Enum.all?(leg.boxes, &(y_max.(&1) < y_min.(belt)))
+  end
+
   head = Enum.find(model.bones, &(&1.role == "head"))
   [skull | face] = head.boxes
   true = Enum.at(skull.size, 1) > model.base_height / 2
