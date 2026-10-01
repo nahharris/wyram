@@ -1,6 +1,8 @@
 defmodule Wyram.PluginDslTest do
   use ExUnit.Case, async: false
 
+  alias Wyram.PluginDslFixture.{CapabilityCatalog, DeclarationCatalog, TemplateCatalog}
+
   test "entry metadata preserves declared contributors, providers, and default dependencies" do
     [{entry_module, _entry_binary}, {_catalog_module, _catalog_binary}] =
       Code.compile_string("""
@@ -17,13 +19,72 @@ defmodule Wyram.PluginDslTest do
       end
       """)
 
-    assert apply(entry_module, :__wyram_plugin__, []) == %{
+    assert entry_module.__wyram_plugin__() == %{
              id: "fixture",
              dependencies: [],
-             declaration_modules: [Wyram.PluginDslFixture.Catalog],
+             declaration_modules: [
+               Wyram.PluginDslFixture.Entry,
+               Wyram.PluginDslFixture.Catalog
+             ],
              providers: [Wyram.PluginDslFixture.Provider],
              game: Wyram.PluginDslFixture.Game
            }
+  end
+
+  test "plugin entry modules collect inline declarations and expose their block refs" do
+    expected_entry = Wyram.PluginDslFixture.InlineEntry
+
+    entry_module =
+      Code.compile_string("""
+      defmodule Wyram.PluginDslFixture.InlineEntry do
+        use Wyram.Plugin, id: "inline-fixture"
+
+        defblock Stone, id: "stone"
+        def stone_ref, do: __MODULE__.Blocks.Stone.ref()
+      end
+      """)
+      |> Enum.find_value(fn
+        {^expected_entry, _binary} -> expected_entry
+        _compiled -> nil
+      end)
+
+    assert entry_module == expected_entry
+
+    assert entry_module.__wyram_plugin__().declaration_modules == [entry_module]
+    [declaration] = entry_module.__wyram_declarations__()
+    assert declaration.module == Wyram.PluginDslFixture.InlineEntry.Blocks.Stone
+    assert declaration.local_id == "stone"
+
+    reference = entry_module.stone_ref()
+    assert Map.from_struct(reference) == %{plugin_id: "inline-fixture", local_id: "stone"}
+  end
+
+  test "recompiling a declaration accepts its existing matching generated marker" do
+    suffix = System.unique_integer([:positive])
+    entry = "Wyram.PluginDslFixture.Recompiled#{suffix}"
+    catalog = "#{entry}.Catalog"
+
+    source = """
+    defmodule #{entry} do
+      use Wyram.Plugin, id: "recompiled-fixture", declarations: [#{catalog}]
+    end
+
+    defmodule #{catalog} do
+      use Wyram.Plugin.Declarations, plugin: #{entry}
+      defblock Stone, id: "stone"
+    end
+    """
+
+    Code.compile_string(source, "same_vm_recompile.ex")
+
+    block_module = Module.concat([entry, "Blocks.Stone"])
+    original_marker = block_module.__wyram_generated_declaration__()
+
+    Code.compile_string(source, "same_vm_recompile.ex")
+
+    recompiled_marker = block_module.__wyram_generated_declaration__()
+
+    assert recompiled_marker == original_marker
   end
 
   test "defblock records a registered block and its aliased template in source order" do
@@ -45,7 +106,7 @@ defmodule Wyram.PluginDslTest do
     end
     """)
 
-    [declaration] = apply(Wyram.PluginDslFixture.DeclarationCatalog, :__wyram_declarations__, [])
+    [declaration] = invoke(DeclarationCatalog, :__wyram_declarations__, [])
 
     assert declaration.plugin_id == nil
     assert declaration.plugin == Wyram.PluginDslFixture.DeclarationEntry
@@ -57,7 +118,7 @@ defmodule Wyram.PluginDslTest do
     assert template.module == Wyram.PluginDslFixture.Shared
     assert declaration.source.line > 0
 
-    assert apply(
+    assert invoke(
              Wyram.PluginDslFixture.DeclarationEntry.Blocks.Stone,
              :__wyram_generated_declaration__,
              []
@@ -70,8 +131,7 @@ defmodule Wyram.PluginDslTest do
              source: declaration.source
            }
 
-    reference =
-      apply(Wyram.PluginDslFixture.DeclarationEntry.Blocks.Stone, :ref, [])
+    reference = invoke(Wyram.PluginDslFixture.DeclarationEntry.Blocks.Stone, :ref, [])
 
     assert Map.from_struct(reference) == %{plugin_id: "fixture", local_id: "stone"}
   end
@@ -89,7 +149,7 @@ defmodule Wyram.PluginDslTest do
     end
     """)
 
-    [declaration] = apply(Wyram.PluginDslFixture.TemplateCatalog, :__wyram_declarations__, [])
+    [declaration] = invoke(TemplateCatalog, :__wyram_declarations__, [])
     refute declaration.local_id
     assert declaration.role == :template
     refute function_exported?(Wyram.PluginDslFixture.TemplateEntry.Blocks.CubeTemplate, :ref, 0)
@@ -172,8 +232,7 @@ defmodule Wyram.PluginDslTest do
     end
     """)
 
-    [declaration] =
-      apply(Wyram.PluginDslFixture.CapabilityCatalog, :__wyram_declarations__, [])
+    [declaration] = invoke(CapabilityCatalog, :__wyram_declarations__, [])
 
     [template, capability] = declaration.entries
     assert template.module == Wyram.PluginDslFixture.Config.Base
@@ -277,6 +336,8 @@ defmodule Wyram.PluginDslTest do
       Code.compile_string(source, "plugin_dsl_fixture.ex")
     end
   end
+
+  defp invoke(module, function, arguments), do: apply(module, function, arguments)
 
   defp capability_fixture(expression, options \\ "") do
     suffix = System.unique_integer([:positive])

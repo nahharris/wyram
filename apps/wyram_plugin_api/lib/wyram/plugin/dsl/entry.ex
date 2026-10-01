@@ -25,7 +25,8 @@ defmodule Wyram.Plugin.DSL.Entry do
     %{
       id: id,
       dependencies: dependencies,
-      declaration_modules: module_list!(options, :declarations, env),
+      declaration_modules:
+        [env.module | module_list!(options, :declarations, env)] |> Enum.uniq(),
       providers: module_list!(options, :providers, env),
       game: module_option!(options, :game, env)
     }

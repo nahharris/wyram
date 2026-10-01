@@ -13,10 +13,7 @@ defmodule Wyram.Plugin.DSL.Literal do
   defp normalize(ast, _env) when is_atom(ast) or is_binary(ast) or is_number(ast), do: {:ok, ast}
   defp normalize(nil, _env), do: {:ok, nil}
 
-  defp normalize({:-, _meta, [number]}, _env) when is_number(number) do
-    value = -number
-    if finite_number?(value), do: {:ok, value}, else: :error
-  end
+  defp normalize({:-, _meta, [number]}, _env) when is_number(number), do: {:ok, -number}
 
   defp normalize({:__aliases__, _, [_ | _]} = alias_ast, env) do
     case Entry.module!(alias_ast, env, "module alias") do
@@ -108,9 +105,4 @@ defmodule Wyram.Plugin.DSL.Literal do
       :error -> env
     end
   end
-
-  defp finite_number?(number) when is_integer(number), do: true
-
-  defp finite_number?(number) when is_float(number),
-    do: number == number and abs(number) <= 1.7976931348623157e308
 end
