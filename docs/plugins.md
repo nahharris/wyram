@@ -1,5 +1,7 @@
 # Compiled plugin packages
 
+The proposed replacement for this callback-based API is described in [plugin-framework-plan.md](plugin-framework-plan.md). This page documents the current implementation.
+
 A `.wyrplug` file is a ZIP archive with a generated `manifest.json` and `ebin/Elixir.WyramMods.*.beam`. In the plugin's `mix.exs`, set the Mix project `version` and declare `wyram_plugin: [id: "my_plugin", entry: WyramMods.MyPlugin, dependencies: []]`. The packager derives the API, OTP, and Elixir versions from its active toolchain and lists the compiled plugin modules. Plugin authors do not maintain a source `manifest.json`. The loader checks package size, paths, API/runtime compatibility, duplicate IDs and module names, then loads the listed modules. Package code is trusted and runs with the same OS permissions as the engine.
 
 The entry module implements `Wyram.Plugin`: `blocks/0` defines names and RGB colors, `terrain/0` may provide a layered terrain palette, and `interact/2` defines interaction behavior. Block identifiers are `plugin_id:block_name`; numeric IDs are assigned by the engine at startup and retained in saves, so installing a new plugin does not reinterpret existing blocks. Saves record required plugin versions. Removing or changing a required plugin version still prevents that world from opening until the matching plugin is restored.
