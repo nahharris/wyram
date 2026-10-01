@@ -67,6 +67,74 @@ defmodule Wyram.PluginIrContractsTest do
     assert diagnostic.related == [related]
   end
 
+  test "source locations validate file and positive source coordinates" do
+    assert {:ok, source} = SourceLocation.new(%{file: "blocks.ex", line: 2, column: 1})
+    assert SourceLocation.valid?(source)
+    assert {:error, :invalid_source_location} = SourceLocation.new(%{file: "", line: 2})
+    assert {:error, :invalid_source_location} = SourceLocation.new(%{file: "blocks.ex", line: 0})
+
+    assert {:error, :invalid_source_location} =
+             SourceLocation.new(%{file: "blocks.ex", line: 2, column: 0})
+
+    assert {:error, :invalid_source_location} =
+             SourceLocation.new(%{file: "blocks.ex", line: 2, module: false})
+
+    assert {:error, :invalid_source_location} =
+             SourceLocation.new(%{file: "blocks.ex", line: 2, typo: true})
+  end
+
+  test "IR constructors reject malformed modules, unknown fields, and non-nil template IDs" do
+    source = source()
+
+    attrs = %{
+      plugin_id: "wyram",
+      local_id: nil,
+      module: WyramMods.Wyram.Blocks.Solid,
+      kind: :block,
+      role: :template,
+      source: source
+    }
+
+    assert {:error, _} = Declaration.new(Map.put(attrs, :module, false))
+    assert {:error, _} = Declaration.new(Map.put(attrs, :local_id, "persistent"))
+    assert {:error, _} = Declaration.new(Map.put(attrs, :local_idd, "typo"))
+
+    assert {:error, _} =
+             Declaration.new(Map.put(attrs, :source, %SourceLocation{file: "bad.ex", line: 0}))
+
+    forged =
+      struct(CapabilityContribution,
+        provider: Wyram.Plugin.Providers.Extension,
+        config: %{},
+        source: source,
+        override: :yes
+      )
+
+    assert {:error, _} = Declaration.new(Map.put(attrs, :entries, [forged]))
+
+    assert_raise ArgumentError, fn -> Declaration.Template.new!(false, source) end
+  end
+
+  test "diagnostic options cannot replace identity or source fields" do
+    source = source()
+
+    assert_raise ArgumentError, fn ->
+      Diagnostic.new!(:bad, "bad", source, source: source("other.ex", 4))
+    end
+  end
+
+  test "capability options cannot replace provider, config, or source" do
+    source = source()
+
+    assert_raise ArgumentError, fn ->
+      CapabilityContribution.new!(Wyram.Plugin.Providers.Extension, %{power: 2}, source,
+        provider: nil,
+        config: :wrong,
+        source: nil
+      )
+    end
+  end
+
   defp source(file \\ "blocks.ex", line \\ 3),
     do: struct(SourceLocation, file: file, line: line, column: 1)
 end

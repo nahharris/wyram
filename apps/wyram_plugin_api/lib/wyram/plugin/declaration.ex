@@ -2,7 +2,7 @@ defmodule Wyram.Plugin.Declaration do
   @moduledoc "Typed, source-aware intermediate representation for a plugin declaration."
 
   alias Wyram.Block.Ref
-  alias Wyram.Plugin.{CapabilityContribution, Diagnostic, SourceLocation}
+  alias Wyram.Plugin.{CapabilityContribution, Diagnostic, ModuleName, SourceLocation}
 
   @enforce_keys [:plugin_id, :module, :kind, :role, :source]
   defstruct [:plugin_id, :local_id, :module, :kind, :role, :source, entries: []]
@@ -27,8 +27,17 @@ defmodule Wyram.Plugin.Declaration do
     @type t :: %__MODULE__{module: module(), source: Wyram.Plugin.SourceLocation.t()}
 
     @spec new!(module(), Wyram.Plugin.SourceLocation.t()) :: t()
-    def new!(module, %Wyram.Plugin.SourceLocation{} = source) when is_atom(module),
-      do: %__MODULE__{module: module, source: source}
+    def new!(module, %Wyram.Plugin.SourceLocation{} = source) do
+      if ModuleName.valid?(module) and SourceLocation.valid?(source),
+        do: %__MODULE__{module: module, source: source},
+        else: raise(ArgumentError, "invalid template module or source")
+    end
+
+    @spec valid?(term()) :: boolean()
+    def valid?(%__MODULE__{module: module, source: source}),
+      do: ModuleName.valid?(module) and SourceLocation.valid?(source)
+
+    def valid?(_), do: false
   end
 
   @spec new(map()) :: {:ok, t()} | {:error, Diagnostic.t() | {atom(), String.t()}}
@@ -38,12 +47,20 @@ defmodule Wyram.Plugin.Declaration do
     kind = Map.get(attrs, :kind)
     role = Map.get(attrs, :role)
     source = Map.get(attrs, :source)
+    allowed_keys = [:plugin_id, :local_id, :module, :kind, :role, :source, :entries]
 
     cond do
+      Map.keys(attrs) -- allowed_keys != [] ->
+        error(
+          :unknown_declaration_field,
+          "unknown declaration fields: #{inspect(Map.keys(attrs) -- allowed_keys)}",
+          source
+        )
+
       not Ref.valid_plugin_id?(plugin_id) ->
         error(:invalid_plugin_id, "invalid plugin ID", source)
 
-      not is_atom(Map.get(attrs, :module)) ->
+      not ModuleName.valid?(Map.get(attrs, :module)) ->
         error(:invalid_declaration_module, "declaration module must be a module", source)
 
       kind != :block ->
@@ -55,11 +72,15 @@ defmodule Wyram.Plugin.Declaration do
       role == :registered and not Ref.valid_local_id?(local_id) ->
         error(:invalid_local_id, "registered blocks require a valid local ID", source)
 
-      role == :template and not (is_nil(local_id) or Ref.valid_local_id?(local_id)) ->
-        error(:invalid_local_id, "template local ID must be nil or valid", source)
+      role == :template and not is_nil(local_id) ->
+        error(
+          :invalid_local_id,
+          "template declarations cannot have a persistent local ID",
+          source
+        )
 
-      not match?(%SourceLocation{}, source) ->
-        error(:invalid_source_location, "declaration needs a source location", nil)
+      not SourceLocation.valid?(source) ->
+        error(:invalid_source_location, "declaration needs a valid source location", nil)
 
       not valid_entries?(Map.get(attrs, :entries, [])) ->
         error(
@@ -85,7 +106,7 @@ defmodule Wyram.Plugin.Declaration do
   def new(_attrs), do: error(:invalid_declaration, "declaration must be a map", nil)
 
   defp valid_entries?(entries) when is_list(entries),
-    do: Enum.all?(entries, &(match?(%Template{}, &1) or match?(%CapabilityContribution{}, &1)))
+    do: Enum.all?(entries, &(Template.valid?(&1) or CapabilityContribution.valid?(&1)))
 
   defp valid_entries?(_), do: false
 

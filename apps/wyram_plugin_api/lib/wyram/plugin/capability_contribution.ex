@@ -16,7 +16,13 @@ defmodule Wyram.Plugin.CapabilityContribution do
 
   @spec new!(module(), struct() | map(), SourceLocation.t(), keyword()) :: t()
   def new!(provider, config, %SourceLocation{} = source, opts \\ [])
-      when is_atom(provider) and is_map(config) do
+      when is_map(config) do
+    allowed = [:override, :origin]
+
+    unless Wyram.Plugin.ModuleName.valid?(provider) and SourceLocation.valid?(source) and
+             Keyword.keyword?(opts) and Keyword.keys(opts) -- allowed == [],
+           do: raise(ArgumentError, "invalid capability provider, source or options")
+
     contribution =
       struct!(
         __MODULE__,
@@ -31,4 +37,18 @@ defmodule Wyram.Plugin.CapabilityContribution do
 
     contribution
   end
+
+  @spec valid?(term()) :: boolean()
+  def valid?(%__MODULE__{
+        provider: provider,
+        config: config,
+        source: source,
+        override: override,
+        origin: origin
+      }) do
+    Wyram.Plugin.ModuleName.valid?(provider) and is_map(config) and SourceLocation.valid?(source) and
+      is_boolean(override) and origin in [:authored, :template, :default]
+  end
+
+  def valid?(_), do: false
 end
