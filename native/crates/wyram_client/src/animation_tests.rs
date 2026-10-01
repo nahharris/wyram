@@ -86,7 +86,7 @@ fn rolls_use_authoritative_progress_and_direction_and_interruption_blends_out() 
     let r = rig("r");
     let mut s = state();
     let mut poses = Vec::new();
-    for dir in ["forward", "backward", "left", "right"] {
+    for dir in ["forward", "back", "left", "right"] {
         s.action=Some(serde_json::from_value(json!({"kind":"roll","phase":"active","elapsed":0.1,"duration":0.4,"local_direction":dir})).unwrap());
         let mut a = Animator::default();
         poses.push(a.sample(&r, &s, 0.02, 0.0)[r.role("root").unwrap()].rotation);
@@ -144,6 +144,9 @@ fn approved_takeoff_and_landing_transitions_have_a_short_anticipation_pose() {
     assert_eq!(Clip::select(&s), Clip::Land);
     s.transition = "landing".into();
     assert_eq!(Clip::select(&s), Clip::Land);
+    s.posture = "prone".into();
+    assert_eq!(Clip::select(&s), Clip::Crawl);
+    s.posture = "stand".into();
     s.transition = "move".into();
     assert_eq!(Clip::select(&s), Clip::Walk);
 }
