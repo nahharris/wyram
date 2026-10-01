@@ -166,4 +166,3 @@ The main risks are macro complexity, stale build artifacts, state explosion, con
 Keep generated catalogs and build outputs out of Git. Benchmark compile/link duration, catalog memory/variant count and matched runtime batch costs before claiming improvements. Performance gates should target the changed path, not require unsupported FPS claims.
 
 Rollback is a focused PR revert and plugin rebuild, with development world reset if necessary. If a dependent phase is already merged, revert its dependents first or fix forward as a new focused PR. Do not restore backward compatibility infrastructure merely to avoid a pre-alpha reset.
-
