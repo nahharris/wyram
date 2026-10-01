@@ -261,6 +261,50 @@ defmodule Wyram.PluginContractsTest do
              })
   end
 
+  test "malformed source metadata never turns declaration errors into exceptions" do
+    source = %SourceLocation{file: "broken.ex", line: 0}
+
+    attrs = %{
+      plugin_id: "BAD",
+      local_id: "ice",
+      module: false,
+      kind: :block,
+      role: :registered,
+      source: source
+    }
+
+    assert {:error, _} = Declaration.new(attrs)
+    assert {:error, _} = Declaration.new(Map.put(attrs, :typo, true))
+  end
+
+  test "invalid provider configuration uses fallback for malformed source metadata" do
+    context = %{source: %SourceLocation{file: "broken.ex", line: 0}}
+
+    for {provider, config} <- [
+          {Wyram.Plugin.Providers.Geometry, %Geometry{shape: :sphere}},
+          {Wyram.Plugin.Providers.Collision, %Collision{shape: :sphere}},
+          {Wyram.Plugin.Providers.Material, %Material{color: {-1, 0, 0}}}
+        ] do
+      assert {:error, [%Diagnostic{source: source}]} = provider.validate(config, context)
+      assert SourceLocation.valid?(source)
+    end
+  end
+
+  defmodule MissingConfigProvider do
+    @behaviour Provider
+    def config_module, do: Wyram.PluginContractsTest.MissingConfig
+    def kinds, do: [:block, nil]
+    def config_schema, do: %{nil => :bad}
+    def owned_fields, do: %{material: :exclusive}
+    def validate(_, _), do: :ok
+    def lower(_, _), do: {:ok, %{}}
+  end
+
+  test "missing config structs and malformed provider metadata cannot resolve" do
+    assert {:error, :unknown_provider} =
+             Provider.for_config(Wyram.PluginContractsTest.MissingConfig, [MissingConfigProvider])
+  end
+
   defp source(file \\ "blocks.ex", line \\ 3),
     do: struct(SourceLocation, file: file, line: line, column: 1)
 end

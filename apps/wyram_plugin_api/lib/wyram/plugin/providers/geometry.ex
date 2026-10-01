@@ -82,7 +82,12 @@ defmodule Wyram.Plugin.Providers.Geometry do
   defp valid_cube?(_), do: false
 
   defp diagnostic(code, message, %Wyram.Plugin.SourceLocation{} = source),
-    do: Diagnostic.new!(code, message, source)
+    do:
+      Diagnostic.new!(
+        code,
+        message,
+        if(Wyram.Plugin.SourceLocation.valid?(source), do: source, else: fallback_source())
+      )
 
   defp diagnostic(code, message, _source), do: Diagnostic.new!(code, message, fallback_source())
 

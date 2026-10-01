@@ -72,16 +72,28 @@ defmodule Wyram.Plugin.Provider do
   end
 
   defp valid_metadata?(provider) do
-    Wyram.Plugin.ModuleName.valid?(provider.config_module()) and is_list(provider.kinds()) and
-      provider.kinds() != [] and
-      is_map(provider.config_schema()) and
-      is_map(provider.owned_fields()) and
-      Enum.all?(provider.owned_fields(), fn {field, ownership} ->
-        is_atom(field) and ownership == :exclusive
+    config_module = provider.config_module()
+    kinds = provider.kinds()
+    schema = provider.config_schema()
+    fields = provider.owned_fields()
+
+    Wyram.Plugin.ModuleName.valid?(config_module) and Code.ensure_loaded?(config_module) and
+      function_exported?(config_module, :__struct__, 0) and is_list(kinds) and kinds != [] and
+      Enum.all?(kinds, &(&1 == :block)) and length(Enum.uniq(kinds)) == length(kinds) and
+      valid_schema?(schema, config_module) and is_map(fields) and
+      Enum.all?(fields, fn {field, ownership} ->
+        is_atom(field) and field not in [nil, false, true] and ownership == :exclusive
       end)
   rescue
     _ -> false
   end
+
+  defp valid_schema?(schema, config_module) when is_map(schema) do
+    allowed = config_module.__struct__() |> Map.keys() |> List.delete(:__struct__)
+    Enum.sort(Map.keys(schema)) == Enum.sort(allowed)
+  end
+
+  defp valid_schema?(_, _), do: false
 
   defp safe_config_module(provider) do
     provider.config_module()

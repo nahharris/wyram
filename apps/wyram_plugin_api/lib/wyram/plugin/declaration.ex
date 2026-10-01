@@ -110,8 +110,11 @@ defmodule Wyram.Plugin.Declaration do
 
   defp valid_entries?(_), do: false
 
-  defp error(code, message, %SourceLocation{} = source),
-    do: {:error, Diagnostic.new!(code, message, source)}
+  defp error(code, message, %SourceLocation{} = source) do
+    if SourceLocation.valid?(source),
+      do: {:error, Diagnostic.new!(code, message, source)},
+      else: {:error, {code, message}}
+  end
 
   defp error(code, message, _), do: {:error, {code, message}}
 end

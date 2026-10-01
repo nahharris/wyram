@@ -89,6 +89,9 @@ defmodule Wyram.Plugin.Providers.Material do
     {:error, [Diagnostic.new!(code, message, source(context))]}
   end
 
-  defp source(%{source: %Wyram.Plugin.SourceLocation{} = source}), do: source
+  defp source(%{source: %Wyram.Plugin.SourceLocation{} = source}) do
+    if Wyram.Plugin.SourceLocation.valid?(source), do: source, else: source(%{})
+  end
+
   defp source(_context), do: %Wyram.Plugin.SourceLocation{file: "<plugin>", line: 1}
 end
