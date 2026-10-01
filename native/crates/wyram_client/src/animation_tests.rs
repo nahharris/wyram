@@ -135,3 +135,15 @@ fn landing_recovers_and_traversal_clips_have_finite_role_poses() {
         );
     }
 }
+
+#[test]
+fn approved_takeoff_and_landing_transitions_have_a_short_anticipation_pose() {
+    let mut s = state();
+    s.velocity = [0., 0., -5.];
+    s.transition = "jump_start".into();
+    assert_eq!(Clip::select(&s), Clip::Land);
+    s.transition = "landing".into();
+    assert_eq!(Clip::select(&s), Clip::Land);
+    s.transition = "move".into();
+    assert_eq!(Clip::select(&s), Clip::Walk);
+}

@@ -36,6 +36,9 @@ impl Clip {
                 _ => {}
             }
         }
+        if matches!(s.transition.as_str(), "jump_start" | "landing") && s.grounded {
+            return Self::Land;
+        }
         if !s.grounded {
             return if s.velocity[1] > 0. {
                 Self::Jump

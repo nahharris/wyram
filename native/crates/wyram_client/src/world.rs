@@ -211,6 +211,22 @@ impl VoxelWorld {
         u16::from_le_bytes([chunk.data[at], chunk.data[at + 1]])
     }
 
+    /// Same six-block ray as editing; the shoulder view converges on its first solid sample.
+    pub fn aim_point(&self, eye: Vec3, aim: Vec3) -> Vec3 {
+        for step in 1..=60 {
+            let point = eye + aim * (step as f32 * 0.1);
+            if self.block(
+                point.x.floor() as i32,
+                point.y.floor() as i32,
+                point.z.floor() as i32,
+            ) != 0
+            {
+                return point;
+            }
+        }
+        eye + aim * 6.
+    }
+
     /// Short straight camera sweep, sharing a single borrowed packed world for <=60 probes.
     /// Stop before first contact; never slide around a wall or treat missing chunks as air.
     pub fn camera_eye(&self, eye: Vec3, delta: Vec3) -> Option<Vec3> {

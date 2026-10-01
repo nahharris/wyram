@@ -14,6 +14,8 @@ pub struct Snapshot {
     pub posture: String,
     #[serde(default)]
     pub grounded: bool,
+    #[serde(default)]
+    pub transition: String,
     pub x: f32,
     pub y: f32,
     pub z: f32,

@@ -685,9 +685,19 @@ impl ApplicationHandler<UserEvent> for Game {
                 self.step();
                 let direction = self.direction();
                 let radius = self.replica.state.as_ref().map_or(0.28, |s| s.radius);
-                let view = self
-                    .camera
-                    .view(self.position, direction, &self.world, radius);
+                let eye = self.camera.eye(
+                    self.position,
+                    self.replica.state.as_ref(),
+                    (frame_ms / 1000.) as f32,
+                    &self.world,
+                );
+                let view = self.camera.view_at(
+                    eye,
+                    direction,
+                    self.world.aim_point(self.position, direction),
+                    &self.world,
+                    radius,
+                );
                 let character_vertices = self.characters.vertices(
                     &self.replica,
                     &self.world,
