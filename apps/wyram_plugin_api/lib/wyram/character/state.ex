@@ -1,14 +1,18 @@
 defmodule Wyram.Character.State do
   @moduledoc "Pure fixed-step character authority, independent of actor ownership and presentation."
-  alias Wyram.Character.{Input, Profile}
+  alias Wyram.Character.{Input, Motion, Profile}
   @tick_ms 20
-  @dt @tick_ms / 1000
   defstruct position: {0.5, 71.38, 0.5},
             velocity: {0.0, 0.0, 0.0},
             profile: nil,
             model: "default",
             grounded: false,
             jump_held: false,
+            jump_pending: nil,
+            jump_origin: nil,
+            transition: :idle,
+            transition_time: 0.0,
+            last_posture: :stand,
             climb_held: false,
             roll_held: false,
             roll_cooldown: 0.0,
@@ -33,6 +37,11 @@ defmodule Wyram.Character.State do
           model: String.t(),
           grounded: boolean(),
           jump_held: boolean(),
+          jump_pending: number() | nil,
+          jump_origin: vector() | nil,
+          transition: atom(),
+          transition_time: number(),
+          last_posture: atom(),
           climb_held: boolean(),
           roll_held: boolean(),
           roll_cooldown: number(),
@@ -71,35 +80,7 @@ defmodule Wyram.Character.State do
 
     motion = posture_motion(state, motion)
 
-    length = max(1.0, :math.sqrt(input.forward * input.forward + input.right * input.right))
-
-    vx =
-      (:math.sin(input.yaw) * input.forward + :math.cos(input.yaw) * input.right) / length *
-        motion.speed
-
-    vz =
-      (-:math.cos(input.yaw) * input.forward + :math.sin(input.yaw) * input.right) / length *
-        motion.speed
-
-    initial_vy =
-      if state.grounded and input.jump and not state.jump_held,
-        do: motion.jump_speed,
-        else: elem(state.velocity, 1)
-
-    vy = max(initial_vy - motion.gravity * @dt, -motion.terminal_speed)
-    delta = {vx * @dt, (initial_vy + vy) * 0.5 * @dt, vz * @dt}
-
-    next = %{
-      state
-      | velocity: {vx, vy, vz},
-        jump_held: input.jump,
-        mode: motion.mode,
-        yaw: input.yaw,
-        pitch: input.pitch,
-        input_sequence: input.sequence
-    }
-
-    {next, {state.position, delta, state.radius, state.height}}
+    Motion.prepare(state, input, motion)
   end
 
   @spec finish(t(), result()) :: t()
@@ -113,11 +94,14 @@ defmodule Wyram.Character.State do
           {if(hit_x, do: 0.0, else: vx), if(hit_y, do: 0.0, else: vy),
            if(hit_z, do: 0.0, else: vz)}
 
+    grounded = not unavailable and hit_y and vy < 0
+    state = Motion.landed(state, grounded)
+
     %{
       state
       | position: position,
         velocity: velocity,
-        grounded: not unavailable and hit_y and vy < 0,
+        grounded: grounded,
         unavailable: unavailable,
         sequence: state.sequence + 1
     }
@@ -147,7 +131,8 @@ defmodule Wyram.Character.State do
       unavailable: state.unavailable,
       mode: state.mode,
       action: snapshot_action(state.action),
-      posture: state.posture
+      posture: state.posture,
+      transition: state.transition
     }
   end
 

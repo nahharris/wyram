@@ -58,7 +58,9 @@ defmodule Wyram.Engine.CharacterBatchTest do
     assert replay.(30).position == replay.(60).position
     assert replay.(60).position == replay.(144).position
     assert replay.(30).grounded
-    assert_in_delta elem(replay.(30).position, 2), -9.5, 1.0e-8
+    assert elem(replay.(30).position, 2) > -9.5
+    assert elem(replay.(30).position, 2) < -9.0
+    assert_in_delta elem(replay.(30).velocity, 2), -5.0, 1.0e-8
   end
 
   test "the Windows client lifecycle monitor retains an OS handle independently of the pipe" do

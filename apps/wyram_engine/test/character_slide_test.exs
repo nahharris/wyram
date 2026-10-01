@@ -62,7 +62,8 @@ defmodule Wyram.Engine.CharacterSlideTest do
     assert released.posture == :stand
     jumped = step(active, %{input | jump: true}, collision)
     assert jumped.action == nil
-    assert elem(jumped.velocity, 1) > 0
+    assert jumped.jump_pending != nil
+    assert elem(step(jumped, %{input | jump: true}, collision).velocity, 1) > 0
     disabled = %{body | profile: %{body.profile | slide_enabled: false}}
     assert step(disabled, input, collision).action == nil
   end
@@ -92,9 +93,9 @@ defmodule Wyram.Engine.CharacterSlideTest do
   defp ticks(body, count, input, collision),
     do: ticks(step(body, input, collision), count - 1, input, collision)
 
-  defp running(collision) do
+  defp running(_collision) do
     body = %{State.new(Profile.default(), {0.5, 0.0, 0.5}) | grounded: true}
-    step(body, %{Input.idle() | right: 1.0, running: true}, collision)
+    %{body | velocity: {9.0, 0.0, 0.0}, mode: :run}
   end
 
   defp step(body, input, collision) do

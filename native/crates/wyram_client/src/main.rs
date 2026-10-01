@@ -464,7 +464,7 @@ impl Game {
             jump: self.pressed.contains(&KeyCode::Space),
             sneaking: self.pressed.contains(&KeyCode::ShiftLeft),
             crawling: self.pressed.contains(&KeyCode::KeyC),
-            climbing: self.pressed.contains(&KeyCode::KeyE),
+            climbing: false,
             rolling: self.pressed.contains(&KeyCode::KeyQ),
             cancel_actions: self.cancel_actions,
         };

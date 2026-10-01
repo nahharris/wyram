@@ -24,12 +24,12 @@ defmodule Wyram.Character.ProfileTest do
     assert Profile.from_plugin(InvalidPlugin) == {:error, :invalid_character_profile}
   end
 
-  test "default profile preserves existing movement tuning" do
+  test "default profile preserves ground speeds with snappier jump tuning" do
     profile = Profile.default()
     assert profile.walk_speed == 5.0
     assert profile.run_speed == 9.0
-    assert profile.jump_speed == 7.0
-    assert profile.gravity == 20.0
+    assert profile.jump_speed == 9.4
+    assert profile.gravity == 36.0
     assert profile.terminal_speed == 25.0
     assert Profile.validate(profile) == :ok
   end
@@ -40,8 +40,8 @@ defmodule Wyram.Character.ProfileTest do
     assert Profile.motion(profile, false) == %{
              mode: :walk,
              speed: 2.0,
-             jump_speed: 7.0,
-             gravity: 20.0,
+             jump_speed: 9.4,
+             gravity: 36.0,
              terminal_speed: 25.0
            }
 
@@ -86,6 +86,12 @@ defmodule Wyram.Character.ProfileTest do
           slide_duration: 0,
           wall_slide_enabled: "yes",
           wall_slide_speed: 0,
+          ground_acceleration: 0,
+          ground_deceleration: 101,
+          air_acceleration: "fast",
+          jump_delay: 0.2,
+          landing_duration: 0.3,
+          crawl_speed: 2.0,
           roll_enabled: "yes",
           roll_distance: 9,
           roll_duration: 0.01,

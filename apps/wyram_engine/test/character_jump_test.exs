@@ -36,9 +36,11 @@ defmodule Wyram.Engine.CharacterJumpTest do
 
   test "no coyote or buffered jump, no airborne repeat, and re-press after landing jumps" do
     collision = terrain(fn {_, y, _} -> y < 0 end)
-    body = %{State.new(Profile.default(), {0.5, 0.0, 0.5}) | grounded: true}
+    body = %{State.new(%{Profile.default() | climb_height: 0}, {0.5, 0.0, 0.5}) | grounded: true}
     jump = %{Input.idle() | jump: true}
-    ascending = step(body, jump, collision)
+    waiting = step(body, jump, collision)
+    assert waiting.grounded
+    ascending = step(waiting, jump, collision)
     assert elem(ascending.velocity, 1) > 0
     released = step(ascending, Input.idle(), collision)
     repeated = step(released, jump, collision)
@@ -47,7 +49,8 @@ defmodule Wyram.Engine.CharacterJumpTest do
     assert landed.grounded
     assert_in_delta elem(landed.position, 1), 0.0, 1.0e-9
     waiting = step(landed, Input.idle(), collision)
-    assert elem(step(waiting, jump, collision).velocity, 1) > 0
+    charged = step(waiting, jump, collision)
+    assert elem(step(charged, jump, collision).velocity, 1) > 0
     airborne = %{body | position: {0.5, 0.5, 0.5}, grounded: false}
     assert elem(step(airborne, jump, collision).velocity, 1) < 0
     buffered = Enum.reduce(1..60, airborne, fn _, b -> step(b, jump, collision) end)
@@ -58,7 +61,10 @@ defmodule Wyram.Engine.CharacterJumpTest do
   defp frames(rate), do: for(frame <- 0..rate, do: div(frame * 1000, rate))
 
   defp replay(frames, input, collision) do
-    initial = %{State.new(Profile.default(), {0.5, 0.0, 0.5}) | grounded: true}
+    initial = %{
+      State.new(%{Profile.default() | climb_height: 0}, {0.5, 0.0, 0.5})
+      | grounded: true
+    }
 
     {body, apex, _} =
       Enum.reduce(frames, {initial, 0.0, 0}, fn ms, {body, apex, previous} ->
