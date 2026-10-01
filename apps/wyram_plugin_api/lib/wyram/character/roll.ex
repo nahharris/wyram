@@ -82,7 +82,7 @@ defmodule Wyram.Character.Roll do
     done = body.action.elapsed >= body.profile.roll_duration - 1.0e-9
 
     if done or hit_x or hit_z or unavailable or not next.grounded,
-      do: %{next | action: nil},
+      do: %{next | action: nil, velocity: {0.0, elem(next.velocity, 1), 0.0}},
       else: next
   end
 end

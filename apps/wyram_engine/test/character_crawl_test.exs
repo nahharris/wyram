@@ -12,7 +12,7 @@ defmodule Wyram.Engine.CharacterCrawlTest do
     assert next.mode == :crawl
     assert next.height == 0.6
     assert next.eye_height == 0.45
-    assert_in_delta elem(next.position, 0), -17.9, 1.0e-8
+    assert_in_delta elem(next.position, 0), -15.9 - Profile.default().crawl_speed * 2, 1.0e-8
     assert elem(next.position, 1) == 0.0
     refute next.unavailable
   end

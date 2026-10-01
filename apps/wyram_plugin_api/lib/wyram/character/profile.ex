@@ -3,9 +3,14 @@ defmodule Wyram.Character.Profile do
 
   defstruct walk_speed: 5.0,
             run_speed: 9.0,
-            jump_speed: 7.0,
-            gravity: 20.0,
+            jump_speed: 9.4,
+            gravity: 36.0,
             terminal_speed: 25.0,
+            ground_acceleration: 40.0,
+            ground_deceleration: 55.0,
+            air_acceleration: 12.0,
+            jump_delay: 0.04,
+            landing_duration: 0.08,
             radius: 0.28,
             standing_height: 1.8,
             standing_eye: 1.62,
@@ -14,9 +19,9 @@ defmodule Wyram.Character.Profile do
             sneak_speed: 2.0,
             prone_height: 0.6,
             prone_eye: 0.45,
-            crawl_speed: 1.0,
+            crawl_speed: 0.65,
             climb_height: 3,
-            climb_speed: 4.0,
+            climb_speed: 6.0,
             slide_enabled: true,
             slide_entry_speed: 6.0,
             slide_friction: 10.0,
@@ -34,6 +39,11 @@ defmodule Wyram.Character.Profile do
           jump_speed: number(),
           gravity: number(),
           terminal_speed: number(),
+          ground_acceleration: number(),
+          ground_deceleration: number(),
+          air_acceleration: number(),
+          jump_delay: number(),
+          landing_duration: number(),
           radius: number(),
           standing_height: number(),
           standing_eye: number(),
@@ -74,6 +84,11 @@ defmodule Wyram.Character.Profile do
       profile.jump_speed,
       profile.gravity,
       profile.terminal_speed,
+      profile.ground_acceleration,
+      profile.ground_deceleration,
+      profile.air_acceleration,
+      profile.jump_delay,
+      profile.landing_duration,
       profile.sneak_speed,
       profile.crawl_speed,
       profile.climb_speed,
@@ -87,7 +102,7 @@ defmodule Wyram.Character.Profile do
     ]
 
     if Enum.all?(values, &(is_number(&1) and &1 > 0 and &1 <= 100)) and
-         profile.run_speed >= profile.walk_speed and valid_geometry?(profile) and
+         valid_motion?(profile) and valid_geometry?(profile) and
          valid_capabilities?(profile) do
       :ok
     else
@@ -119,6 +134,11 @@ defmodule Wyram.Character.Profile do
       terminal_speed: profile.terminal_speed
     }
   end
+
+  defp valid_motion?(p),
+    do:
+      p.run_speed >= p.walk_speed and p.sneak_speed <= p.walk_speed and
+        p.crawl_speed < p.sneak_speed and p.jump_delay <= 0.15 and p.landing_duration <= 0.25
 
   defp valid_geometry?(p) do
     Enum.all?(

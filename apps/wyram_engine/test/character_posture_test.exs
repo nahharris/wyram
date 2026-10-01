@@ -12,7 +12,8 @@ defmodule Wyram.Engine.CharacterPostureTest do
     assert crouch.height == 1.0
     assert crouch.eye_height == 0.85
     assert elem(crouch.position, 1) == 0.0
-    assert_in_delta elem(crouch.velocity, 2), -2.0, 1.0e-8
+    assert elem(crouch.velocity, 2) < 0
+    assert abs(elem(crouch.velocity, 2)) < 2.0
     blocked = advance(crouch, Input.idle(), fn {_, y, _} -> y < 0 or y == 1 end)
     assert blocked.posture == :crouch
     standing = advance(blocked, Input.idle(), fn {_, y, _} -> y < 0 end)
@@ -44,6 +45,8 @@ defmodule Wyram.Engine.CharacterPostureTest do
     input = %{Input.idle() | sneaking: true, right: 1.0, jump: true}
     next = advance(body, input, fn {x, y, z} -> y == -1 and x == 0 and z == 0 end)
     assert elem(next.position, 0) > 1.2
+    assert next.jump_pending != nil
+    next = advance(next, input, fn {_, y, _} -> y < 0 end)
     assert elem(next.position, 1) > 0.0
     refute next.grounded
     assert next.posture == :crouch

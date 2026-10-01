@@ -85,7 +85,8 @@ defmodule Wyram.Engine.CharacterRollTest do
     assert {:ok, _} = Jason.encode(State.snapshot(active))
     jumped = step(active, %{Input.idle() | jump: true}, collision)
     assert jumped.action == nil
-    assert elem(jumped.velocity, 1) > 0
+    assert jumped.jump_pending != nil
+    assert elem(step(jumped, %{Input.idle() | jump: true}, collision).velocity, 1) > 0
     cancelled = step(active, %{Input.idle() | cancel_actions: true}, collision)
     assert cancelled.action == nil
     disabled = %{initial() | profile: %{Profile.default() | roll_enabled: false}}

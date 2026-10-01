@@ -4,7 +4,8 @@ defmodule Wyram.Character.Climb do
 
   def choose(entries, collision) do
     with {:ok, entries} <- maintain(entries, collision),
-         candidates = candidates(entries),
+         {:ok, entries_with_contact} <- contacts(entries, collision),
+         candidates = candidates(entries_with_contact),
          {:ok, candidates} <- resolve(candidates, :up, collision, &clear?/1),
          {:ok, candidates} <- resolve(candidates, :across, collision, &clear?/1),
          {:ok, candidates} <- resolve(candidates, :support, collision, &supported?/1) do
@@ -18,7 +19,9 @@ defmodule Wyram.Character.Climb do
              :error -> body.action
            end
 
-         {id, %{body | action: action, climb_held: input.climbing}, input}
+         held = input.climbing or input.jump
+         latched = held and (body.climb_held or match?(%{kind: :climb}, action))
+         {id, %{body | action: action, climb_held: latched}, input}
        end)}
     end
   end
@@ -53,26 +56,60 @@ defmodule Wyram.Character.Climb do
   defp candidates(entries) do
     entries
     |> Enum.filter(&eligible?/1)
-    |> Enum.flat_map(fn {id, body, input} ->
-      Enum.map(1..body.profile.climb_height, &candidate(id, body, input, &1))
+    |> Enum.flat_map(&entry_candidates/1)
+  end
+
+  defp entry_candidates({id, body, input}) do
+    origin_y = if input.climbing, do: elem(body.position, 1), else: elem(body.jump_origin, 1)
+
+    heights =
+      if input.climbing, do: 1..body.profile.climb_height, else: 2..body.profile.climb_height
+
+    Enum.map(heights, fn rise ->
+      goal = if input.climbing, do: origin_y + rise, else: Float.floor(origin_y + 1.0e-8) + rise
+      candidate(id, body, input, goal)
     end)
   end
 
   defp eligible?({_, b, i}),
     do:
-      b.action == nil and b.grounded and b.posture == :stand and i.climbing and not b.climb_held and
-        b.profile.climb_height > 0 and (i.forward != 0 or i.right != 0)
+      b.action == nil and not b.climb_held and b.posture == :stand and
+        b.profile.climb_height > 0 and (i.forward != 0 or i.right != 0) and requested?(b, i)
 
-  defp candidate(id, body, input, rise) do
+  defp requested?(b, i),
+    do:
+      (b.grounded and i.climbing) or
+        (i.jump and b.jump_origin != nil and not b.grounded and b.profile.climb_height >= 2)
+
+  defp contacts(entries, collision) do
+    candidates =
+      Enum.filter(entries, fn entry -> eligible?(entry) and not elem(entry, 2).climbing end)
+
+    queries =
+      Enum.map(candidates, fn {_, b, i} ->
+        {dx, dz} = direction(i)
+        {b.position, {dx * 0.12, 0.0, dz * 0.12}, b.radius, b.height}
+      end)
+
+    with {:ok, results} <- query(collision, queries) do
+      contacts =
+        Enum.zip(candidates, results)
+        |> Map.new(fn {{id, _, _}, {_, {x, _, z}, unknown}} -> {id, (x or z) and not unknown} end)
+
+      {:ok, Enum.filter(entries, fn {id, _, i} -> i.climbing or Map.get(contacts, id, false) end)}
+    end
+  end
+
+  defp candidate(id, body, input, goal) do
     {x, y, z} = body.position
     {dx, dz} = direction(input)
-    lifted = {x, y + rise, z}
-    target = {x + dx, y + rise, z + dz}
+    lifted = {x, goal, z}
+    target = {x + dx, goal, z + dz}
 
     %{
       id: id,
       target: target,
-      up: {body.position, {0.0, rise / 1, 0.0}, body.radius, body.height},
+      up: {body.position, {0.0, goal - y, 0.0}, body.radius, body.height},
       across: {lifted, {dx, 0.0, dz}, body.radius, body.height},
       support: {target, {0.0, -0.05, 0.0}, body.radius, body.height}
     }
@@ -161,7 +198,7 @@ defmodule Wyram.Character.Climb do
     do: abs(x - a) < 1.0e-8 and abs(y - b) < 1.0e-8 and abs(z - c) < 1.0e-8
 
   defp keep_action(%{action: %{kind: :climb}} = body, input) do
-    if input.climbing and body.posture == :stand, do: body.action, else: nil
+    if (input.climbing or input.jump) and body.posture == :stand, do: body.action, else: nil
   end
 
   defp keep_action(body, _), do: body.action

@@ -47,14 +47,21 @@ defmodule Wyram.Character.StateTest do
     state = State.new(Profile.default(), {0.5, 0.0, 0.5})
     input = Map.merge(Input.idle(), %{forward: 1.0, right: 1.0, running: true})
     {next, {_position, {dx, _dy, dz}, _radius, _height}} = State.prepare(state, input)
-    assert_in_delta :math.sqrt(dx * dx + dz * dz), 9.0 * 0.02, 1.0e-10
+
+    assert_in_delta :math.sqrt(dx * dx + dz * dz),
+                    Profile.default().air_acceleration * 0.02 * 0.02,
+                    1.0e-10
+
     assert next.mode == :run
   end
 
   test "jump is edge-triggered only while grounded and ceiling hits cancel ascent" do
     state = %{State.new(Profile.default(), {0.5, 0.0, 0.5}) | grounded: true}
     input = %{Input.idle() | jump: true}
-    {jumping, request} = State.prepare(state, input)
+    {waiting, _} = State.prepare(state, input)
+    assert waiting.jump_pending != nil
+    waiting = State.finish(waiting, {state.position, {false, true, false}, false})
+    {jumping, request} = State.prepare(waiting, input)
     assert jumping.velocity |> elem(1) > 0
     assert elem(request, 1) |> elem(1) > 0
     hit = State.finish(jumping, {{0.5, 0.1, 0.5}, {false, true, false}, false})
