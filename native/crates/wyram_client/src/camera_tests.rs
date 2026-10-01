@@ -171,3 +171,13 @@ fn the_complete_shoulder_offset_stays_out_of_side_walls() {
     let view = c.view(eye, Vec3::NEG_Z, &world(Some((0, 9))), 0.28);
     assert!(view.position.x <= 8.88 + 1e-5);
 }
+
+#[test]
+fn the_dwarf_head_leaves_the_reticle_clear_in_third_person() {
+    let mut c = Camera::default();
+    c.cycle();
+    let eye = Vec3::new(8., 1.125, 8.);
+    let view = c.view(eye, Vec3::NEG_Z, &world(None), 0.375);
+    let at_head = view.position + view.direction * (eye - view.position).dot(view.direction);
+    assert!(at_head.distance(eye) > 0.375 + 0.0625);
+}

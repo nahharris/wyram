@@ -79,7 +79,7 @@ impl Camera {
         if self.mode != Mode::Third {
             return aim * sign * self.distance;
         }
-        let shoulder = aim.cross(Vec3::Y).normalize_or_zero() * 0.5 + Vec3::Y * 0.12;
+        let shoulder = aim.cross(Vec3::Y).normalize_or_zero() * 0.75 + Vec3::Y * 0.125;
         // Keep the whole offset within the bounded collision-query reach, even at steep pitch.
         (aim * sign * self.distance + shoulder).normalize_or_zero() * self.distance
     }
