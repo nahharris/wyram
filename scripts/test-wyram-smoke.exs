@@ -18,7 +18,7 @@ true =
 
 true = World.get_block(0, 0, 0) == blocks["wyram:stone"]
 
-true = PluginManager.player_profile() == Wyram.Character.Profile.default()
+true = PluginManager.player_profile() == WyramMods.Characters.player_profile()
 
 models = PluginManager.character_models()
 true = length(models) == 2
@@ -29,3 +29,23 @@ true = Enum.all?(source_models, &(Wyram.Character.Model.validate(&1) == :ok))
 true = Wyram.Character.Model.compatible?(first, second)
 File.mkdir_p!(".tools")
 File.write!(".tools/character-models.json", Jason.encode!(models))
+
+profile = PluginManager.player_profile()
+true = profile.standing_height == Wyram.Units.blocks(1, 3)
+true = Wyram.Units.blocks(1, 4) - profile.standing_height == Wyram.Units.pixels(1)
+true = profile.standing_eye < profile.standing_height
+true = Enum.all?(source_models, &(&1.base_height == profile.standing_height))
+
+for model <- source_models do
+  head = Enum.find(model.bones, &(&1.role == "head"))
+  [skull | face] = head.boxes
+  true = Enum.at(skull.size, 1) > model.base_height / 2
+  true = Enum.all?(face, &(Enum.at(&1.size, 2) < Wyram.Units.pixels(0.1)))
+  true = Wyram.Character.Profile.validate(profile) == :ok
+end
+
+snapshot = Wyram.Engine.Characters.snapshot()
+true = snapshot.height == profile.standing_height
+true = snapshot.eye_height == profile.standing_eye
+true = snapshot.radius == profile.radius
+true = Enum.all?(Wyram.Engine.Characters.latest(), &(&1.height == profile.standing_height))
