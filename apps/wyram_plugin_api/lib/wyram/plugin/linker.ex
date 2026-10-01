@@ -2,7 +2,7 @@ defmodule Wyram.Plugin.Linker do
   @moduledoc "Links collected plugin declarations into deterministic logical catalogs."
 
   alias Wyram.Block.Ref
-  alias Wyram.Plugin.{Declaration, Diagnostic, SourceLocation}
+  alias Wyram.Plugin.{CapabilityContribution, Declaration, Diagnostic, Provider, SourceLocation}
 
   @default_expansion_budget 1_024
   @generated_marker :__wyram_generated_declaration__
@@ -24,7 +24,7 @@ defmodule Wyram.Plugin.Linker do
   def link_set(plugins, options) when is_list(plugins) and is_list(options) do
     budget = Keyword.get(options, :max_template_expansions, @default_expansion_budget)
 
-    with :ok <- validate_options(budget),
+    with :ok <- validate_options(options, budget),
          {:ok, normalized} <- normalize_plugins(plugins),
          :ok <- unique_plugin_ids(normalized),
          :ok <- unique_owned_modules(normalized),
@@ -33,7 +33,8 @@ defmodule Wyram.Plugin.Linker do
          :ok <- unique_declarations(normalized),
          :ok <- validate_generated_modules(normalized),
          :ok <- validate_templates(normalized),
-         {:ok, expanded} <- expand_declarations(normalized, budget) do
+         {:ok, candidates} <- provider_candidates(normalized),
+         {:ok, expanded} <- expand_declarations(normalized, candidates, budget) do
       {:ok, build_result(normalized, order, expanded)}
     else
       {:error, %Diagnostic{} = diagnostic} -> {:error, [diagnostic]}
@@ -82,25 +83,34 @@ defmodule Wyram.Plugin.Linker do
          )
        end)}
     else
-      dependencies =
+      dependency_plugins =
         required
         |> Enum.flat_map(fn dependency ->
           interface = Map.fetch!(dependency_interfaces, dependency)
+          interface = Map.get(interface, :interface, Map.get(interface, :plugin, interface))
 
           case Map.fetch(interface, :plugins) do
             {:ok, plugins} when is_list(plugins) -> plugins
             _ -> [Map.fetch!(interface, :plugin)]
           end
         end)
-        |> Enum.uniq_by(& &1.id)
 
-      current = Map.merge(metadata, %{declarations: declarations})
+      case deduplicate_dependency_plugins(dependency_plugins, metadata) do
+        {:error, diagnostics} ->
+          {:error, diagnostics}
 
-      with {:ok, linked} <- link_set(dependencies ++ [current], options) do
-        id = Map.fetch!(metadata, :id)
+        {:ok, dependencies} ->
+          current = Map.merge(metadata, %{declarations: declarations})
 
-        {:ok,
-         %{catalog: Map.fetch!(linked.catalogs, id), interface: Map.fetch!(linked.interfaces, id)}}
+          with {:ok, linked} <- link_set(dependencies ++ [current], options) do
+            id = Map.fetch!(metadata, :id)
+
+            {:ok,
+             %{
+               catalog: Map.fetch!(linked.catalogs, id),
+               interface: Map.fetch!(linked.interfaces, id)
+             }}
+          end
       end
     end
   rescue
@@ -126,26 +136,51 @@ defmodule Wyram.Plugin.Linker do
      ]}
   end
 
-  defp validate_options(budget) when is_integer(budget) and budget > 0, do: :ok
+  defp deduplicate_dependency_plugins(plugins, metadata) do
+    conflicts =
+      plugins
+      |> Enum.group_by(&Map.get(&1, :id))
+      |> Enum.filter(fn {_id, definitions} -> length(Enum.uniq(definitions)) > 1 end)
 
-  defp validate_options(_budget),
-    do:
+    if conflicts == [] do
+      {:ok, Enum.uniq_by(plugins, & &1.id)}
+    else
+      {:error,
+       Enum.map(conflicts, fn {id, _definitions} ->
+         Diagnostic.new!(
+           :conflicting_dependency_interface,
+           "multiple required dependency interfaces provide conflicting metadata for plugin #{inspect(id)}",
+           source_for(metadata)
+         )
+       end)}
+    end
+  end
+
+  defp validate_options(options, budget) do
+    if Keyword.keyword?(options) and length(options) == length(Enum.uniq(Keyword.keys(options))) and
+         Keyword.keys(options) -- [:max_template_expansions] == [] and is_integer(budget) and
+         budget > 0 do
+      :ok
+    else
       {:error,
        Diagnostic.new!(
-         :invalid_expansion_budget,
-         "template expansion budget must be positive",
+         :invalid_link_options,
+         "linker options must contain only unique supported keys and a positive expansion budget",
          source_for(nil)
        )}
+    end
+  end
 
   defp normalize_plugins(plugins) do
     if Enum.all?(plugins, &valid_plugin_input?/1) do
       normalized =
         plugins
         |> Enum.map(fn plugin ->
-          Map.merge(
-            %{providers: [], modules: [], game: nil},
-            plugin
-          )
+          plugin = Map.merge(%{providers: [], modules: [], game: nil}, plugin)
+
+          Map.update!(plugin, :declarations, fn declarations ->
+            Enum.map(declarations, &normalize_collected_declaration(&1, plugin))
+          end)
         end)
         |> Enum.sort_by(& &1.id)
 
@@ -161,15 +196,54 @@ defmodule Wyram.Plugin.Linker do
   end
 
   defp valid_plugin_input?(plugin) when is_map(plugin) do
-    Ref.valid_plugin_id?(Map.get(plugin, :id)) and is_atom(Map.get(plugin, :entry)) and
+    Ref.valid_plugin_id?(Map.get(plugin, :id)) and
+      Wyram.Plugin.ModuleName.valid?(Map.get(plugin, :entry)) and
       is_list(Map.get(plugin, :dependencies)) and is_list(Map.get(plugin, :declarations)) and
       is_list(Map.get(plugin, :providers, [])) and is_list(Map.get(plugin, :modules, [])) and
+      (is_nil(Map.get(plugin, :game)) or Wyram.Plugin.ModuleName.valid?(Map.get(plugin, :game))) and
       Enum.all?(Map.get(plugin, :dependencies), &Ref.valid_plugin_id?/1) and
-      Enum.all?(Map.get(plugin, :providers, []), &is_atom/1) and
-      Enum.all?(Map.get(plugin, :modules, []), &is_atom/1)
+      Enum.all?(Map.get(plugin, :providers, []), &Wyram.Plugin.ModuleName.valid?/1) and
+      Enum.all?(Map.get(plugin, :modules, []), &Wyram.Plugin.ModuleName.valid?/1)
   end
 
   defp valid_plugin_input?(_), do: false
+
+  defp provider_candidates(plugins) do
+    by_id = Map.new(plugins, &{&1.id, &1})
+
+    Enum.reduce_while(plugins, {:ok, %{}}, fn plugin, {:ok, acc} ->
+      dependency_providers =
+        plugin.dependencies
+        |> Enum.flat_map(fn dependency -> Map.fetch!(by_id, dependency).providers end)
+
+      candidates =
+        Enum.uniq(Provider.builtins() ++ plugin.providers ++ dependency_providers)
+
+      invalid = Enum.reject(candidates, &valid_provider_candidate?(&1, candidates))
+
+      if invalid == [] do
+        {:cont, {:ok, Map.put(acc, plugin.id, candidates)}}
+      else
+        {:halt,
+         {:error,
+          Enum.map(invalid, fn provider ->
+            Diagnostic.new!(
+              :invalid_provider,
+              "provider #{inspect(provider)} does not satisfy the public provider contract or has ambiguous config ownership",
+              source_for(plugin)
+            )
+          end)}}
+      end
+    end)
+  end
+
+  defp valid_provider_candidate?(provider, candidates) do
+    Wyram.Plugin.ModuleName.valid?(provider) and Code.ensure_loaded?(provider) and
+      function_exported?(provider, :config_module, 0) and
+      match?({:ok, ^provider}, Provider.for_config(provider.config_module(), candidates))
+  rescue
+    _ -> false
+  end
 
   defp unique_plugin_ids(plugins) do
     duplicates = duplicates_by(plugins, & &1.id)
@@ -231,7 +305,9 @@ defmodule Wyram.Plugin.Linker do
                   Diagnostic.new!(
                     :dependency_cycle,
                     "plugin #{plugin.id} depends on itself",
-                    source_for(plugin), path: [plugin.id, plugin.id])
+                    source_for(plugin),
+                    path: [plugin.id, plugin.id]
+                  )
                 ]
 
               not MapSet.member?(ids, dependency) ->
@@ -360,46 +436,80 @@ defmodule Wyram.Plugin.Linker do
   end
 
   defp valid_declaration?(%Declaration{} = declaration) do
-    Ref.valid_plugin_id?(declaration.plugin_id) and is_atom(declaration.module) and
+    Wyram.Plugin.ModuleName.valid?(declaration.module) and
+      Ref.valid_plugin_id?(declaration.plugin_id) and
       declaration.kind == :block and declaration.role in [:registered, :template] and
-      match?(
-        %SourceLocation{file: file, line: line}
-        when is_binary(file) and is_integer(line) and line > 0,
-        declaration.source
-      ) and
-      is_list(declaration.entries) and
-      ((declaration.role == :registered and Ref.valid_local_id?(declaration.local_id)) or
-         (declaration.role == :template and
-            (is_nil(declaration.local_id) or Ref.valid_local_id?(declaration.local_id)))) and
-      Enum.all?(declaration.entries, &valid_entry?/1)
+      Wyram.Plugin.SourceLocation.valid?(declaration.source) and
+      ((declaration.role == :template and is_nil(declaration.local_id)) or
+         (declaration.role == :registered and Ref.valid_local_id?(declaration.local_id))) and
+      is_list(declaration.entries) and Enum.all?(declaration.entries, &valid_collected_entry?/1)
   end
 
   defp valid_declaration?(_), do: false
 
-  defp valid_entry?(%Declaration.Template{module: module, source: source}) do
-    is_atom(module) and valid_source?(source)
+  defp normalize_collected_declaration(%Wyram.Plugin.DSL.CollectedDeclaration{} = raw, plugin) do
+    if raw.plugin == plugin.entry and raw.plugin_id in [nil, plugin.id] do
+      struct(Declaration,
+        plugin_id: plugin.id,
+        local_id: raw.local_id,
+        module: raw.module,
+        kind: raw.kind,
+        role: raw.role,
+        source: raw.source,
+        entries: raw.entries
+      )
+    else
+      raw
+    end
   end
 
-  defp valid_entry?(%Wyram.Plugin.CapabilityContribution{
-         provider: provider,
-         config: config,
-         source: source,
-         override: override,
-         origin: origin
-       }) do
-    is_atom(provider) and is_map(config) and valid_source?(source) and is_boolean(override) and
-      origin in [:authored, :template, :default]
+  defp normalize_collected_declaration(declaration, _plugin), do: declaration
+
+  defp valid_collected_entry?(%Declaration.Template{} = entry),
+    do: Declaration.Template.valid?(entry)
+
+  defp valid_collected_entry?(%CapabilityContribution{} = entry),
+    do: CapabilityContribution.valid?(entry)
+
+  defp valid_collected_entry?(%Wyram.Plugin.DSL.Capability{} = capability) do
+    Wyram.Plugin.ModuleName.valid?(capability.config_module) and is_boolean(capability.override) and
+      Wyram.Plugin.SourceLocation.valid?(capability.source) and
+      valid_struct_literal?(capability.config, capability.config_module)
   end
 
-  defp valid_entry?(_), do: false
+  defp valid_collected_entry?(_), do: false
 
-  defp valid_source?(%SourceLocation{file: file, line: line, column: column, module: module}) do
-    is_binary(file) and String.valid?(file) and is_integer(line) and line > 0 and
-      (is_nil(column) or (is_integer(column) and column > 0)) and
-      (is_nil(module) or is_atom(module))
+  defp valid_struct_literal?(
+         %Wyram.Plugin.DSL.StructLiteral{module: module, fields: fields},
+         expected
+       )
+       when module == expected and is_map(fields) do
+    Wyram.Plugin.ModuleName.valid?(module) and
+      Enum.all?(fields, fn {key, value} -> is_atom(key) and valid_literal?(value) end)
   end
 
-  defp valid_source?(_), do: false
+  defp valid_struct_literal?(_, _), do: false
+
+  defp valid_literal?(%Wyram.Plugin.DSL.StructLiteral{module: module, fields: fields})
+       when is_map(fields),
+       do:
+         Wyram.Plugin.ModuleName.valid?(module) and
+           Enum.all?(fields, fn {key, value} -> is_atom(key) and valid_literal?(value) end)
+
+  defp valid_literal?({:__wyram_module__, module}), do: Wyram.Plugin.ModuleName.valid?(module)
+
+  defp valid_literal?(value)
+       when is_atom(value) or is_binary(value) or is_number(value) or is_nil(value), do: true
+
+  defp valid_literal?(value) when is_list(value), do: Enum.all?(value, &valid_literal?/1)
+
+  defp valid_literal?(value) when is_tuple(value),
+    do: value |> Tuple.to_list() |> Enum.all?(&valid_literal?/1)
+
+  defp valid_literal?(value) when is_map(value),
+    do: Enum.all?(value, fn {key, item} -> valid_literal?(key) and valid_literal?(item) end)
+
+  defp valid_literal?(_), do: false
 
   defp validate_generated_modules(plugins) do
     declarations = Enum.flat_map(plugins, & &1.declarations)
@@ -429,7 +539,9 @@ defmodule Wyram.Plugin.Linker do
             declaration.plugin_id == owner.id
 
         valid_marker =
-          is_map(actual) and Map.take(actual, Map.keys(expected || %{})) == expected
+          is_map(actual) and
+            Map.delete(actual, :plugin_id) == expected and
+            Map.keys(actual) -- (Map.keys(expected || %{}) ++ [:plugin_id]) == []
 
         valid_ref =
           case declaration.role do
@@ -580,91 +692,450 @@ defmodule Wyram.Plugin.Linker do
     end
   end
 
-  defp expand_declarations(plugins, budget) do
-    declarations = Enum.flat_map(plugins, & &1.declarations)
+  defp expand_declarations(plugins, candidates, budget) do
+    declarations =
+      plugins
+      |> Enum.flat_map(& &1.declarations)
+      |> Enum.sort_by(&inspect(&1.module))
+
     index = declaration_index(plugins)
-    templates = Enum.filter(declarations, &(&1.role == :template))
 
-    if length(templates) > budget do
-      declaration = hd(templates)
+    Enum.reduce_while(declarations, {:ok, %{}, 0}, fn declaration, {:ok, acc, total_used} ->
+      case compose_declaration(declaration, index, candidates, [], budget - total_used) do
+        {:ok, compiled, used} when total_used + used <= budget ->
+          {:cont, {:ok, Map.put(acc, declaration.module, compiled), total_used + used}}
 
-      {:error,
-       Diagnostic.new!(
-         :template_expansion_budget_exceeded,
-         "template declaration count exceeds the configured expansion budget",
-         declaration.source
-       )}
-    else
-      blocks = Enum.filter(declarations, &(&1.role == :registered))
+        {:ok, _compiled, _used} ->
+          {:halt,
+           {:error,
+            Diagnostic.new!(
+              :template_expansion_budget_exceeded,
+              "compiled catalog exceeds the configured template expansion budget",
+              declaration.source
+            )}}
 
-      Enum.reduce_while(blocks, {:ok, %{}}, fn declaration, {:ok, acc} ->
-        case expand_one(declaration, index, [], budget) do
-          {:ok, entries, used} when used <= budget ->
-            {:cont, {:ok, Map.put(acc, declaration.module, entries)}}
-
-          {:ok, _entries, _used} ->
-            {:halt,
-             {:error,
-              Diagnostic.new!(
-                :template_expansion_budget_exceeded,
-                "block template expansion exceeds the configured budget",
-                declaration.source
-              )}}
-
-          error ->
-            {:halt, error}
-        end
-      end)
+        error ->
+          {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, expanded, _used} -> {:ok, expanded}
+      error -> error
     end
   end
 
-  defp expand_one(declaration, index, active, budget) do
+  defp compose_declaration(declaration, index, candidates, active, budget) do
     if declaration.module in active do
       {:error,
        Diagnostic.new!(
          :template_cycle,
-         "template cycle detected during expansion",
+         "template cycle detected during composition",
          declaration.source,
          path: Enum.map(active ++ [declaration.module], &inspect/1)
        )}
     else
+      provider_set = Map.fetch!(candidates, declaration.plugin_id)
+
       Enum.reduce_while(declaration.entries, {:ok, [], 0}, fn
-        %Declaration.Template{module: module}, {:ok, entries, used} ->
-          case Map.get(index, module) do
-            nil ->
-              {:halt,
-               {:error,
-                Diagnostic.new!(
-                  :unresolved_declaration,
-                  "template target #{inspect(module)} was not collected",
-                  declaration.source
-                )}}
+        %Declaration.Template{module: module, source: source}, {:ok, composed, used} ->
+          target = Map.fetch!(index, module)
 
-            target ->
-              case expand_one(target, index, active ++ [declaration.module], budget) do
-                {:ok, inherited, count} ->
-                  if used + count + 1 <= budget do
-                    {:cont, {:ok, entries ++ inherited, used + count + 1}}
-                  else
-                    {:halt,
-                     {:error,
-                      Diagnostic.new!(
-                        :template_expansion_budget_exceeded,
-                        "block template expansion exceeds the configured budget",
-                        declaration.source
-                      )}}
-                  end
+          case compose_declaration(
+                 target,
+                 index,
+                 candidates,
+                 active ++ [declaration.module],
+                 budget - used - 1
+               ) do
+            {:ok, inherited_compiled, nested_used} ->
+              if used + nested_used + 1 > budget do
+                {:halt, {:error, expansion_budget_error(source)}}
+              else
+                inherited =
+                  Enum.map(
+                    inherited_compiled.authored,
+                    &%{&1 | origin: :template, override: false}
+                  )
 
-                error ->
-                  {:halt, error}
+                case compose_entries(composed, inherited, provider_set, declaration.kind) do
+                  {:ok, next} -> {:cont, {:ok, next, used + nested_used + 1}}
+                  error -> {:halt, error}
+                end
               end
+
+            error ->
+              {:halt, error}
           end
 
-        entry, {:ok, entries, used} ->
-          {:cont, {:ok, entries ++ [entry], used}}
+        %CapabilityContribution{} = contribution, {:ok, composed, used} ->
+          case compose_entries(composed, [contribution], provider_set, declaration.kind) do
+            {:ok, next} -> {:cont, {:ok, next, used}}
+            error -> {:halt, error}
+          end
+
+        %Wyram.Plugin.DSL.Capability{} = capability, {:ok, composed, used} ->
+          with {:ok, contribution} <- materialize_capability(capability, provider_set),
+               {:ok, next} <-
+                 compose_entries(composed, [contribution], provider_set, declaration.kind) do
+            {:cont, {:ok, next, used}}
+          else
+            {:error, diagnostic} -> {:halt, {:error, diagnostic}}
+          end
+
+        _entry, _acc ->
+          {:halt,
+           {:error,
+            Diagnostic.new!(
+              :invalid_declaration_entry,
+              "unsupported compiled declaration entry",
+              declaration.source
+            )}}
       end)
+      |> case do
+        {:ok, authored, used} ->
+          with {:ok, _authored_descriptor} <-
+                 lower_descriptor(authored, provider_set, declaration),
+               {:ok, completed, descriptor} <-
+                 maybe_complete_registered(authored, provider_set, declaration) do
+            {:ok, %{authored: authored, entries: completed, descriptor: descriptor}, used}
+          end
+
+        error ->
+          error
+      end
     end
   end
+
+  defp maybe_complete_registered(authored, _provider_set, %{role: :template}),
+    do: {:ok, authored, %{}}
+
+  defp maybe_complete_registered(authored, provider_set, declaration) do
+    with {:ok, completed} <- add_defaults(authored, provider_set, declaration),
+         {:ok, descriptor} <- lower_descriptor(completed, provider_set, declaration) do
+      {:ok, completed, descriptor}
+    end
+  end
+
+  defp materialize_capability(capability, candidates) do
+    with {:ok, provider} <- Provider.for_config(capability.config_module, candidates),
+         {:ok, config} <- materialize_config(capability.config, capability.config_module),
+         {:ok, contribution} <-
+           {:ok,
+            CapabilityContribution.new!(provider, config, capability.source,
+              override: capability.override,
+              origin: :authored
+            )} do
+      {:ok, contribution}
+    else
+      {:error, reason} ->
+        {:error,
+         Diagnostic.new!(
+           :invalid_capability,
+           "cannot materialize capability: #{inspect(reason)}",
+           capability.source
+         )}
+    end
+  rescue
+    _ ->
+      {:error,
+       Diagnostic.new!(
+         :invalid_capability,
+         "cannot materialize capability config",
+         capability.source
+       )}
+  end
+
+  defp materialize_config(
+         %Wyram.Plugin.DSL.StructLiteral{module: module, fields: fields},
+         expected
+       )
+       when module == expected and is_map(fields) do
+    {:ok,
+     struct(expected, Map.new(fields, fn {key, value} -> {key, materialize_literal(value)} end))}
+  rescue
+    _ -> :error
+  end
+
+  defp materialize_config(config, expected) when is_map(config) do
+    if Map.get(config, :__struct__) == expected, do: {:ok, config}, else: :error
+  end
+
+  defp materialize_config(_config, _expected), do: :error
+
+  defp materialize_literal(%Wyram.Plugin.DSL.StructLiteral{module: module, fields: fields}),
+    do: struct!(module, Map.new(fields, fn {key, value} -> {key, materialize_literal(value)} end))
+
+  defp materialize_literal({:__wyram_module__, module}) when is_atom(module), do: module
+  defp materialize_literal(value) when is_list(value), do: Enum.map(value, &materialize_literal/1)
+
+  defp materialize_literal(value) when is_tuple(value),
+    do: value |> Tuple.to_list() |> Enum.map(&materialize_literal/1) |> List.to_tuple()
+
+  defp materialize_literal(value) when is_map(value),
+    do: Map.new(value, fn {key, item} -> {key, materialize_literal(item)} end)
+
+  defp materialize_literal(value), do: value
+
+  defp expansion_budget_error(source) do
+    Diagnostic.new!(
+      :template_expansion_budget_exceeded,
+      "block template expansion exceeds the configured budget",
+      source
+    )
+  end
+
+  defp compose_entries(current, additions, candidates, kind) do
+    Enum.reduce_while(additions, {:ok, current}, fn contribution, {:ok, composed} ->
+      with {:ok, provider} <- resolve_provider(contribution, candidates),
+           :ok <- validate_contribution(contribution, provider, kind),
+           {:ok, updated} <- apply_contribution(composed, %{contribution | provider: provider}) do
+        {:cont, {:ok, updated}}
+      else
+        {:error, %Diagnostic{} = diagnostic} ->
+          {:halt, {:error, diagnostic}}
+
+        {:error, diagnostics} when is_list(diagnostics) ->
+          {:halt, {:error, diagnostics}}
+
+        {:error, reason} ->
+          {:halt,
+           {:error,
+            Diagnostic.new!(
+              :invalid_provider,
+              "cannot resolve provider #{inspect(contribution.provider)}: #{inspect(reason)}",
+              contribution.source
+            )}}
+      end
+    end)
+  end
+
+  defp resolve_provider(%CapabilityContribution{provider: provider} = contribution, candidates) do
+    case Enum.find(candidates, fn candidate ->
+           candidate == provider and valid_provider_candidate?(candidate, candidates)
+         end) do
+      nil ->
+        {:error,
+         Diagnostic.new!(
+           :unknown_provider,
+           "provider #{inspect(provider)} is not available through this plugin or an explicit dependency",
+           contribution.source
+         )}
+
+      provider ->
+        {:ok, provider}
+    end
+  end
+
+  defp validate_contribution(contribution, provider, kind) do
+    config_module = provider.config_module()
+    config_struct = Map.get(contribution.config, :__struct__)
+
+    cond do
+      kind not in provider.kinds() ->
+        {:error,
+         Diagnostic.new!(
+           :provider_kind_mismatch,
+           "provider #{inspect(provider)} does not support #{inspect(kind)} declarations",
+           contribution.source
+         )}
+
+      not is_nil(config_struct) and config_struct != config_module ->
+        {:error,
+         Diagnostic.new!(
+           :provider_config_mismatch,
+           "provider #{inspect(provider)} expects #{inspect(config_module)}, received #{inspect(config_struct)}",
+           contribution.source
+         )}
+
+      true ->
+        run_provider(provider, :validate, contribution.config, contribution.source)
+    end
+  rescue
+    error ->
+      {:error,
+       Diagnostic.new!(
+         :provider_validation_failed,
+         "provider validation failed: #{Exception.message(error)}",
+         contribution.source
+       )}
+  end
+
+  defp run_provider(provider, function, config, source) do
+    case apply(provider, function, [config, %{source: source}]) do
+      :ok when function == :validate ->
+        :ok
+
+      {:ok, result} when function == :lower and is_map(result) ->
+        {:ok, result}
+
+      {:error, diagnostics} when is_list(diagnostics) and diagnostics != [] ->
+        if Enum.all?(diagnostics, &match?(%Diagnostic{}, &1)),
+          do: {:error, diagnostics},
+          else: invalid_provider_result(provider, function, source)
+
+      _ ->
+        invalid_provider_result(provider, function, source)
+    end
+  rescue
+    error ->
+      {:error,
+       Diagnostic.new!(
+         :provider_execution_failed,
+         "provider #{inspect(provider)} #{function}/2 failed: #{Exception.message(error)}",
+         source
+       )}
+  end
+
+  defp invalid_provider_result(provider, function, source) do
+    {:error,
+     Diagnostic.new!(
+       :invalid_provider_result,
+       "provider #{inspect(provider)} returned an invalid result from #{function}/2",
+       source
+     )}
+  end
+
+  defp apply_contribution(composed, contribution) do
+    previous = Enum.find(composed, &(&1.provider == contribution.provider))
+
+    cond do
+      contribution.override and is_nil(previous) ->
+        {:error,
+         Diagnostic.new!(
+           :missing_override_target,
+           "override for #{inspect(contribution.provider)} has no prior authored contribution",
+           contribution.source
+         )}
+
+      contribution.override ->
+        {:ok,
+         Enum.map(composed, fn current ->
+           if current.provider == contribution.provider,
+             do: %{contribution | override: false},
+             else: current
+         end)}
+
+      previous ->
+        {:error,
+         Diagnostic.new!(
+           :duplicate_provider,
+           "provider #{inspect(contribution.provider)} is contributed more than once without override: true",
+           contribution.source,
+           related: [previous.source]
+         )}
+
+      true ->
+        {:ok, composed ++ [contribution]}
+    end
+  end
+
+  defp add_defaults(authored, candidates, declaration) do
+    default_entries = Wyram.Plugin.BlockDefaults.entries(declaration.source)
+    authored_fields = owned_fields(authored)
+
+    defaults =
+      Enum.reject(default_entries, fn default ->
+        provider = Enum.find(candidates, &(&1 == default.provider))
+
+        not is_nil(provider) and
+          Enum.any?(Map.keys(provider.owned_fields()), &MapSet.member?(authored_fields, &1))
+      end)
+
+    compose_entries(authored, defaults, candidates, declaration.kind)
+  end
+
+  defp owned_fields(contributions) do
+    Enum.reduce(contributions, MapSet.new(), fn contribution, fields ->
+      MapSet.union(fields, MapSet.new(Map.keys(contribution.provider.owned_fields())))
+    end)
+  end
+
+  defp lower_descriptor(contributions, _candidates, _declaration) do
+    conflicts = Provider.ownership_conflicts(Enum.map(contributions, & &1.provider))
+
+    if conflicts != [] do
+      [conflict | _] = conflicts
+      owners = conflict.providers
+      second = Enum.find(contributions, &(&1.provider == List.last(owners)))
+      first = Enum.find(contributions, &(&1.provider == hd(owners)))
+
+      {:error,
+       Diagnostic.new!(
+         :descriptor_field_conflict,
+         "providers #{inspect(owners)} both own descriptor field #{inspect(conflict.field)}",
+         second.source,
+         related: [first.source]
+       )}
+    else
+      Enum.reduce_while(contributions, {:ok, %{}}, fn contribution, {:ok, descriptor} ->
+        with {:ok, fields} <-
+               run_provider(
+                 contribution.provider,
+                 :lower,
+                 contribution.config,
+                 contribution.source
+               ),
+             :ok <- validate_lowered_fields(contribution.provider, fields, contribution.source) do
+          {:cont, {:ok, Map.merge(descriptor, fields)}}
+        else
+          {:error, %Diagnostic{} = diagnostic} -> {:halt, {:error, diagnostic}}
+          {:error, diagnostics} when is_list(diagnostics) -> {:halt, {:error, diagnostics}}
+        end
+      end)
+      |> case do
+        {:ok, descriptor} -> {:ok, descriptor}
+        error -> error
+      end
+    end
+  end
+
+  defp validate_lowered_fields(provider, fields, source) do
+    owned = Map.keys(provider.owned_fields()) |> Enum.sort()
+    keys = Map.keys(fields) |> Enum.sort()
+    unsupported = keys -- [:geometry, :collision, :material]
+
+    cond do
+      keys != owned ->
+        {:error,
+         Diagnostic.new!(
+           :invalid_provider_output,
+           "provider #{inspect(provider)} lowered fields #{inspect(keys)} but owns #{inspect(owned)}",
+           source
+         )}
+
+      unsupported != [] ->
+        {:error,
+         Diagnostic.new!(
+           :unsupported_descriptor_field,
+           "descriptor fields are not supported by this backend: #{inspect(unsupported)}",
+           source
+         )}
+
+      Enum.any?(fields, fn {field, value} -> not valid_backend_field?(field, value) end) ->
+        {:error,
+         Diagnostic.new!(
+           :unsupported_descriptor_value,
+           "provider #{inspect(provider)} lowered a descriptor value unsupported by this backend",
+           source
+         )}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp valid_backend_field?(:geometry, %{primitive: :cube} = value),
+    do: Map.keys(value) == [:primitive]
+
+  defp valid_backend_field?(:collision, %{primitive: :cube} = value),
+    do: Map.keys(value) == [:primitive]
+
+  defp valid_backend_field?(:material, %{color: {r, g, b}, mode: :opaque} = value) do
+    Map.keys(value) |> Enum.sort() == [:color, :mode] and
+      Enum.all?([r, g, b], &(is_integer(&1) and &1 in 0..255))
+  end
+
+  defp valid_backend_field?(_, _), do: false
 
   defp build_result(plugins, order, expanded) do
     by_id = Map.new(plugins, &{&1.id, &1})
@@ -687,8 +1158,8 @@ defmodule Wyram.Plugin.Linker do
               local_id: declaration.local_id,
               module: declaration.module,
               kind: declaration.kind,
-              descriptor: %{},
-              entries: Map.get(expanded, declaration.module, declaration.entries),
+              descriptor: expanded[declaration.module].descriptor,
+              entries: expanded[declaration.module].entries,
               source: declaration.source
             }
           end)
@@ -700,6 +1171,7 @@ defmodule Wyram.Plugin.Linker do
            dependencies: Enum.sort(plugin.dependencies),
            providers: Enum.sort_by(plugin.providers, &inspect/1),
            modules: Enum.sort_by(plugin.modules, &inspect/1),
+           module_hashes: Map.get(plugin, :module_hashes, %{}),
            game: plugin.game,
            blocks: blocks
          }}
@@ -719,6 +1191,7 @@ defmodule Wyram.Plugin.Linker do
              Enum.filter(plugin.declarations, &(&1.role == :registered or &1.role == :template)),
            providers: plugin.providers,
            modules: plugin.modules,
+           module_hashes: Map.get(plugin, :module_hashes, %{}),
            game: plugin.game,
            plugins: [plugin | closure],
            symbols: index
