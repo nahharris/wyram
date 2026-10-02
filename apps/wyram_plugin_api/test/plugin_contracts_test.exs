@@ -4,7 +4,15 @@ defmodule Wyram.PluginContractsTest do
   alias Wyram.Block.Ref
   alias Wyram.Capability.{Collision, Geometry, Material}
   alias Wyram.Plugin.BlockDefaults
-  alias Wyram.Plugin.{CapabilityContribution, Declaration, Diagnostic, Provider, SourceLocation}
+
+  alias Wyram.Plugin.{
+    CapabilityContribution,
+    Declaration,
+    Diagnostic,
+    Linker,
+    Provider,
+    SourceLocation
+  }
 
   defmodule ExtensionConfig do
     defstruct [:strength]
@@ -48,6 +56,34 @@ defmodule Wyram.PluginContractsTest do
 
   defmodule IncompleteProvider do
     def config_module, do: ExtensionConfig
+  end
+
+  defmodule ThrowingMetadataProvider do
+    @behaviour Provider
+
+    @impl true
+    def config_module, do: ExtensionConfig
+
+    @impl true
+    def kinds do
+      case Process.get(:wyram_provider_metadata_failure) do
+        :throw -> throw(:invalid_provider_metadata)
+        :exit -> exit(:invalid_provider_metadata)
+        _ -> [:block]
+      end
+    end
+
+    @impl true
+    def config_schema, do: %{strength: {:integer, 1..10}}
+
+    @impl true
+    def owned_fields, do: %{material: :exclusive}
+
+    @impl true
+    def validate(_, _), do: :ok
+
+    @impl true
+    def lower(_, _), do: {:ok, %{material: %{}}}
   end
 
   test "plugin and local IDs are validated and refs remain logical identities" do
@@ -243,6 +279,32 @@ defmodule Wyram.PluginContractsTest do
 
     assert {:error, [_]} =
              ExtensionProvider.validate(%ExtensionConfig{strength: 11}, %{source: source()})
+  end
+
+  test "throwing and exiting provider metadata is rejected with source-aware link diagnostics" do
+    try do
+      for failure <- [:throw, :exit] do
+        Process.put(:wyram_provider_metadata_failure, failure)
+
+        assert Provider.for_config(ExtensionConfig, [ThrowingMetadataProvider]) ==
+                 {:error, :unknown_provider}
+
+        plugin = %{
+          id: "metadata-failure",
+          entry: __MODULE__,
+          dependencies: [],
+          declarations: [],
+          providers: [ThrowingMetadataProvider],
+          modules: [],
+          game: nil
+        }
+
+        assert {:error, [%Diagnostic{code: :invalid_provider, source: %SourceLocation{}}]} =
+                 Linker.link_set([plugin])
+      end
+    after
+      Process.delete(:wyram_provider_metadata_failure)
+    end
   end
 
   test "block defaults are explicit solid opaque contributions" do
