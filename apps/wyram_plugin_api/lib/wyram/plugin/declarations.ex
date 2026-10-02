@@ -220,7 +220,8 @@ defmodule Wyram.Plugin.Declarations do
     module = declaration.module
 
     if function_exported?(module, :__wyram_generated_declaration__, 0) do
-      module.__wyram_generated_declaration__() == generated_marker(declaration)
+      module.__wyram_generated_declaration__()
+      |> same_generated_owner?(declaration)
     else
       false
     end
@@ -228,14 +229,26 @@ defmodule Wyram.Plugin.Declarations do
     _ -> false
   end
 
-  defp generated_marker(declaration) do
-    %{
-      plugin: declaration.plugin,
-      declaration_module: declaration.module,
-      local_id: declaration.local_id,
-      kind: declaration.kind,
-      role: declaration.role,
-      source: declaration.source
-    }
+  defp same_generated_owner?(marker, declaration) when is_map(marker) do
+    Map.keys(marker) |> Enum.sort() == [
+      :declaration_module,
+      :kind,
+      :local_id,
+      :plugin,
+      :role,
+      :source
+    ] and
+      marker.plugin == declaration.plugin and
+      marker.declaration_module == declaration.module and
+      valid_generated_identity?(marker) and
+      SourceLocation.valid?(marker.source)
   end
+
+  defp same_generated_owner?(_marker, _declaration), do: false
+
+  defp valid_generated_identity?(%{kind: :block, role: :registered, local_id: local_id}),
+    do: Ref.valid_local_id?(local_id)
+
+  defp valid_generated_identity?(%{kind: :block, role: :template, local_id: nil}), do: true
+  defp valid_generated_identity?(_marker), do: false
 end

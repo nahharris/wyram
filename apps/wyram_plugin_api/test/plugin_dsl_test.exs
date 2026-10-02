@@ -87,6 +87,39 @@ defmodule Wyram.PluginDslTest do
     assert recompiled_marker == original_marker
   end
 
+  test "recompiling a declaration accepts changed identity and source location for the same owner" do
+    suffix = System.unique_integer([:positive])
+    entry = "Wyram.PluginDslFixture.Updated#{suffix}"
+    catalog = "#{entry}.Catalog"
+
+    source = fn local_id ->
+      """
+      defmodule #{entry} do
+        use Wyram.Plugin, id: "updated-fixture", declarations: [#{catalog}]
+      end
+
+      defmodule #{catalog} do
+        use Wyram.Plugin.Declarations, plugin: #{entry}
+        defblock Stone, id: "#{local_id}"
+      end
+      """
+    end
+
+    Code.compile_string(source.("stone"), "same_owner_update.ex")
+
+    block_module = Module.concat([entry, "Blocks.Stone"])
+
+    Code.compile_string(source.("granite"), "same_owner_update.ex")
+    updated_marker = block_module.__wyram_generated_declaration__()
+
+    assert updated_marker.local_id == "granite"
+
+    Code.compile_string("\n" <> source.("granite"), "same_owner_update.ex")
+    shifted_marker = block_module.__wyram_generated_declaration__()
+
+    assert shifted_marker.source.line == updated_marker.source.line + 1
+  end
+
   test "defblock records a registered block and its aliased template in source order" do
     Code.compile_string("""
     defmodule Wyram.PluginDslFixture.DeclarationEntry do
@@ -324,6 +357,42 @@ defmodule Wyram.PluginDslTest do
 
       defmodule Wyram.PluginDslFixture.CollisionCatalog do
         use Wyram.Plugin.Declarations, plugin: Wyram.PluginDslFixture.CollisionEntry
+        defblock Stone, id: "stone"
+      end
+      """,
+      ~r/already defined/i
+    )
+  end
+
+  test "declaration collection rejects generated markers owned by another plugin" do
+    assert_compile_error(
+      """
+      defmodule Wyram.PluginDslFixture.ForeignCollisionEntry.Blocks.Stone do
+        def __wyram_generated_declaration__ do
+          %{
+            plugin: Wyram.PluginDslFixture.OtherEntry,
+            declaration_module: Wyram.PluginDslFixture.ForeignCollisionEntry.Blocks.Stone,
+            local_id: "stone",
+            kind: :block,
+            role: :registered,
+            source: %Wyram.Plugin.SourceLocation{
+              file: "foreign.ex",
+              line: 1,
+              column: nil,
+              module: Wyram.PluginDslFixture.OtherCatalog
+            }
+          }
+        end
+      end
+
+      defmodule Wyram.PluginDslFixture.ForeignCollisionEntry do
+        use Wyram.Plugin,
+          id: "fixture",
+          declarations: [Wyram.PluginDslFixture.ForeignCollisionCatalog]
+      end
+
+      defmodule Wyram.PluginDslFixture.ForeignCollisionCatalog do
+        use Wyram.Plugin.Declarations, plugin: Wyram.PluginDslFixture.ForeignCollisionEntry
         defblock Stone, id: "stone"
       end
       """,
