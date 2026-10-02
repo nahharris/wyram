@@ -9,6 +9,9 @@ defmodule WyramMods.CrossPluginBase.Blocks do
   use Wyram.Plugin.Declarations, plugin: WyramMods.CrossPluginBase.Plugin
 
   defblock Stone, id: "stone" do
-    capability(%WyramMods.CrossPluginBase.TintConfig{channel: :base})
+    capability(%WyramMods.CrossPluginBase.TintConfig{
+      channel: :base,
+      marker: :terrain_catalog_only_atom
+    })
   end
 end

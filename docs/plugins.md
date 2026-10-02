@@ -1,27 +1,51 @@
-# Compiled plugin packages
+# Declarative plugin packages
 
-The proposed replacement for this callback-based API is described in [plugin-framework-plan.md](plugin-framework-plan.md). This page documents the current implementation.
+Wyram plugins declare content through the public `wyram_plugin_api`. The compiler validates declarations and dependencies, expands templates, validates capability configurations, and lowers supported content into compiled catalogs. The engine consumes those catalogs at startup. It does not execute block, terrain, or character catalog callbacks.
 
-A `.wyrplug` file is a ZIP archive with a generated `manifest.json` and `ebin/Elixir.WyramMods.*.beam`. In the plugin's `mix.exs`, set the Mix project `version` and declare `wyram_plugin: [id: "my_plugin", entry: WyramMods.MyPlugin, dependencies: []]`. The packager derives the API, OTP, and Elixir versions from its active toolchain and lists the compiled plugin modules. Plugin authors do not maintain a source `manifest.json`. The loader checks package size, paths, API/runtime compatibility, duplicate IDs and module names, then loads the listed modules. Package code is trusted and runs with the same OS permissions as the engine.
-
-The entry module implements `Wyram.Plugin`: `blocks/0` defines names and RGB colors, `terrain/0` may provide a layered terrain palette, and `interact/2` defines interaction behavior. Block identifiers are `plugin_id:block_name`; numeric IDs are assigned by the engine at startup and retained in saves, so installing a new plugin does not reinterpret existing blocks. Saves record required plugin versions. Removing or changing a required plugin version still prevents that world from opening until the matching plugin is restored.
-
-Use the Wyram game and example projects as build templates. Run `scripts/pack-plugin.ps1` through `mise exec` to compile and package them. Move the resulting `.wyrplug` into `%LOCALAPPDATA%\Wyram\plugins`, or into `WYRAM_DATA_DIR\plugins`, and restart the game. The renamed game plugin has the ID `wyram`; worlds saved with the old `official` ID are incompatible.
-
-## Character locomotion profiles
-
-The terrain/game provider may implement the optional `player_profile/0` callback, returning a `Wyram.Character.Profile` from the public API:
+## Authoring blocks
 
 ```elixir
-@impl true
-def player_profile do
-  %{Wyram.Character.Profile.default() | walk_speed: 4.0, run_speed: 8.0}
+defmodule WyramMods.MyPlugin do
+  use Wyram.Plugin, id: "my_plugin"
+  alias Wyram.Capability.Material
+
+  defblock Solid, template: true do
+    capability %Material{color: {160, 160, 160}}
+  end
+
+  defblock Amber, id: "amber" do
+    template WyramMods.MyPlugin.Blocks.Solid
+    capability %Material{color: {232, 154, 44}}, override: true
+  end
 end
 ```
 
-The engine validates positive numeric fields up to 100 and requires `run_speed >= walk_speed`. Invalid profiles stop plugin initialization. A plugin without this callback uses the default profile; API version 1 remains compatible. Only the active terrain provider supplies the player profile. A character with different tuning can call the same pure `Wyram.Character.Profile.motion/2` policy in Elixir. Profiles now include crouch/prone dimensions and enabled traversal capabilities with validated limits; see [gameplay-plan.md](gameplay-plan.md) for controls and interruption rules.
-## Character catalogs and presentation
+This creates `WyramMods.MyPlugin.Blocks.Amber`. Ordinary Elixir code calls `Amber.ref/0` to obtain a validated `Wyram.Block.Ref`; the persistent identity is `my_plugin:amber`. Numeric handles are assigned only by the engine. Templates have no persistent ID or placement reference. Registered blocks can also serve as templates.
 
-The active game provider may also implement optional `character_models/0` and `characters/0`. Return lists of public `Wyram.Character.Model` and `Wyram.Character.Definition` values. Every definition supplies a unique ID, model ID, profile, feet position and initial look; exactly one definition is named `player`. The model catalog validates ordered bone parents, semantic roles, local pivots, colored cuboids and named attachment references. `Wyram.Character.Model.compatible?/2` compares semantic roles, allowing different bone names and proportions to share presentation logic. Existing providers without these callbacks retain a default cuboid and player definition.
+Duplicate capabilities fail compilation. `override: true` requires an existing capability from the same provider and replaces its complete configuration. Defaults fill missing geometry, collision, and material after authored composition; defaults are not override targets. The initial backend supports solid cube geometry/collision and opaque RGB materials. Unsupported shapes, transparency, states, light, and movement effects fail explicitly until their backend phases are implemented.
 
-Use `plugins/wyram/lib/wyram_mods/characters.ex` as the original editable source example. Model and definition catalogs are each limited to 16 entries; models have at most 32 bones and 64 cuboids. Plugin packaging compiles their source with the existing BEAM package pipeline. The engine exports model values in the client initialization batch and snapshots per-character model IDs; no game plugin imports engine internals. Native animation maps approved states to humanoid semantic roles, with safe fallback for missing roles/capabilities. Character physics remains independent of presentation.
+Block bodies accept only `template` and `capability` entries. Configuration expressions are constrained literals and named structs, not function calls or variables. The linker resolves module symbols after all source modules compile, including local forward references. Separate catalogs use `use Wyram.Plugin.Declarations, plugin: WyramMods.MyPlugin` and are listed in the entry's `declarations:` option. The entry itself contributes automatically.
+
+Extension providers implement `Wyram.Plugin.Provider` and register through the entry's `providers:` option. They declare their named configuration struct, supported kinds, configuration schema, and owned descriptor fields, then validate and lower configurations. All registered declarations, templates, and providers are public automatically; there is no export list or visibility option. A reference to another plugin still requires its ID in `dependencies:` and its project in Mix dependencies.
+
+## Building and packaging
+
+Mix names the entry module with `wyram_plugin: [entry: WyramMods.MyPlugin]` and enables the Wyram compiler around the ordinary Elixir compilers. Identity and content dependencies are declared once in the entry module. See the game and example projects for the complete compiler and path-dependency configuration.
+
+A `.wyrplug` is a ZIP containing generated `manifest.json`, `catalog.term`, and exactly the owned `ebin/Elixir.WyramMods.*.beam` files. The manifest records the plugin ID, release version, dependencies, entry, owned module names, catalog SHA256, OTP major, and Elixir minor. The catalog contains descriptors, declaration identity summaries, BEAM hashes, and required dependency fingerprints. Before hashing and packaging, the compiler normalizes only the serialization order of Elixir checker metadata; executable and literal chunks remain unchanged. Runtime verifies the exact packaged BEAM bytes. The full authoring IR is stored as an opaque compiler payload: dependency builds decode it after validating the interface, while runtime consumes only the summaries and lowered data. Fingerprints bind both the compiler payload and the compiled block/game output. Rebuilding a dependency's plugin-owned implementation invalidates downstream catalogs, including changes to provider lowering or helper code. Changes to the shared core compiler or built-in providers require rebuilding all packages; dependency fingerprints do not provide cross-version compatibility for those semantics.
+
+The loader checks archive budgets and paths, runtime compatibility, ownership, BEAM identity/hashes, dependency order/fingerprints, descriptor support, and game configuration before registering content. Plugin BEAM code is trusted and runs with the engine's OS permissions. Install only plugins you trust.
+
+Run `scripts/pack-plugin.ps1` through `mise exec` to compile and package the provided projects. Install the `.wyrplug` in `%LOCALAPPDATA%\Wyram\plugins` or `WYRAM_DATA_DIR\plugins`, then restart. Rebuild all pre-alpha packages after this API replacement; old callback packages are incompatible. There are no compatibility adapters or schema-version migrations.
+
+## Compiled game setup and characters
+
+A game plugin names an explicit `game:` module implementing `Wyram.Game.Provider.build/0`. This build-time hook can construct procedural rigs and returns validated `Wyram.Game.Config` data: logical terrain references, a character profile, models, and character definitions. Terrain references must resolve to registered blocks owned by the game or an explicit dependency. The compiler invokes the builder; the runtime reads the resulting data.
+
+Select the active game with `WYRAM_GAME_PLUGIN` (or the engine's `game:` startup option). Without explicit selection, exactly one installed plugin must provide game configuration. Zero or multiple candidates fail instead of relying on package filename ordering.
+
+Profiles validate movement tuning and body dimensions. Models and character definitions are each limited to 16 entries; models have at most 32 bones and 64 cuboids. Definitions bind unique character IDs to model IDs and profiles, with one `player`. Ordered bone parents, semantic roles, pivots, cuboids, and attachments remain reusable through the public character API. See `plugins/wyram/lib/wyram_mods/characters.ex` for the original editable dwarf rigs.
+
+The engine sends models in a client initialization batch and character snapshots carry model IDs and approved movement state. Native animation retargets semantic roles. Character physics remains independent of presentation, and no game plugin imports engine internals.
+
+Valid saved logical IDs retain their numeric handles when new content is added. Invalid, duplicate, unknown, or exhausted mappings fail rather than reinterpreting saved cells. Saves also retain required plugin release versions. The remaining capability phases are tracked in [plugin-framework-plan.md](plugin-framework-plan.md).

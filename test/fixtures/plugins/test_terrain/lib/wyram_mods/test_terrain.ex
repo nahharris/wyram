@@ -1,22 +1,39 @@
 defmodule WyramMods.TestTerrain do
   @moduledoc "Test-only terrain with names unrelated to the Wyram game."
-  @behaviour Wyram.Plugin
+  use Wyram.Plugin,
+    id: "test_terrain",
+    declarations: [WyramMods.TestTerrain.BlockCatalog],
+    game: WyramMods.TestTerrain.Game
+end
 
-  @impl true
-  def blocks do
-    [
-      %{name: "violet", color: [73, 39, 177]},
-      %{name: "ochre", color: [201, 113, 37]},
-      %{name: "slate", color: [42, 63, 84]}
-    ]
+defmodule WyramMods.TestTerrain.BlockCatalog do
+  @moduledoc false
+  use Wyram.Plugin.Declarations, plugin: WyramMods.TestTerrain
+  alias Wyram.Capability.Material
+
+  defblock Violet, id: "violet" do
+    capability(%Material{color: {73, 39, 177}})
   end
 
-  @impl true
-  def terrain do
-    {:layered,
-     %{surface: "test_terrain:violet", soil: "test_terrain:ochre", rock: "test_terrain:slate"}}
+  defblock Ochre, id: "ochre" do
+    capability(%Material{color: {201, 113, 37}})
   end
 
+  defblock Slate, id: "slate" do
+    capability(%Material{color: {42, 63, 84}})
+  end
+end
+
+defmodule WyramMods.TestTerrain.Game do
+  @moduledoc false
+  @behaviour Wyram.Game.Provider
+  alias Wyram.Game.Config
+  alias WyramMods.TestTerrain.Blocks
+
   @impl true
-  def interact(_block, _context), do: :pass
+  def build do
+    Config.new!(%{
+      terrain: %{surface: Blocks.Violet.ref(), soil: Blocks.Ochre.ref(), rock: Blocks.Slate.ref()}
+    })
+  end
 end

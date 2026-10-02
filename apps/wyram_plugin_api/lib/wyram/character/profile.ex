@@ -112,17 +112,6 @@ defmodule Wyram.Character.Profile do
 
   def validate(_), do: {:error, :invalid_character_profile}
 
-  @doc "Load the optional game profile; legacy plugins retain the default tuning."
-  @spec from_plugin(module()) :: {:ok, t()} | {:error, :invalid_character_profile}
-  def from_plugin(module) do
-    profile =
-      if function_exported?(module, :player_profile, 0),
-        do: module.player_profile(),
-        else: default()
-
-    with :ok <- validate(profile), do: {:ok, profile}
-  end
-
   @doc "Resolve intent in Elixir; consumers receive approved tuning rather than choosing speeds."
   @spec motion(t(), boolean()) :: motion()
   def motion(%__MODULE__{} = profile, running) when is_boolean(running) do

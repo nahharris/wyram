@@ -21,6 +21,22 @@ unless Wyram.Plugin.Compiler.fingerprint(addon.interface) == addon.interface_fin
   raise "addon interface fingerprint does not match its compiled interface"
 end
 
+unless not Map.has_key?(base.interface, :plugins) and
+         Enum.all?(base.interface.declarations, &(&1.entries == [])) and
+         :binary.match(base.interface.compile_data, "terrain_catalog_only_atom") != :nomatch do
+  raise "base interface must export safe declaration summaries and preserve authored compile data"
+end
+
+expected_terrain =
+  Map.new([:surface, :soil, :rock], fn role ->
+    {role, Wyram.Block.Ref.new!("fixture-base", "stone")}
+  end)
+
+unless match?(%Wyram.Game.Config{}, addon.catalog.game) and
+         addon.catalog.game.terrain == expected_terrain do
+  raise "addon game configuration did not preserve its dependency terrain references"
+end
+
 block = Enum.find(addon.catalog.blocks, &(&1.local_id == "cobble"))
 base_block = Enum.find(base.catalog.blocks, &(&1.local_id == "stone"))
 {r, g, b} = base_block.descriptor.material.color

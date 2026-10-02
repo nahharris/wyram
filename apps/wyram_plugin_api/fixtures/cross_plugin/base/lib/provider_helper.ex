@@ -1,5 +1,5 @@
 defmodule WyramMods.CrossPluginBase.TintConfig do
-  defstruct [:channel]
+  defstruct [:channel, :marker]
 end
 
 defmodule WyramMods.CrossPluginBase.ProviderHelper do
@@ -12,7 +12,7 @@ defmodule WyramMods.CrossPluginBase.ProviderHelper do
   def kinds, do: [:block]
 
   @impl true
-  def config_schema, do: %{channel: :atom}
+  def config_schema, do: %{channel: :atom, marker: :atom}
 
   @impl true
   def owned_fields, do: %{material: :exclusive}

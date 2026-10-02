@@ -6,8 +6,12 @@ defmodule WyramMods.Example.MixProject do
       app: :wyram_example,
       version: "0.1.0",
       elixir: "~> 1.20",
-      wyram_plugin: [id: "example", entry: WyramMods.Example, dependencies: ["wyram"]],
-      deps: [{:wyram_plugin_api, path: "../../apps/wyram_plugin_api"}]
+      compilers: [:wyram_prepare] ++ Mix.compilers() ++ [:wyram],
+      wyram_plugin: [entry: WyramMods.Example],
+      deps: [
+        {:wyram_plugin_api, path: "../../apps/wyram_plugin_api"},
+        {:wyram_game, path: "../wyram"}
+      ]
     ]
   end
 

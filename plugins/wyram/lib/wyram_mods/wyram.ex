@@ -1,31 +1,54 @@
 defmodule WyramMods.Wyram do
-  @moduledoc "The default creative voxel game, implemented through the public plugin contract."
-  @behaviour Wyram.Plugin
+  @moduledoc "The default creative voxel game, declared through the public plugin API."
+  use Wyram.Plugin,
+    id: "wyram",
+    declarations: [WyramMods.Wyram.BlockCatalog],
+    game: WyramMods.Wyram.Game
+end
 
-  @impl true
-  def player_profile, do: WyramMods.Characters.player_profile()
+defmodule WyramMods.Wyram.BlockCatalog do
+  @moduledoc false
+  use Wyram.Plugin.Declarations, plugin: WyramMods.Wyram
+  alias Wyram.Capability.Material
 
-  @impl true
-  def character_models, do: WyramMods.Characters.models()
-
-  @impl true
-  def characters, do: WyramMods.Characters.definitions()
-
-  @impl true
-  def blocks do
-    [
-      %{name: "grass", color: [96, 150, 76]},
-      %{name: "dirt", color: [118, 82, 54]},
-      %{name: "stone", color: [126, 128, 134]},
-      %{name: "wood", color: [135, 94, 54]}
-    ]
+  defblock Solid, template: true do
+    capability(%Material{color: {160, 160, 160}})
   end
 
-  @impl true
-  def terrain do
-    {:layered, %{surface: "wyram:grass", soil: "wyram:dirt", rock: "wyram:stone"}}
+  defblock Grass, id: "grass" do
+    template(WyramMods.Wyram.Blocks.Solid)
+    capability(%Material{color: {96, 150, 76}}, override: true)
   end
 
+  defblock Dirt, id: "dirt" do
+    template(WyramMods.Wyram.Blocks.Solid)
+    capability(%Material{color: {118, 82, 54}}, override: true)
+  end
+
+  defblock Stone, id: "stone" do
+    template(WyramMods.Wyram.Blocks.Solid)
+    capability(%Material{color: {126, 128, 134}}, override: true)
+  end
+
+  defblock Wood, id: "wood" do
+    template(WyramMods.Wyram.Blocks.Solid)
+    capability(%Material{color: {135, 94, 54}}, override: true)
+  end
+end
+
+defmodule WyramMods.Wyram.Game do
+  @moduledoc false
+  @behaviour Wyram.Game.Provider
+  alias Wyram.Game.Config
+  alias WyramMods.Wyram.Blocks
+
   @impl true
-  def interact(_block, _context), do: :pass
+  def build do
+    Config.new!(%{
+      terrain: %{surface: Blocks.Grass.ref(), soil: Blocks.Dirt.ref(), rock: Blocks.Stone.ref()},
+      profile: WyramMods.Characters.player_profile(),
+      models: WyramMods.Characters.models(),
+      characters: WyramMods.Characters.definitions()
+    })
+  end
 end

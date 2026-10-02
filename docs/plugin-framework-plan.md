@@ -1,6 +1,6 @@
 # Declarative plugin framework plan
 
-Status: proposed architecture and implementation sequence. This document does not introduce the DSL or change the running game.
+Status: phases 1-3 implement the public contracts, declaration compiler and compiled-package replacement. Phases 4-8 remain planned.
 
 ## Goal and scope
 
@@ -10,35 +10,33 @@ This is a pre-alpha replacement. Break existing callbacks, packages, protocol ta
 
 ## Current state
 
-- `Wyram.Plugin` is a callback behaviour. Blocks are maps with name and RGB color; terrain and interactions have separate callbacks. Character profiles/models have public structs and validation, but are optional callback catalogs.
-- Plugin identity/dependencies live in Mix configuration. The packager compiles Elixir and generates a manifest. There is no domain compiler or exported content interface.
-- `PluginManager` loads trusted BEAM packages, checks manifest dependencies and builds block/color tables at startup. Dependency presence is checked, but there is no dependency graph linker that detects cycles and resolves content contracts.
-- Regions own packed chunks. Native code treats nonzero cells as solid cubes; the client palette is an ID-to-color map. Shape, material and state therefore require changes across declaration, registry, collision, meshing and protocol boundaries.
+- The public API provides logical block references, typed declaration IR, source diagnostics and capability provider contracts. The first backend supports opaque RGB cubes with solid cube collision.
+- The declaration compiler collects inline and split catalogs, validates dependency/template composition, and writes deterministic catalogs plus exported interfaces. Mix configuration names the entry; plugin identity and dependencies live in the DSL.
+- The package/runtime replacement consumes compiled catalogs, verifies package ownership and dependency fingerprints, and assigns runtime block handles. Terrain and characters are compiled through an explicit public game builder; runtime startup does not invoke declaration or provider callbacks.
+- Regions continue to own packed chunks. Native code still consumes batched cube data and palettes. Later phases must implement state, shape, material and lighting behavior before those capabilities become accepted content.
 
 ## Public authoring model
 
 Use `Wyram.Plugin` as the framework entry point, replacing its current callback contract. Mix names the entry module and enables the Wyram compiler; identity and content dependencies are declared once in that entry module. Packaging derives them from its compiled interface.
 
-Each `defblock` produces a named declaration module, giving authors an importable symbol similar to a registered Java block constant. Illustrative target syntax, to be finalized in phase 1:
+Each `defblock` produces a named declaration module, giving authors an importable symbol similar to a registered Java block constant. Supported authoring syntax:
 
 ~~~elixir
 defmodule WyramMods.Wyram do
   use Wyram.Plugin, id: "wyram"
 
-  alias Wyram.Capability.{Geometry, Collision, Material, Surface}
+  alias Wyram.Capability.{Geometry, Collision, Material}
   alias Wyram.Shape.Cube
 
   defblock SolidBlock, id: "solid_block" do
     capability %Geometry{shape: %Cube{}}
     capability %Collision{shape: %Cube{}}
     capability %Material{color: {160, 160, 160}, mode: :opaque}
-    capability %Surface{friction: 0.50}
   end
 
   defblock Ice, id: "ice" do
     template WyramMods.Wyram.Blocks.SolidBlock
     capability %Material{color: {180, 220, 255}, mode: :opaque}, override: true
-    capability %Surface{friction: 0.08}, override: true
   end
 end
 ~~~
@@ -67,7 +65,7 @@ Check template cycles and expansion budgets independently of plugin dependency c
 
 A plugin may also export providers and explicit behaviour handlers. The framework should make data declarations easy and imperative gameplay exceptional, without forbidding it.
 
-Terrain settings, character models/profiles and the initial roster become named public declarations too. The active game configuration is selected explicitly at startup and references those declarations; validate exactly one selected configuration instead of picking the first terrain provider in package order. The source of procedural terrain can later be an explicit behaviour module with its own contract.
+The first replacement uses an explicit `game:` module implementing the public `Wyram.Game.Provider` contract. Its build-time `build/0` returns a validated `Wyram.Game.Config` with logical terrain block references, character profiles/models and the initial roster. The compiler validates and serializes this data; runtime never calls the builder. Select a game through the startup option or `WYRAM_GAME_PLUGIN`; automatic selection succeeds only when exactly one installed plugin supplies a game. These domains can gain named declaration macros when their broader entity/content consumers are ready.
 
 ## Identity and validation guarantees
 

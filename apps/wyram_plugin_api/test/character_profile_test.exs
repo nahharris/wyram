@@ -3,27 +3,6 @@ defmodule Wyram.Character.ProfileTest do
 
   alias Wyram.Character.{Input, Posture, Profile, State}
 
-  defmodule LegacyPlugin do
-  end
-
-  defmodule CustomPlugin do
-    alias Wyram.Character.Profile
-
-    def player_profile,
-      do: Map.merge(Profile.default(), %{walk_speed: 2.0, run_speed: 4.0})
-  end
-
-  defmodule InvalidPlugin do
-    def player_profile, do: %{walk_speed: -1}
-  end
-
-  test "optional plugin profiles preserve legacy plugins and validate custom tuning" do
-    assert Profile.from_plugin(LegacyPlugin) == {:ok, Profile.default()}
-    assert {:ok, custom} = Profile.from_plugin(CustomPlugin)
-    assert Profile.motion(custom, true).speed == 4.0
-    assert Profile.from_plugin(InvalidPlugin) == {:error, :invalid_character_profile}
-  end
-
   test "default profile preserves ground speeds with snappier jump tuning" do
     profile = Profile.default()
     assert profile.walk_speed == 5.0

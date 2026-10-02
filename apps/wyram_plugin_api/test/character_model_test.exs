@@ -2,9 +2,6 @@ defmodule Wyram.Character.ModelTest do
   use ExUnit.Case, async: true
   alias Wyram.Character.{Catalog, Definition, Model, Profile}
 
-  defmodule LegacyGame do
-  end
-
   test "original model import validates geometry and ordered skeleton references" do
     model = Model.fallback()
     assert :ok = Model.validate(model)
@@ -23,8 +20,8 @@ defmodule Wyram.Character.ModelTest do
     assert {:error, :invalid_character_model} = Model.validate(%{model | bones: [bad]})
   end
 
-  test "catalog preserves legacy games and rejects invalid roster/model substitution" do
-    assert {:ok, catalog} = Catalog.from_plugin(LegacyGame, Profile.default())
+  test "catalog rejects invalid roster and model substitution" do
+    catalog = %{models: [Model.fallback()], definitions: [Definition.player(Profile.default())]}
     assert [%Definition{id: "player", model: "default"}] = catalog.definitions
     assert :ok = Catalog.validate(catalog.models, catalog.definitions)
     duplicate = catalog.definitions ++ catalog.definitions

@@ -1,9 +1,11 @@
 defmodule Wyram.Plugin.Compiler.DependencyArtifacts do
   @moduledoc false
 
-  alias Wyram.Plugin.{Compiler, Diagnostic, SourceLocation}
+  alias Wyram.Plugin.{Compiler, Declaration, Diagnostic, SourceLocation}
 
   @magic :wyram_plugin_catalog
+  @max_compile_data_bytes 16 * 1024 * 1024
+  @max_catalog_bytes 16 * 1024 * 1024
 
   def discover(metadata) when is_map(metadata) do
     with {:ok, artifacts} <- dependency_artifacts(),
@@ -28,7 +30,11 @@ defmodule Wyram.Plugin.Compiler.DependencyArtifacts do
     end)
   end
 
-  def inputs(metadata, :discover), do: discover(metadata)
+  def inputs(metadata, :discover) do
+    with {:ok, dependencies} <- discover(metadata) do
+      inputs(metadata, dependencies)
+    end
+  end
 
   def inputs(_metadata, _dependencies) do
     {:error,
@@ -42,16 +48,7 @@ defmodule Wyram.Plugin.Compiler.DependencyArtifacts do
   defp dependency_input(dependencies, id) do
     case Map.fetch(dependencies, id) do
       {:ok, %{interface: interface, interface_fingerprint: expected_fingerprint}} ->
-        if Compiler.fingerprint(interface) == expected_fingerprint do
-          {:ok, interface, expected_fingerprint}
-        else
-          {:error,
-           Diagnostic.new!(
-             :stale_dependency_interface,
-             "dependency #{inspect(id)} interface fingerprint is invalid",
-             source(nil)
-           )}
-        end
+        validate_dependency_input(interface, expected_fingerprint, id)
 
       :error ->
         {:error,
@@ -61,6 +58,26 @@ defmodule Wyram.Plugin.Compiler.DependencyArtifacts do
            source(nil)
          )}
     end
+  end
+
+  defp validate_dependency_input(interface, expected_fingerprint, id) do
+    with :ok <- validate_interface_compile_data_size(interface),
+         :ok <- validate_dependency_fingerprint(interface, expected_fingerprint, id),
+         {:ok, restored} <- restore_compile_data(interface) do
+      {:ok, restored, expected_fingerprint}
+    end
+  end
+
+  defp validate_dependency_fingerprint(interface, expected_fingerprint, id) do
+    if Compiler.fingerprint(interface) == expected_fingerprint,
+      do: :ok,
+      else:
+        {:error,
+         Diagnostic.new!(
+           :stale_dependency_interface,
+           "dependency #{inspect(id)} interface fingerprint is invalid",
+           source(nil)
+         )}
   end
 
   defp dependency_artifacts do
@@ -131,7 +148,7 @@ defmodule Wyram.Plugin.Compiler.DependencyArtifacts do
   end
 
   defp read_dependency_catalog(app, catalog_path, app_modules) do
-    with {:ok, bytes} <- File.read(catalog_path),
+    with {:ok, bytes} <- read_catalog_bytes(catalog_path),
          {:ok, artifact} <- decode_artifact(bytes),
          :ok <- validate_artifact(artifact, app_modules) do
       {:ok, artifact}
@@ -146,6 +163,14 @@ defmodule Wyram.Plugin.Compiler.DependencyArtifacts do
            "dependency #{inspect(app)} catalog is invalid: #{inspect(reason)}",
            source(nil)
          )}
+    end
+  end
+
+  defp read_catalog_bytes(path) do
+    case File.stat(path) do
+      {:ok, %{size: size}} when size <= @max_catalog_bytes -> File.read(path)
+      {:ok, _stat} -> {:error, :dependency_catalog_too_large}
+      error -> error
     end
   end
 
@@ -171,7 +196,8 @@ defmodule Wyram.Plugin.Compiler.DependencyArtifacts do
               is_list(blocks) do
     app_modules_by_name = Map.new(app_modules, &{Atom.to_string(&1), &1})
 
-    with :ok <- validate_module_names(owned, modules),
+    with :ok <- validate_interface_compile_data_size(interface),
+         :ok <- validate_module_names(owned, modules),
          {:ok, actual_hashes} <- actual_module_hashes(owned, app_modules_by_name),
          :ok <- validate_module_hashes(actual_hashes, hashes) do
       validate_interface_fingerprint(interface, expected)
@@ -251,6 +277,118 @@ defmodule Wyram.Plugin.Compiler.DependencyArtifacts do
          source(nil)
        )}
     end
+  end
+
+  defp restore_compile_data(%{compile_data: bytes, declarations: summaries} = interface)
+       when is_binary(bytes) and is_list(summaries) do
+    with :ok <- validate_compile_data_size(bytes),
+         :ok <- reject_compressed_compile_data(bytes),
+         {:ok, %{declarations: declarations, plugins: plugins}} <- decode_compile_data(bytes),
+         :ok <- validate_compile_data_lists(declarations, plugins),
+         :ok <- validate_declaration_summaries(declarations, summaries),
+         :ok <- validate_compile_data_owner(declarations, plugins, interface) do
+      {:ok, Map.merge(interface, %{declarations: declarations, plugins: plugins})}
+    else
+      {:error, %Diagnostic{} = diagnostic} -> {:error, diagnostic}
+    end
+  end
+
+  defp restore_compile_data(_interface), do: {:error, invalid_compile_data()}
+
+  defp validate_compile_data_size(bytes) do
+    if byte_size(bytes) <= @max_compile_data_bytes,
+      do: :ok,
+      else: {:error, invalid_compile_data()}
+  end
+
+  defp validate_interface_compile_data_size(%{compile_data: bytes}) when is_binary(bytes),
+    do: validate_compile_data_size(bytes)
+
+  defp validate_interface_compile_data_size(_interface), do: {:error, invalid_compile_data()}
+
+  defp reject_compressed_compile_data(<<131, 80, _rest::binary>>),
+    do: {:error, invalid_compile_data()}
+
+  defp reject_compressed_compile_data(<<131, _tag, _rest::binary>>), do: :ok
+  defp reject_compressed_compile_data(_bytes), do: {:error, invalid_compile_data()}
+
+  defp decode_compile_data(bytes) do
+    case :erlang.binary_to_term(bytes, [:safe]) do
+      %{declarations: declarations, plugins: plugins} = data
+      when map_size(data) == 2 ->
+        {:ok, %{declarations: declarations, plugins: plugins}}
+
+      _ ->
+        {:error, invalid_compile_data()}
+    end
+  rescue
+    ArgumentError -> {:error, invalid_compile_data()}
+  end
+
+  defp validate_compile_data_lists(declarations, plugins) do
+    valid_declarations =
+      is_list(declarations) and Enum.all?(declarations, &match?(%Declaration{}, &1))
+
+    valid_plugins = is_list(plugins) and Enum.all?(plugins, &is_map/1)
+
+    if valid_declarations and valid_plugins,
+      do: :ok,
+      else: {:error, invalid_compile_data()}
+  end
+
+  defp validate_declaration_summaries(declarations, summaries) do
+    expected_summaries = Enum.map(declarations, &%{&1 | entries: []})
+
+    if summaries == expected_summaries,
+      do: :ok,
+      else: {:error, invalid_compile_data()}
+  end
+
+  defp validate_compile_data_owner(declarations, [owner | _], interface) when is_map(owner) do
+    valid_owner =
+      owner_matches_interface?(owner, interface) and Map.get(owner, :declarations) == declarations
+
+    if valid_owner, do: :ok, else: {:error, invalid_compile_data()}
+  end
+
+  defp validate_compile_data_owner(_declarations, _plugins, _interface),
+    do: {:error, invalid_compile_data()}
+
+  defp owner_matches_interface?(owner, interface) do
+    owner_identity_matches?(owner, interface) and owner_dependencies_match?(owner, interface) and
+      owner_modules_match?(owner, interface) and
+      Map.get(owner, :module_hashes) == interface.module_hashes
+  end
+
+  defp owner_identity_matches?(owner, interface) do
+    Map.get(owner, :id) == interface.id and
+      module_name(Map.get(owner, :entry)) == interface.entry and
+      module_name(Map.get(owner, :game)) == interface.game
+  end
+
+  defp owner_dependencies_match?(owner, interface) do
+    dependencies = Map.get(owner, :dependencies)
+    is_list(dependencies) and Enum.sort(dependencies) == interface.dependencies
+  end
+
+  defp owner_modules_match?(owner, interface) do
+    module_names(Map.get(owner, :modules)) == interface.modules and
+      module_names(Map.get(owner, :providers)) == interface.providers
+  end
+
+  defp module_name(nil), do: nil
+  defp module_name(module) when is_atom(module), do: Atom.to_string(module)
+  defp module_name(_module), do: nil
+
+  defp module_names(modules) when is_list(modules), do: Enum.map(modules, &module_name/1)
+  defp module_names(_modules), do: nil
+
+  defp invalid_compile_data do
+    Diagnostic.new!(
+      :invalid_dependency_compile_data,
+      "dependency interface has invalid declaration compile data",
+      source(nil)
+    )
   end
 
   defp unique_dependency_ids(artifacts) do
