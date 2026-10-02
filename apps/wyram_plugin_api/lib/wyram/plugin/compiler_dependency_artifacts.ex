@@ -290,7 +290,6 @@ defmodule Wyram.Plugin.Compiler.DependencyArtifacts do
       {:ok, Map.merge(interface, %{declarations: declarations, plugins: plugins})}
     else
       {:error, %Diagnostic{} = diagnostic} -> {:error, diagnostic}
-      _ -> {:error, invalid_compile_data()}
     end
   end
 
