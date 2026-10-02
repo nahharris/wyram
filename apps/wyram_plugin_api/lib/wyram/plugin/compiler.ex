@@ -358,6 +358,4 @@ defmodule Wyram.Plugin.Compiler do
 
   defp source(entry) when is_atom(entry),
     do: %SourceLocation{file: "mix.exs", line: 1, module: entry}
-
-  defp source(_), do: %SourceLocation{file: "mix.exs", line: 1}
 end
