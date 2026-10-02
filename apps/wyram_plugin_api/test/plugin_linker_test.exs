@@ -12,7 +12,19 @@ defmodule Wyram.Plugin.LinkerTest do
     SourceLocation
   }
 
+  alias Wyram.Plugin.LinkerTest.Symbols.{
+    A,
+    AddonBlock,
+    BaseBlock,
+    DeepTemplate,
+    One,
+    Template,
+    Two
+  }
+
   defmodule Symbols.A do
+    alias Wyram.Block.Ref
+
     def __wyram_generated_declaration__ do
       %{
         plugin: Wyram.Plugin.LinkerTest,
@@ -30,7 +42,7 @@ defmodule Wyram.Plugin.LinkerTest do
       }
     end
 
-    def ref, do: Wyram.Block.Ref.new!("a", "one")
+    def ref, do: Ref.new!("a", "one")
   end
 
   defmodule Symbols.Template do
@@ -52,7 +64,28 @@ defmodule Wyram.Plugin.LinkerTest do
     end
   end
 
+  defmodule Symbols.DeepTemplate do
+    def __wyram_generated_declaration__ do
+      %{
+        plugin: Wyram.Plugin.LinkerTest,
+        plugin_id: "a",
+        declaration_module: __MODULE__,
+        local_id: nil,
+        kind: :block,
+        role: :template,
+        source: %SourceLocation{
+          file: "blocks.ex",
+          line: 8,
+          column: 3,
+          module: Wyram.Plugin.LinkerTest
+        }
+      }
+    end
+  end
+
   defmodule Symbols.BaseBlock do
+    alias Wyram.Block.Ref
+
     def __wyram_generated_declaration__ do
       %{
         plugin: Wyram.Plugin.LinkerTest,
@@ -70,10 +103,12 @@ defmodule Wyram.Plugin.LinkerTest do
       }
     end
 
-    def ref, do: Wyram.Block.Ref.new!("base", "solid")
+    def ref, do: Ref.new!("base", "solid")
   end
 
   defmodule Symbols.AddonBlock do
+    alias Wyram.Block.Ref
+
     def __wyram_generated_declaration__ do
       %{
         plugin: Wyram.Plugin.LinkerTest,
@@ -91,10 +126,12 @@ defmodule Wyram.Plugin.LinkerTest do
       }
     end
 
-    def ref, do: Wyram.Block.Ref.new!("addon", "derived")
+    def ref, do: Ref.new!("addon", "derived")
   end
 
   defmodule Symbols.One do
+    alias Wyram.Block.Ref
+
     def __wyram_generated_declaration__ do
       %{
         plugin: Wyram.Plugin.LinkerTest,
@@ -112,10 +149,12 @@ defmodule Wyram.Plugin.LinkerTest do
       }
     end
 
-    def ref, do: Wyram.Block.Ref.new!("a", "one")
+    def ref, do: Ref.new!("a", "one")
   end
 
   defmodule Symbols.Two do
+    alias Wyram.Block.Ref
+
     def __wyram_generated_declaration__ do
       %{
         plugin: Wyram.Plugin.LinkerTest,
@@ -133,11 +172,41 @@ defmodule Wyram.Plugin.LinkerTest do
       }
     end
 
-    def ref, do: Wyram.Block.Ref.new!("a", "two")
+    def ref, do: Ref.new!("a", "two")
   end
 
   defmodule TintConfig do
     defstruct [:color]
+  end
+
+  defmodule ExceptionalConfig do
+    defstruct [:phase]
+  end
+
+  defmodule ExceptionalProvider do
+    @behaviour Provider
+
+    @impl true
+    def config_module, do: ExceptionalConfig
+
+    @impl true
+    def kinds, do: [:block]
+
+    @impl true
+    def config_schema, do: %{phase: :atom}
+
+    @impl true
+    def owned_fields, do: %{material: :exclusive}
+
+    @impl true
+    def validate(%ExceptionalConfig{phase: :throw}, _context), do: throw(:provider_throw)
+    def validate(%ExceptionalConfig{}, _context), do: :ok
+
+    @impl true
+    def lower(%ExceptionalConfig{phase: :exit}, _context), do: exit(:provider_exit)
+
+    def lower(%ExceptionalConfig{}, _context),
+      do: {:ok, %{material: %{color: {1, 2, 3}, mode: :opaque}}}
   end
 
   defmodule TintProvider do
@@ -186,7 +255,7 @@ defmodule Wyram.Plugin.LinkerTest do
   end
 
   test "link inputs reject invalid entry and game module identities" do
-    declaration = declaration("a", "one", Symbols.One, :registered, [])
+    declaration = declaration("a", "one", One, :registered, [])
 
     assert {:error, diagnostics} =
              Linker.link_set([%{plugin("a", [], [declaration]) | entry: nil}])
@@ -200,7 +269,7 @@ defmodule Wyram.Plugin.LinkerTest do
   end
 
   test "linker options reject unknown or duplicate keys" do
-    declaration = declaration("a", "one", Symbols.One, :registered, [])
+    declaration = declaration("a", "one", One, :registered, [])
     input = plugin("a", [], [declaration])
 
     assert {:error, diagnostics} = Linker.link_set([input], unknown_option: true)
@@ -210,6 +279,31 @@ defmodule Wyram.Plugin.LinkerTest do
              Linker.link_set([input], max_template_expansions: 1, max_template_expansions: 2)
 
     assert Enum.any?(diagnostics, &(&1.code == :invalid_link_options))
+  end
+
+  test "template expansion budget rejects before following an over-budget edge" do
+    template_decl = declaration("a", nil, Template, :template, [template(DeepTemplate)])
+    nested_template = declaration("a", nil, DeepTemplate, :template, [])
+    block = declaration("a", "one", One, :registered, [template(Template)])
+
+    assert {:error, diagnostics} =
+             Linker.link_set([plugin("a", [], [template_decl, nested_template, block])],
+               max_template_expansions: 1
+             )
+
+    assert Enum.any?(diagnostics, &(&1.code == :template_expansion_budget_exceeded))
+  end
+
+  test "provider throws and exits become source-aware link diagnostics" do
+    for phase <- [:throw, :exit] do
+      contribution = contribution(ExceptionalProvider, %ExceptionalConfig{phase: phase})
+      block = declaration("a", "one", One, :registered, [contribution])
+
+      input = %{plugin("a", [], [block]) | providers: [ExceptionalProvider]}
+      assert {:error, diagnostics} = Linker.link_set([input])
+      assert Enum.any?(diagnostics, &(&1.code == :provider_execution_failed))
+      assert Enum.all?(diagnostics, &match?(%Diagnostic{source: %SourceLocation{}}, &1))
+    end
   end
 
   test "dependency closures reject conflicting definitions of the same plugin id" do
@@ -235,11 +329,11 @@ defmodule Wyram.Plugin.LinkerTest do
   end
 
   test "cross-plugin template symbols resolve through declared dependency interfaces" do
-    base_block = declaration("base", "solid", Symbols.BaseBlock, :registered, [])
+    base_block = declaration("base", "solid", BaseBlock, :registered, [])
 
     derived =
-      declaration("addon", "derived", Symbols.AddonBlock, :registered, [
-        template(Symbols.BaseBlock)
+      declaration("addon", "derived", AddonBlock, :registered, [
+        template(BaseBlock)
       ])
 
     assert {:ok, linked} =
@@ -258,11 +352,11 @@ defmodule Wyram.Plugin.LinkerTest do
   end
 
   test "generated module metadata must exactly match its collected declaration" do
-    declaration = declaration("a", "one", Symbols.A, :registered, [])
+    declaration = declaration("a", "one", A, :registered, [])
 
     assert {:ok, linked} = Linker.link_set([plugin("a", [], [declaration])])
     assert Enum.map(linked.catalogs["a"].blocks, & &1.id) == ["a:one"]
-    assert Symbols.A.ref() == %Wyram.Block.Ref{plugin_id: "a", local_id: "one"}
+    assert A.ref() == %Wyram.Block.Ref{plugin_id: "a", local_id: "one"}
 
     forged = %{declaration | local_id: "forged"}
     assert {:error, diagnostics} = Linker.link_set([plugin("a", [], [forged])])
@@ -270,7 +364,7 @@ defmodule Wyram.Plugin.LinkerTest do
   end
 
   test "linked block descriptors include defaults applied after authored composition" do
-    block = declaration("a", "one", Symbols.One, :registered, [])
+    block = declaration("a", "one", One, :registered, [])
     assert {:ok, linked} = Linker.link_set([plugin("a", [], [block])])
 
     [block] = linked.catalogs["a"].blocks
@@ -288,7 +382,7 @@ defmodule Wyram.Plugin.LinkerTest do
 
   test "extension provider can author supported RGB material output and suppresses material default" do
     block =
-      declaration("a", "one", Symbols.One, :registered, [
+      declaration("a", "one", One, :registered, [
         contribution(TintProvider, %TintConfig{color: {12, 34, 56}})
       ])
 
@@ -304,7 +398,7 @@ defmodule Wyram.Plugin.LinkerTest do
     geometry = %Geometry{shape: %Wyram.Shape.Cube{}}
 
     duplicate =
-      declaration("a", "one", Symbols.One, :registered, [
+      declaration("a", "one", One, :registered, [
         contribution(Wyram.Plugin.Providers.Geometry, geometry),
         contribution(Wyram.Plugin.Providers.Geometry, geometry)
       ])
@@ -313,7 +407,7 @@ defmodule Wyram.Plugin.LinkerTest do
     assert Enum.any?(diagnostics, &(&1.code == :duplicate_provider))
 
     no_target =
-      declaration("a", "one", Symbols.One, :registered, [
+      declaration("a", "one", One, :registered, [
         contribution(Wyram.Plugin.Providers.Geometry, geometry, true)
       ])
 
@@ -323,7 +417,7 @@ defmodule Wyram.Plugin.LinkerTest do
 
   test "core and extension providers cannot both own the material descriptor field" do
     block =
-      declaration("a", "one", Symbols.One, :registered, [
+      declaration("a", "one", One, :registered, [
         contribution(TintProvider, %TintConfig{color: {12, 34, 56}}),
         contribution(Wyram.Plugin.Providers.Material, %Material{
           color: {90, 80, 70},
@@ -347,26 +441,26 @@ defmodule Wyram.Plugin.LinkerTest do
   end
 
   test "template-only declarations are public symbols but never registered blocks" do
-    template = declaration("a", nil, Symbols.Template, :template, [])
+    template = declaration("a", nil, Template, :template, [])
 
     assert {:ok, linked} = Linker.link_set([plugin("a", [], [template])])
     assert linked.catalogs["a"].blocks == []
-    refute function_exported?(Symbols.Template, :ref, 0)
+    refute function_exported?(Template, :ref, 0)
   end
 
   test "template cycles report the expansion path and source locations" do
-    one = declaration("a", "one", Symbols.One, :registered, [template(Symbols.Two)])
-    two = declaration("a", "two", Symbols.Two, :registered, [template(Symbols.One)])
+    one = declaration("a", "one", One, :registered, [template(Two)])
+    two = declaration("a", "two", Two, :registered, [template(One)])
 
     assert {:error, diagnostics} = Linker.link_set([plugin("a", [], [one, two])])
-    assert Enum.any?(diagnostics, &(&1.code == :template_cycle and length(&1.related) >= 1))
+    assert Enum.any?(diagnostics, &(&1.code == :template_cycle and &1.related != []))
   end
 
   test "unresolved and wrong-role template symbols are rejected" do
-    missing = declaration("a", "one", Symbols.One, :registered, [template(Symbols.Absent)])
+    missing = declaration("a", "one", One, :registered, [template(Symbols.Absent)])
 
     template_as_registered =
-      declaration("a", "two", Symbols.Two, :registered, [template(Symbols.Template)])
+      declaration("a", "two", Two, :registered, [template(Template)])
 
     assert {:error, diagnostics} =
              Linker.link_set([plugin("a", [], [missing, template_as_registered])])
@@ -378,15 +472,15 @@ defmodule Wyram.Plugin.LinkerTest do
   end
 
   test "duplicate plugin IDs, module symbols and content IDs are rejected" do
-    one = declaration("a", "one", Symbols.One, :registered, [])
-    two = declaration("a", "two", Symbols.Two, :registered, [])
+    one = declaration("a", "one", One, :registered, [])
+    two = declaration("a", "two", Two, :registered, [])
 
     assert {:error, diagnostics} =
              Linker.link_set([plugin("a", [], [one]), plugin("a", [], [two])])
 
     assert Enum.any?(diagnostics, &(&1.code == :duplicate_plugin_id))
 
-    duplicate_id = declaration("a", "one", Symbols.Two, :registered, [])
+    duplicate_id = declaration("a", "one", Two, :registered, [])
     assert {:error, diagnostics} = Linker.link_set([plugin("a", [], [one, duplicate_id])])
 
     assert Enum.any?(
