@@ -7,6 +7,7 @@ defmodule Wyram.MixProject do
       version: "0.1.0",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      dialyzer: [plt_add_apps: [:mix]],
       releases: [
         wyram: [
           applications: [wyram_engine: :permanent, wyram_plugin_api: :permanent],

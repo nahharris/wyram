@@ -69,6 +69,8 @@ defmodule Wyram.Plugin.Provider do
       ) and valid_metadata?(provider)
   rescue
     _ -> false
+  catch
+    _kind, _reason -> false
   end
 
   defp valid_metadata?(provider) do
@@ -81,6 +83,8 @@ defmodule Wyram.Plugin.Provider do
       valid_schema?(schema, config_module) and valid_owned_fields?(fields)
   rescue
     _ -> false
+  catch
+    _kind, _reason -> false
   end
 
   defp valid_config_module?(config_module) do
@@ -113,5 +117,7 @@ defmodule Wyram.Plugin.Provider do
     provider.config_module()
   rescue
     _ -> nil
+  catch
+    _kind, _reason -> nil
   end
 end
