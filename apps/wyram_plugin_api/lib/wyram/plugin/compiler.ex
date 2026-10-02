@@ -1,7 +1,7 @@
 defmodule Wyram.Plugin.Compiler do
   @moduledoc "Build-time linker and deterministic catalog artifact writer."
 
-  alias Wyram.Plugin.Compiler.DependencyArtifacts
+  alias Wyram.Plugin.Compiler.{Beam, DependencyArtifacts}
   alias Wyram.Plugin.{Diagnostic, GameCompiler, Linker, ModuleName, SourceLocation}
 
   @magic :wyram_plugin_catalog
@@ -256,9 +256,10 @@ defmodule Wyram.Plugin.Compiler do
       info when is_list(info) ->
         module = info[:module]
 
-        case File.read(path) do
-          {:ok, bytes} -> {:ok, module, sha256(bytes)}
-          {:error, reason} -> {:error, reason}
+        with {:ok, bytes} <- File.read(path),
+             {:ok, canonical} <- Beam.canonical_bytes(bytes),
+             :ok <- File.write(path, canonical, [:binary]) do
+          {:ok, module, sha256(canonical)}
         end
 
       error ->
