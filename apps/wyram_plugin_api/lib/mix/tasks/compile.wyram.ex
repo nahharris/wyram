@@ -1,4 +1,6 @@
 defmodule Mix.Tasks.Compile.Wyram do
+  @moduledoc "Compiles the configured Wyram plugin catalog during Mix compilation."
+
   use Mix.Task.Compiler
 
   @recursive true

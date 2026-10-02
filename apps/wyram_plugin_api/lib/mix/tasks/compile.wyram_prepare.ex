@@ -1,4 +1,6 @@
 defmodule Mix.Tasks.Compile.WyramPrepare do
+  @moduledoc "Removes stale Wyram catalog output before Elixir recompilation."
+
   use Mix.Task.Compiler
 
   @recursive true

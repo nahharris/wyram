@@ -71,18 +71,20 @@ defmodule Wyram.Plugin.MixIntegrationTest do
 
     refute File.exists?(addon_catalog)
 
+    declaration_beam =
+      beam_path(
+        build_path,
+        "wyram_cross_plugin_base",
+        "Elixir.WyramMods.CrossPluginBase.Plugin.Blocks.Stone"
+      )
+
+    assert File.exists?(declaration_beam)
     File.rm!(Path.join(base_dir, "lib/plugin.ex"))
     assert {_, status} = run_mix(base_dir, build_path, api_path, ["compile"])
     refute status == 0
     refute File.exists?(base_catalog)
 
-    refute File.exists?(
-             beam_path(
-               build_path,
-               "wyram_cross_plugin_base",
-               "Elixir.WyramCrossPluginBase.Entry.Blocks.Stone"
-             )
-           )
+    refute File.exists?(declaration_beam)
   end
 
   defp run_mix(directory, build_path, api_path, args) do

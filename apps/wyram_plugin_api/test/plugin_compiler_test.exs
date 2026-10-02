@@ -1,6 +1,7 @@
 defmodule Wyram.Plugin.CompilerTest do
   use ExUnit.Case, async: false
 
+  alias Mix.Tasks.Compile.WyramPrepare
   alias Wyram.Plugin.Compiler
 
   test "writes a deterministic descriptor catalog and exact owned BEAM hashes" do
@@ -68,7 +69,7 @@ defmodule Wyram.Plugin.CompilerTest do
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, "stale")
 
-    assert {:ok, []} = Mix.Tasks.Compile.WyramPrepare.run([])
+    assert {:ok, []} = WyramPrepare.run([])
     refute File.exists?(path)
   end
 

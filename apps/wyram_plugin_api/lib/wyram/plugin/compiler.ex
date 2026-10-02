@@ -1,7 +1,8 @@
 defmodule Wyram.Plugin.Compiler do
   @moduledoc "Build-time linker and deterministic catalog artifact writer."
 
-  alias Wyram.Plugin.{Diagnostic, Linker, SourceLocation}
+  alias Wyram.Plugin.Compiler.DependencyArtifacts
+  alias Wyram.Plugin.{Diagnostic, Linker, ModuleName, SourceLocation}
 
   @magic :wyram_plugin_catalog
 
@@ -24,7 +25,7 @@ defmodule Wyram.Plugin.Compiler do
          :ok <- validate_module_namespace(modules, entry),
          :ok <- validate_owned_modules(entry, metadata, declarations, modules),
          {:ok, dependency_interfaces} <-
-           dependency_inputs(metadata, Keyword.get(options, :dependencies, :discover)),
+           DependencyArtifacts.inputs(metadata, Keyword.get(options, :dependencies, :discover)),
          plugin <-
            Map.merge(metadata, %{
              entry: entry,
@@ -85,79 +86,93 @@ defmodule Wyram.Plugin.Compiler do
 
   @doc "Finds and validates compiled catalogs for every explicitly required Mix dependency."
   def discover_dependency_interfaces(metadata) when is_map(metadata) do
-    with {:ok, artifacts} <- dependency_artifacts(),
-         :ok <- unique_dependency_ids(artifacts),
-         {:ok, required} <-
-           required_dependency_map(Map.get(metadata, :dependencies, []), artifacts) do
-      {:ok, required}
-    end
+    DependencyArtifacts.discover(metadata)
   end
 
   defp plugin_metadata(entry) do
-    unless Code.ensure_loaded?(entry) and function_exported?(entry, :__wyram_plugin__, 0),
-      do:
-        throw(
-          {:diagnostic,
-           Diagnostic.new!(
-             :missing_plugin_metadata,
-             "entry module does not export __wyram_plugin__/0",
-             source(entry)
-           )}
-        )
+    with :ok <- ensure_plugin_entry(entry) do
+      metadata = entry.__wyram_plugin__()
 
-    metadata = apply(entry, :__wyram_plugin__, [])
+      if valid_plugin_metadata?(metadata) do
+        {:ok, Map.put(metadata, :entry, entry)}
+      else
+        {:error,
+         Diagnostic.new!(
+           :invalid_plugin_metadata,
+           "entry module returned invalid plugin metadata",
+           source(entry)
+         )}
+      end
+    end
+  end
 
-    if is_map(metadata) and
-         Map.keys(metadata) -- [:id, :dependencies, :declaration_modules, :providers, :game] == [] and
-         is_binary(Map.get(metadata, :id)) and
-         is_list(Map.get(metadata, :dependencies)) and
-         is_list(Map.get(metadata, :declaration_modules)) and
-         is_list(Map.get(metadata, :providers)) and
-         Enum.all?(metadata.declaration_modules, &Wyram.Plugin.ModuleName.valid?/1) and
-         Enum.all?(metadata.providers, &Wyram.Plugin.ModuleName.valid?/1) and
-         (is_nil(Map.get(metadata, :game)) or Wyram.Plugin.ModuleName.valid?(metadata.game)) do
-      {:ok, Map.put(metadata, :entry, entry)}
+  defp ensure_plugin_entry(entry) do
+    if Code.ensure_loaded?(entry) and function_exported?(entry, :__wyram_plugin__, 0) do
+      :ok
     else
       {:error,
        Diagnostic.new!(
-         :invalid_plugin_metadata,
-         "entry module returned invalid plugin metadata",
+         :missing_plugin_metadata,
+         "entry module does not export __wyram_plugin__/0",
          source(entry)
        )}
     end
-  catch
-    {:diagnostic, diagnostic} -> {:error, diagnostic}
+  end
+
+  defp valid_plugin_metadata?(metadata) do
+    is_map(metadata) and valid_plugin_metadata_keys?(metadata) and
+      valid_plugin_identity?(metadata) and valid_plugin_members?(metadata)
+  end
+
+  defp valid_plugin_metadata_keys?(metadata) do
+    Map.keys(metadata) -- [:id, :dependencies, :declaration_modules, :providers, :game] == []
+  end
+
+  defp valid_plugin_identity?(metadata) do
+    is_binary(Map.get(metadata, :id)) and is_list(Map.get(metadata, :dependencies)) and
+      (is_nil(Map.get(metadata, :game)) or ModuleName.valid?(metadata.game))
+  end
+
+  defp valid_plugin_members?(metadata) do
+    is_list(Map.get(metadata, :declaration_modules)) and is_list(Map.get(metadata, :providers)) and
+      Enum.all?(metadata.declaration_modules, &ModuleName.valid?/1) and
+      Enum.all?(metadata.providers, &ModuleName.valid?/1)
   end
 
   defp collect_declarations(entry, metadata) do
-    result =
-      Enum.reduce_while(metadata.declaration_modules, {:ok, []}, fn module, {:ok, declarations} ->
-        if Code.ensure_loaded?(module) and function_exported?(module, :__wyram_declarations__, 0) do
-          case apply(module, :__wyram_declarations__, []) do
-            values when is_list(values) ->
-              {:cont, {:ok, declarations ++ values}}
+    Enum.reduce_while(metadata.declaration_modules, {:ok, []}, fn module, {:ok, declarations} ->
+      case declaration_values(module, entry) do
+        {:ok, values} -> {:cont, {:ok, declarations ++ values}}
+        {:error, diagnostic} -> {:halt, {:error, diagnostic}}
+      end
+    end)
+  end
 
-            _ ->
-              {:halt,
-               {:error,
-                Diagnostic.new!(
-                  :invalid_declaration_contributor,
-                  "#{inspect(module)} returned an invalid declaration list",
-                  source(entry)
-                )}}
-          end
-        else
-          {:halt,
-           {:error,
-            Diagnostic.new!(
-              :missing_declaration_contributor,
-              "#{inspect(module)} does not export __wyram_declarations__/0",
-              source(entry)
-            )}}
-        end
-      end)
+  defp declaration_values(module, entry) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :__wyram_declarations__, 0) do
+      case module.__wyram_declarations__() do
+        values when is_list(values) -> {:ok, values}
+        _ -> {:error, invalid_contributor(entry, module)}
+      end
+    else
+      {:error, missing_contributor(entry, module)}
+    end
+  end
 
-    result
+  defp invalid_contributor(entry, module) do
+    Diagnostic.new!(
+      :invalid_declaration_contributor,
+      "#{inspect(module)} returned an invalid declaration list",
+      source(entry)
+    )
+  end
+
+  defp missing_contributor(entry, module) do
+    Diagnostic.new!(
+      :missing_declaration_contributor,
+      "#{inspect(module)} does not export __wyram_declarations__/0",
+      source(entry)
+    )
   end
 
   defp validate_owned_modules(entry, metadata, declarations, owned_modules) do
@@ -199,291 +214,54 @@ defmodule Wyram.Plugin.Compiler do
     end
   end
 
-  defp dependency_inputs(metadata, dependencies) when is_map(dependencies) do
-    required = Map.get(metadata, :dependencies, [])
-
-    Enum.reduce_while(required, {:ok, %{}}, fn id, {:ok, acc} ->
-      case Map.fetch(dependencies, id) do
-        {:ok, %{interface: interface, interface_fingerprint: expected_fingerprint}} ->
-          if fingerprint(interface) == expected_fingerprint do
-            {:cont,
-             {:ok,
-              Map.put(acc, id, %{plugin: interface, interface_fingerprint: expected_fingerprint})}}
-          else
-            {:halt,
-             {:error,
-              Diagnostic.new!(
-                :stale_dependency_interface,
-                "dependency #{inspect(id)} interface fingerprint is invalid",
-                source(nil)
-              )}}
-          end
-
-        :error ->
-          {:halt,
-           {:error,
-            Diagnostic.new!(
-              :missing_dependency_interface,
-              "required dependency #{inspect(id)} has no compiled interface",
-              source(nil)
-            )}}
-      end
-    end)
-  end
-
-  defp dependency_inputs(metadata, :discover),
-    do: discover_dependency_interfaces(metadata)
-
-  defp dependency_inputs(_metadata, _),
-    do:
-      {:error,
-       Diagnostic.new!(
-         :invalid_dependency_interfaces,
-         "dependencies must be supplied as a map",
-         source(nil)
-       )}
-
-  defp dependency_artifacts do
-    Mix.Project.deps_paths()
-    |> Map.keys()
-    |> Enum.reduce_while({:ok, []}, fn app, {:ok, artifacts} ->
-      case load_dependency_artifact(app) do
-        :none -> {:cont, {:ok, artifacts}}
-        {:ok, artifact} -> {:cont, {:ok, [artifact | artifacts]}}
-        {:error, diagnostic} -> {:halt, {:error, diagnostic}}
-      end
-    end)
-    |> case do
-      {:ok, artifacts} -> {:ok, Enum.reverse(artifacts)}
-      error -> error
-    end
-  end
-
-  defp load_dependency_artifact(app) do
-    case :code.lib_dir(app) do
-      app_dir when is_list(app_dir) ->
-        case :application.load(app) do
-          :ok -> :ok
-          {:error, {:already_loaded, ^app}} -> :ok
-          {:error, reason} -> throw({:dependency_load_error, app, reason})
-        end
-
-        app_modules = Application.spec(app, :modules) || []
-        Enum.each(app_modules, &Code.ensure_loaded/1)
-        catalog_path = Path.join([List.to_string(app_dir), "priv", "wyram", "catalog.term"])
-
-        if File.exists?(catalog_path) do
-          with {:ok, bytes} <- File.read(catalog_path),
-               {:ok, artifact} <- decode_artifact(bytes),
-               :ok <- validate_artifact(artifact, app_modules) do
-            {:ok, artifact}
-          else
-            {:error, %Diagnostic{} = diagnostic} ->
-              {:error, diagnostic}
-
-            {:error, reason} ->
-              {:error,
-               Diagnostic.new!(
-                 :invalid_dependency_catalog,
-                 "dependency #{inspect(app)} catalog is invalid: #{inspect(reason)}",
-                 source(nil)
-               )}
-          end
-        else
-          :none
-        end
-
-      _ ->
-        :none
-    end
-  catch
-    {:dependency_load_error, app, reason} ->
-      {:error,
-       Diagnostic.new!(
-         :dependency_load_failed,
-         "cannot load dependency #{inspect(app)} metadata: #{inspect(reason)}",
-         source(nil)
-       )}
-  end
-
-  defp decode_artifact(bytes) do
-    try do
-      {:ok, :erlang.binary_to_term(bytes, [:safe])}
-    rescue
-      error -> {:error, error}
-    end
-  end
-
-  defp validate_artifact(
-         %{
-           magic: @magic,
-           plugin: %{id: id, owned_modules: owned, dependencies: dependencies},
-           catalog: %{id: id, dependencies: dependencies, blocks: blocks},
-           interface:
-             %{id: id, modules: modules, dependencies: dependencies, module_hashes: hashes} =
-               interface,
-           interface_fingerprint: expected
-         },
-         app_modules
-       )
-       when is_binary(expected) and is_list(owned) and is_list(modules) and is_map(hashes) and
-              is_list(blocks) do
-    app_modules_by_name = Map.new(app_modules, &{Atom.to_string(&1), &1})
-
-    actual_hashes =
-      Enum.reduce_while(owned, {:ok, %{}}, fn name, {:ok, acc} ->
-        with module when is_atom(module) <- Map.get(app_modules_by_name, name),
-             beam when is_list(beam) <- :code.which(module),
-             {:ok, bytes} <- File.read(List.to_string(beam)) do
-          {:cont, {:ok, Map.put(acc, name, sha256(bytes))}}
-        else
-          _ -> {:halt, {:error, name}}
-        end
-      end)
-
-    cond do
-      owned != modules or Enum.sort(owned) != owned ->
-        {:error,
-         Diagnostic.new!(
-           :invalid_dependency_modules,
-           "dependency module ownership list is inconsistent",
-           source(nil)
-         )}
-
-      match?({:error, _}, actual_hashes) ->
-        {:error,
-         Diagnostic.new!(
-           :dependency_module_missing,
-           "dependency package is missing a manifest-listed BEAM module",
-           source(nil)
-         )}
-
-      actual_hashes != {:ok, hashes} ->
-        {:error,
-         Diagnostic.new!(
-           :dependency_module_hash_mismatch,
-           "dependency BEAM hashes do not match its compiled interface",
-           source(nil)
-         )}
-
-      fingerprint(interface) != expected ->
-        {:error,
-         Diagnostic.new!(
-           :stale_dependency_interface,
-           "dependency interface fingerprint does not match its catalog",
-           source(nil)
-         )}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp validate_artifact(_, _app_modules),
-    do:
-      {:error,
-       Diagnostic.new!(
-         :invalid_dependency_catalog,
-         "dependency artifact has an invalid shape",
-         source(nil)
-       )}
-
-  defp unique_dependency_ids(artifacts) do
-    ids = Enum.map(artifacts, & &1.plugin.id)
-
-    case duplicates(ids) do
-      [] ->
-        :ok
-
-      [id | _] ->
-        {:error,
-         Diagnostic.new!(
-           :duplicate_dependency_plugin_id,
-           "multiple Mix dependencies provide plugin ID #{inspect(id)}",
-           source(nil)
-         )}
-    end
-  end
-
-  defp required_dependency_map(required_ids, artifacts) when is_list(required_ids) do
-    by_id = Map.new(artifacts, &{&1.plugin.id, &1})
-
-    Enum.reduce_while(required_ids, {:ok, %{}}, fn id, {:ok, acc} ->
-      case Map.fetch(by_id, id) do
-        {:ok, artifact} ->
-          {:cont,
-           {:ok,
-            Map.put(acc, id, %{
-              interface: artifact.interface,
-              interface_fingerprint: artifact.interface_fingerprint
-            })}}
-
-        :error ->
-          {:halt,
-           {:error,
-            Diagnostic.new!(
-              :missing_dependency_interface,
-              "required plugin dependency #{inspect(id)} has no compiled Mix dependency catalog",
-              source(nil)
-            )}}
-      end
-    end)
-  end
-
-  defp required_dependency_map(_required, _artifacts),
-    do:
-      {:error,
-       Diagnostic.new!(
-         :invalid_dependency_list,
-         "plugin dependencies must be a list",
-         source(nil)
-       )}
-
-  defp duplicates(values) do
-    values
-    |> Enum.frequencies()
-    |> Enum.filter(fn {_value, count} -> count > 1 end)
-    |> Enum.map(&elem(&1, 0))
-  end
-
   defp owned_modules(compile_path) do
-    beam_paths =
-      case File.ls(compile_path) do
-        {:ok, names} ->
+    with {:ok, paths} <- beam_paths(compile_path),
+         {:ok, modules, hashes} <- collect_owned_modules(paths) do
+      {:ok, Enum.sort(modules), hashes}
+    end
+  end
+
+  defp beam_paths(compile_path) do
+    case File.ls(compile_path) do
+      {:ok, names} ->
+        paths =
           names
           |> Enum.filter(&String.ends_with?(&1, ".beam"))
           |> Enum.map(&Path.join(compile_path, &1))
           |> Enum.sort()
 
+        {:ok, paths}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp collect_owned_modules(paths) do
+    Enum.reduce_while(paths, {:ok, [], %{}}, fn path, {:ok, modules, hashes} ->
+      case owned_module(path) do
+        {:ok, module, hash} ->
+          {:cont, {:ok, [module | modules], Map.put(hashes, Atom.to_string(module), hash)}}
+
         {:error, reason} ->
-          throw({:compile_path_error, reason})
-      end
-
-    beam_paths
-    |> Enum.reduce_while({:ok, [], %{}}, fn path, {:ok, modules, hashes} ->
-      case :beam_lib.info(String.to_charlist(path)) do
-        info when is_list(info) ->
-          module = info[:module]
-
-          case File.read(path) do
-            {:ok, bytes} ->
-              {:cont,
-               {:ok, [module | modules], Map.put(hashes, Atom.to_string(module), sha256(bytes))}}
-
-            {:error, reason} ->
-              {:halt, {:error, reason}}
-          end
-
-        error ->
-          {:halt, {:error, error}}
+          {:halt, {:error, reason}}
       end
     end)
-    |> case do
-      {:ok, modules, hashes} -> {:ok, Enum.sort(modules), hashes}
-      error -> error
+  end
+
+  defp owned_module(path) do
+    case :beam_lib.info(String.to_charlist(path)) do
+      info when is_list(info) ->
+        module = info[:module]
+
+        case File.read(path) do
+          {:ok, bytes} -> {:ok, module, sha256(bytes)}
+          {:error, reason} -> {:error, reason}
+        end
+
+      error ->
+        {:error, error}
     end
-  catch
-    {:compile_path_error, reason} -> {:error, reason}
   end
 
   defp artifact(plugin, linked, dependency_interfaces, game_config) do
@@ -570,9 +348,9 @@ defmodule Wyram.Plugin.Compiler do
     File.mkdir_p!(Path.dirname(path))
     temporary = path <> ".tmp"
 
-    with :ok <- File.write(temporary, bytes, [:binary]),
-         :ok <- File.rename(temporary, path) do
-      :ok
+    case File.write(temporary, bytes, [:binary]) do
+      :ok -> File.rename(temporary, path)
+      error -> error
     end
   end
 
