@@ -62,13 +62,19 @@ defmodule Wyram.PluginContractsTest do
     @behaviour Provider
 
     @impl true
-    def config_module, do: ExtensionConfig
+    def config_module do
+      case Process.get(:wyram_provider_metadata_failure) do
+        %{callback: :config_module, failure: :throw} -> throw(:invalid_provider_metadata)
+        %{callback: :config_module, failure: :exit} -> exit(:invalid_provider_metadata)
+        _ -> ExtensionConfig
+      end
+    end
 
     @impl true
     def kinds do
       case Process.get(:wyram_provider_metadata_failure) do
-        :throw -> throw(:invalid_provider_metadata)
-        :exit -> exit(:invalid_provider_metadata)
+        %{callback: :kinds, failure: :throw} -> throw(:invalid_provider_metadata)
+        %{callback: :kinds, failure: :exit} -> exit(:invalid_provider_metadata)
         _ -> [:block]
       end
     end
@@ -283,8 +289,8 @@ defmodule Wyram.PluginContractsTest do
 
   test "throwing and exiting provider metadata is rejected with source-aware link diagnostics" do
     try do
-      for failure <- [:throw, :exit] do
-        Process.put(:wyram_provider_metadata_failure, failure)
+      for callback <- [:config_module, :kinds], failure <- [:throw, :exit] do
+        Process.put(:wyram_provider_metadata_failure, %{callback: callback, failure: failure})
 
         assert Provider.for_config(ExtensionConfig, [ThrowingMetadataProvider]) ==
                  {:error, :unknown_provider}
