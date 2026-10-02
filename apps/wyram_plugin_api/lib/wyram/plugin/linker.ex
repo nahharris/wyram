@@ -86,7 +86,6 @@ defmodule Wyram.Plugin.Linker do
       current = Map.merge(metadata, %{declarations: declarations})
       link_plugin_set(dependencies, current, options)
     else
-      {:error, %Diagnostic{} = diagnostic} -> {:error, [diagnostic]}
       {:error, diagnostics} when is_list(diagnostics) -> {:error, diagnostics}
     end
   rescue
@@ -275,6 +274,8 @@ defmodule Wyram.Plugin.Linker do
       match?({:ok, ^provider}, Provider.for_config(provider.config_module(), candidates))
   rescue
     _ -> false
+  catch
+    _kind, _reason -> false
   end
 
   defp unique_plugin_ids(plugins) do
@@ -1304,7 +1305,7 @@ defmodule Wyram.Plugin.Linker do
     interfaces =
       Map.new(plugins, fn plugin ->
         direct = Enum.map(plugin.dependencies, &by_id[&1])
-        closure = dependency_closure(direct, by_id, MapSet.new())
+        closure = dependency_closure(direct, by_id, %{})
 
         {plugin.id,
          %{
@@ -1325,13 +1326,18 @@ defmodule Wyram.Plugin.Linker do
     %{order: order, catalogs: catalogs, interfaces: interfaces}
   end
 
+  @spec dependency_closure(
+          [plugin_input()],
+          %{String.t() => plugin_input()},
+          %{optional(String.t()) => true}
+        ) :: [plugin_input()]
   defp dependency_closure([], _by_id, _seen), do: []
 
   defp dependency_closure([plugin | rest], by_id, seen) do
-    if MapSet.member?(seen, plugin.id) do
+    if Map.has_key?(seen, plugin.id) do
       dependency_closure(rest, by_id, seen)
     else
-      next_seen = MapSet.put(seen, plugin.id)
+      next_seen = Map.put(seen, plugin.id, true)
       children = Enum.map(plugin.dependencies, &by_id[&1])
       [plugin | dependency_closure(children ++ rest, by_id, next_seen)]
     end
