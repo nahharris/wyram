@@ -2,9 +2,11 @@ defmodule Wyram.Plugin.Compiler do
   @moduledoc "Build-time linker and deterministic catalog artifact writer."
 
   alias Wyram.Plugin.Compiler.DependencyArtifacts
-  alias Wyram.Plugin.{Diagnostic, Linker, ModuleName, SourceLocation}
+  alias Wyram.Plugin.{Diagnostic, GameCompiler, Linker, ModuleName, SourceLocation}
 
   @magic :wyram_plugin_catalog
+  @max_catalog_bytes 16 * 1024 * 1024
+  @max_compile_data_bytes 16 * 1024 * 1024
 
   @doc "Returns the deterministic catalog path for the current Mix application."
   def catalog_path do
@@ -40,8 +42,8 @@ defmodule Wyram.Plugin.Compiler do
              dependency_interfaces,
              Keyword.get(options, :link_options, [])
            ),
-         {:ok, artifact} <-
-           artifact(plugin, linked, dependency_interfaces, Keyword.get(options, :game_config)),
+         {:ok, game_config} <- GameCompiler.compile(plugin, linked.catalog, dependency_interfaces),
+         {:ok, artifact} <- artifact(plugin, linked, dependency_interfaces, game_config),
          :ok <- write_artifact(path, artifact) do
       {:ok, artifact}
     else
@@ -295,17 +297,20 @@ defmodule Wyram.Plugin.Compiler do
       |> Map.drop([:symbols])
       |> serialize_interface()
       |> Map.put(:compiled_blocks, serialized_catalog.blocks)
+      |> Map.put(:compiled_game, serialized_catalog.game)
 
-    payload = %{
-      magic: @magic,
-      plugin: plugin_payload,
-      catalog: serialized_catalog,
-      interface: interface,
-      interface_fingerprint: fingerprint(interface),
-      dependency_interfaces: dependency_fingerprints
-    }
+    with :ok <- validate_export_size(interface) do
+      payload = %{
+        magic: @magic,
+        plugin: plugin_payload,
+        catalog: serialized_catalog,
+        interface: interface,
+        interface_fingerprint: fingerprint(interface),
+        dependency_interfaces: dependency_fingerprints
+      }
 
-    {:ok, payload}
+      with :ok <- validate_export_size(payload), do: {:ok, payload}
+    end
   end
 
   defp serialize_block(block) do
@@ -330,7 +335,16 @@ defmodule Wyram.Plugin.Compiler do
   end
 
   defp serialize_interface(interface) do
+    compile_data =
+      %{declarations: interface.declarations, plugins: interface.plugins}
+      |> :erlang.term_to_binary([:deterministic])
+
     interface
+    |> Map.drop([:plugins])
+    |> Map.update!(
+      :declarations,
+      &Enum.map(&1, fn declaration -> %{declaration | entries: []} end)
+    )
     |> Map.update!(:entry, &Atom.to_string/1)
     |> Map.update!(
       :modules,
@@ -338,6 +352,27 @@ defmodule Wyram.Plugin.Compiler do
     )
     |> Map.update!(:providers, &Enum.map(&1, fn module -> Atom.to_string(module) end))
     |> Map.update!(:game, &maybe_module_name/1)
+    |> Map.put(:compile_data, compile_data)
+  end
+
+  defp validate_export_size(%{compile_data: bytes}) when is_binary(bytes) do
+    if byte_size(bytes) <= @max_compile_data_bytes,
+      do: :ok,
+      else: {:error, oversized_catalog()}
+  end
+
+  defp validate_export_size(payload) when is_map(payload) do
+    if byte_size(:erlang.term_to_binary(payload, [:deterministic])) <= @max_catalog_bytes,
+      do: :ok,
+      else: {:error, oversized_catalog()}
+  end
+
+  defp oversized_catalog do
+    Diagnostic.new!(
+      :plugin_catalog_too_large,
+      "compiled plugin catalog exceeds the 16 MiB build-time limit",
+      source(nil)
+    )
   end
 
   defp maybe_module_name(nil), do: nil
@@ -345,12 +380,17 @@ defmodule Wyram.Plugin.Compiler do
 
   defp write_artifact(path, artifact) do
     bytes = :erlang.term_to_binary(artifact, [:deterministic])
-    File.mkdir_p!(Path.dirname(path))
-    temporary = path <> ".tmp"
 
-    case File.write(temporary, bytes, [:binary]) do
-      :ok -> File.rename(temporary, path)
-      error -> error
+    if byte_size(bytes) <= @max_catalog_bytes do
+      File.mkdir_p!(Path.dirname(path))
+      temporary = path <> ".tmp"
+
+      case File.write(temporary, bytes, [:binary]) do
+        :ok -> File.rename(temporary, path)
+        error -> error
+      end
+    else
+      {:error, oversized_catalog()}
     end
   end
 

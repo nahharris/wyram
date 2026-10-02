@@ -27,6 +27,7 @@ if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive }
 $zip = [IO.Compression.ZipFile]::Open($archive, [IO.Compression.ZipArchiveMode]::Create)
 try {
   [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $stage 'manifest.json'), 'manifest.json') | Out-Null
+  [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $stage 'catalog.term'), 'catalog.term') | Out-Null
   foreach ($beam in Get-ChildItem -LiteralPath (Join-Path $stage 'ebin') -File -Filter '*.beam' | Sort-Object Name) {
     # ZIP names always use '/', including under Windows PowerShell 5.1.
     [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $beam.FullName, ('ebin/' + $beam.Name)) | Out-Null

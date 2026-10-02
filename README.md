@@ -30,7 +30,7 @@ The [gameplay roadmap](docs/gameplay-plan.md) tracks reusable character movement
 
 `plugins/wyram` is the default game. `plugins/example` is a separate package adding an amber block. To build the example, run `mise exec -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pack-plugin.ps1 example`, then copy `dist/example.wyrplug` into the game-data `plugins` directory and restart.
 
-Plugins implement `Wyram.Plugin` from the public `wyram_plugin_api` application. Plugin metadata is declared in `mix.exs`; packaging generates the manifest alongside compiled BEAM files. Packages target the declared API, OTP major version, and Elixir minor version. Loading third-party packages runs their BEAM code with the user's OS permissions. Install only plugins you trust.
+Plugins use `Wyram.Plugin` and `defblock` from the public `wyram_plugin_api`. The plugin compiler validates declarations, references, templates, and capabilities and produces compiled catalogs. Packaging binds catalogs to owned BEAM hashes and targets the active OTP major and Elixir minor versions. Loading third-party packages runs their BEAM code with the user's OS permissions. Install only plugins you trust.
 
 The plugin API and engine architecture are described in [docs/architecture.md](docs/architecture.md). The public package format is described in [docs/plugins.md](docs/plugins.md). Elixir 1.20's stable gradual type inference runs during compilation; public boundaries also carry typespecs and Dialyzer is part of `mise run check`. Explicit signature syntax is not used because that part of the type system is still under development.
 

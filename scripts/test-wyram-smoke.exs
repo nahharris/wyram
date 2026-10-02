@@ -4,7 +4,16 @@ package = Path.join(System.fetch_env!("WYRAM_DATA_DIR"), "plugins/wyram.wyrplug"
 {:ok, files} = :zip.extract(String.to_charlist(package), [:memory])
 {_, manifest_bytes} = Enum.find(files, fn {name, _} -> name == ~c"manifest.json" end)
 manifest = Jason.decode!(manifest_bytes)
-true = Enum.sort(manifest["modules"]) == ["Elixir.WyramMods.Characters", "Elixir.WyramMods.Wyram"]
+true = "Elixir.WyramMods.Characters" in manifest["modules"]
+true = "Elixir.WyramMods.Wyram.Blocks.Grass" in manifest["modules"]
+false = Map.has_key?(manifest, "api")
+{_, catalog_bytes} = Enum.find(files, fn {name, _} -> name == ~c"catalog.term" end)
+
+true =
+  manifest["catalog_sha256"] == Base.encode16(:crypto.hash(:sha256, catalog_bytes), case: :lower)
+
+artifact = :erlang.binary_to_term(catalog_bytes, [:safe])
+true = Enum.sort(artifact.plugin.owned_modules) == manifest["modules"]
 
 blocks = PluginManager.blocks()
 true = PluginManager.plugin_versions() == %{"wyram" => "0.1.0"}
@@ -23,7 +32,7 @@ true = PluginManager.player_profile() == WyramMods.Characters.player_profile()
 models = PluginManager.character_models()
 true = length(models) == 2
 true = Enum.map(PluginManager.character_definitions(), & &1.id) == ["player", "companion"]
-source_models = WyramMods.Wyram.character_models()
+source_models = artifact.catalog.game.models
 true = Enum.all?(source_models, &(Wyram.Character.Model.validate(&1) == :ok))
 [first, second] = source_models
 true = Wyram.Character.Model.compatible?(first, second)

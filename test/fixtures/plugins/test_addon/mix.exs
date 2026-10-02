@@ -6,8 +6,12 @@ defmodule WyramMods.TestAddon.MixProject do
       app: :wyram_test_addon,
       version: "0.1.0",
       elixir: "~> 1.20",
-      wyram_plugin: [id: "test_addon", entry: WyramMods.TestAddon, dependencies: ["test_terrain"]],
-      deps: [{:wyram_plugin_api, path: "../../../../apps/wyram_plugin_api"}]
+      compilers: [:wyram_prepare] ++ Mix.compilers() ++ [:wyram],
+      wyram_plugin: [entry: WyramMods.TestAddon],
+      deps: [
+        {:wyram_plugin_api, path: "../../../../apps/wyram_plugin_api"},
+        {:wyram_test_terrain, path: "../test_terrain"}
+      ]
     ]
   end
 

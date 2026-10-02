@@ -28,7 +28,7 @@ defmodule Wyram.Plugin.CompilerTest do
     assert first.catalog.blocks |> hd() |> Map.fetch!(:descriptor) == %{
              geometry: %{primitive: :cube},
              collision: %{primitive: :cube},
-             material: %{color: {255, 255, 255}, mode: :opaque}
+             material: %{color: {12, 34, 56}, mode: :opaque}
            }
 
     assert Enum.sort(Map.keys(first.interface.module_hashes)) == first.plugin.owned_modules
@@ -36,6 +36,21 @@ defmodule Wyram.Plugin.CompilerTest do
     assert first.interface_fingerprint == Compiler.fingerprint(first.interface)
     refute Map.has_key?(hd(first.catalog.blocks), :entries)
     assert first.interface.compiled_blocks == first.catalog.blocks
+    assert Enum.all?(first.interface.declarations, &(&1.entries == []))
+    refute Map.has_key?(first.interface, :plugins)
+
+    compile_data = :erlang.binary_to_term(first.interface.compile_data, [:safe])
+    assert Map.keys(compile_data) |> Enum.sort() == [:declarations, :plugins]
+
+    assert Enum.map(compile_data.declarations, &%{&1 | entries: []}) ==
+             first.interface.declarations
+
+    assert hd(compile_data.declarations).entries != []
+    assert is_list(compile_data.plugins) and compile_data.plugins != []
+    assert first.interface.compiled_game == first.catalog.game
+
+    refute Compiler.fingerprint(Map.put(first.interface, :compiled_game, :tampered)) ==
+             first.interface_fingerprint
 
     changed_descriptor =
       put_in(
@@ -157,7 +172,82 @@ defmodule Wyram.Plugin.CompilerTest do
              hd(base_artifact.catalog.blocks).descriptor
 
     assert addon_artifact.interface_fingerprint == Compiler.fingerprint(addon_artifact.interface)
+
+    invalid_compile_data =
+      :erlang.term_to_binary(%{declarations: [], plugins: []}, [:deterministic])
+
+    invalid_interface = Map.put(base_artifact.interface, :compile_data, invalid_compile_data)
+
+    assert {:error, [diagnostic]} =
+             Compiler.compile_entry(addon.entry,
+               catalog_path: addon_path,
+               compile_path: addon.compile_path,
+               dependencies: %{
+                 "compiler-base" => dependency_artifact(invalid_interface)
+               }
+             )
+
+    assert diagnostic.code == :invalid_dependency_compile_data
+
+    original_compile_data =
+      :erlang.binary_to_term(base_artifact.interface.compile_data, [:safe])
+
+    [owner | dependencies] = original_compile_data.plugins
+
+    inconsistent_compile_data =
+      original_compile_data
+      |> Map.put(:plugins, [Map.put(owner, :declarations, []) | dependencies])
+      |> :erlang.term_to_binary([:deterministic])
+
+    inconsistent_interface =
+      Map.put(base_artifact.interface, :compile_data, inconsistent_compile_data)
+
+    assert {:error, [owner_diagnostic]} =
+             Compiler.compile_entry(addon.entry,
+               catalog_path: addon_path,
+               compile_path: addon.compile_path,
+               dependencies: %{
+                 "compiler-base" => dependency_artifact(inconsistent_interface)
+               }
+             )
+
+    assert owner_diagnostic.code == :invalid_dependency_compile_data
+
+    compressed_interface =
+      Map.put(
+        base_artifact.interface,
+        :compile_data,
+        :erlang.term_to_binary(%{declarations: [], plugins: []}, [:compressed])
+      )
+
+    assert {:error, [compressed_diagnostic]} =
+             Compiler.compile_entry(addon.entry,
+               catalog_path: addon_path,
+               compile_path: addon.compile_path,
+               dependencies: %{
+                 "compiler-base" => dependency_artifact(compressed_interface)
+               }
+             )
+
+    assert compressed_diagnostic.code == :invalid_dependency_compile_data
+
+    oversized_interface =
+      Map.put(base_artifact.interface, :compile_data, :binary.copy(<<0>>, 16 * 1024 * 1024 + 1))
+
+    assert {:error, [oversized_diagnostic]} =
+             Compiler.compile_entry(addon.entry,
+               catalog_path: addon_path,
+               compile_path: addon.compile_path,
+               dependencies: %{
+                 "compiler-base" => dependency_artifact(oversized_interface)
+               }
+             )
+
+    assert oversized_diagnostic.code == :invalid_dependency_compile_data
   end
+
+  defp dependency_artifact(interface),
+    do: %{interface: interface, interface_fingerprint: Compiler.fingerprint(interface)}
 
   defp compile_fixture(suffix, plugin_id, dependencies, template_module, options \\ []) do
     module_prefix =
@@ -166,6 +256,7 @@ defmodule Wyram.Plugin.CompilerTest do
     entry_name = "#{module_prefix}.Entry"
     blocks_name = "#{module_prefix}.Blocks"
     body = if template_module, do: "template(#{inspect(template_module)})", else: ""
+    override = if template_module, do: ", override: true", else: ""
 
     source = """
     defmodule #{entry_name} do
@@ -179,6 +270,7 @@ defmodule Wyram.Plugin.CompilerTest do
       use Wyram.Plugin.Declarations, plugin: #{entry_name}
       defblock Stone, id: "stone" do
         #{body}
+        capability %Wyram.Capability.Material{color: {12, 34, 56}, mode: :opaque}#{override}
       end
     end
     """

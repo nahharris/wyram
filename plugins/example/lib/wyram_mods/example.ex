@@ -1,17 +1,18 @@
 defmodule WyramMods.Example do
   @moduledoc "An independently packaged content plugin."
-  @behaviour Wyram.Plugin
+  use Wyram.Plugin,
+    id: "example",
+    dependencies: ["wyram"],
+    declarations: [WyramMods.Example.BlockCatalog]
+end
 
-  @impl true
-  def blocks, do: [%{name: "amber", color: [232, 154, 44]}]
+defmodule WyramMods.Example.BlockCatalog do
+  @moduledoc false
+  use Wyram.Plugin.Declarations, plugin: WyramMods.Example
+  alias Wyram.Capability.Material
 
-  @impl true
-  def terrain, do: :none
-
-  @impl true
-  def interact("example:amber", %{position: {x, y, z}}) do
-    {:set_block, {x, y + 1, z}, "example:amber"}
+  defblock Amber, id: "amber" do
+    template(WyramMods.Wyram.Blocks.Solid)
+    capability(%Material{color: {232, 154, 44}}, override: true)
   end
-
-  def interact(_, _), do: :pass
 end

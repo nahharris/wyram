@@ -3,7 +3,7 @@ defmodule Wyram.Engine.WorldTest do
 
   alias Wyram.Engine.{Native, Paths, PluginManager, World}
 
-  test "packaged manifests come from project declarations and the active runtime" do
+  test "packaged manifests bind compiled catalogs to their owned modules" do
     for {id, entry, dependencies} <- [
           {"test_terrain", "Elixir.WyramMods.TestTerrain", []},
           {"test_addon", "Elixir.WyramMods.TestAddon", ["test_terrain"]}
@@ -17,13 +17,28 @@ defmodule Wyram.Engine.WorldTest do
       assert manifest == %{
                "id" => id,
                "version" => "0.1.0",
-               "api" => Wyram.PluginApi.version(),
                "otp" => System.otp_release(),
                "elixir" => "#{major}.#{minor}",
                "entry" => entry,
-               "modules" => [entry],
-               "dependencies" => dependencies
+               "modules" => manifest["modules"],
+               "dependencies" => dependencies,
+               "catalog" => "catalog.term",
+               "catalog_sha256" => manifest["catalog_sha256"]
              }
+
+      {_, catalog_bytes} = Enum.find(files, fn {name, _} -> name == ~c"catalog.term" end)
+
+      assert manifest["catalog_sha256"] ==
+               Base.encode16(:crypto.hash(:sha256, catalog_bytes), case: :lower)
+
+      artifact = :erlang.binary_to_term(catalog_bytes, [:safe])
+      assert artifact.plugin.id == id
+      assert artifact.plugin.dependencies == dependencies
+      assert Enum.sort(artifact.plugin.owned_modules) == manifest["modules"]
+      assert entry in manifest["modules"]
+      assert length(manifest["modules"]) > 1
+      assert Enum.any?(manifest["modules"], &String.starts_with?(&1, entry <> ".Blocks."))
+      assert Enum.all?(artifact.catalog.blocks, &(&1.kind == :block and &1.plugin_id == id))
 
       refute File.exists?(
                Path.expand("../../../test/fixtures/plugins/#{id}/manifest.json", __DIR__)

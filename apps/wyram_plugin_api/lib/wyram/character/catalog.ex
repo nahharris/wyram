@@ -1,24 +1,6 @@
 defmodule Wyram.Character.Catalog do
-  @moduledoc "Load bounded original rigs and character definitions from the selected game plugin."
+  @moduledoc "Validate bounded original rigs and character definitions in compiled game configuration."
   alias Wyram.Character.{Definition, Model}
-
-  def from_plugin(module, profile) do
-    models =
-      if function_exported?(module, :character_models, 0),
-        do: module.character_models(),
-        else: [Model.fallback()]
-
-    definitions =
-      if function_exported?(module, :characters, 0),
-        do: module.characters(),
-        else: [Definition.player(profile, first_model(models))]
-
-    with :ok <- validate(models, definitions),
-         do: {:ok, %{models: models, definitions: definitions}}
-  end
-
-  defp first_model([%Model{id: id} | _]), do: id
-  defp first_model(_), do: "default"
 
   def validate(models, definitions) do
     valid =
