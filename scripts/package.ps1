@@ -33,7 +33,7 @@ try {
   $env:WYRAM_CONTROL_PORT = '0'
   New-Item -ItemType Directory -Force -Path (Join-Path $env:WYRAM_DATA_DIR 'plugins') | Out-Null
   Copy-Item -LiteralPath (Join-Path $stage 'plugins\wyram.wyrplug') -Destination (Join-Path $env:WYRAM_DATA_DIR 'plugins\wyram.wyrplug') -Force
-  & (Join-Path $stage 'engine\bin\wyram.bat') eval 'Application.ensure_all_started(:wyram_engine); true = List.keymember?(Supervisor.which_children(Wyram.Engine.Supervisor), Wyram.Engine.Control, 0); true = Wyram.Engine.World.get_block(0, 0, 0) == Map.get(Wyram.Engine.PluginManager.blocks(), ~s(wyram:stone))'
+  & (Join-Path $stage 'engine\bin\wyram.bat') eval 'Application.ensure_all_started(:wyram_engine); true = List.keymember?(Supervisor.which_children(Wyram.Engine.Supervisor), Wyram.Engine.Control, 0); config = Wyram.Engine.PluginManager.worldgen(); true = config.height == 512 and config.sea_level == 0; true = Wyram.Engine.World.generation().bounds == {-192, 319}; true = Wyram.Engine.World.get_block(0, config.min_y, 0) == Map.get(Wyram.Engine.PluginManager.blocks(), ~s(wyram:stone)); true = byte_size(Wyram.Engine.World.get_chunk(0, -12, 0).data) == 8192'
   if ($LASTEXITCODE -ne 0) { throw 'Packaged release smoke test failed' }
 } finally {
   $env:MIX_ENV = 'dev'
