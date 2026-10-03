@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const EPSILON: f64 = 1e-9;
 
 pub struct PackedWorld<'a> {
     chunks: HashMap<[i32; 3], &'a [u8]>,
+    noncolliding: HashSet<u16>,
 }
 
 #[derive(Debug)]
@@ -17,6 +18,7 @@ impl<'a> PackedWorld<'a> {
     pub fn new(chunks: impl Iterator<Item = ([i32; 3], &'a [u8])>) -> Result<Self, &'static str> {
         let mut world = Self {
             chunks: HashMap::new(),
+            noncolliding: HashSet::new(),
         };
         for (key, bytes) in chunks {
             if bytes.len() != crate::BYTE_COUNT || world.chunks.len() >= 4096 {
@@ -29,12 +31,18 @@ impl<'a> PackedWorld<'a> {
         Ok(world)
     }
 
+    pub fn with_noncolliding(mut self, ids: &[u16]) -> Self {
+        self.noncolliding.extend(ids.iter().copied());
+        self
+    }
+
     fn solid(&self, cell: [i32; 3]) -> Option<bool> {
         let key = cell.map(|v| v.div_euclid(16));
         let bytes = self.chunks.get(&key)?;
         let [x, y, z] = cell.map(|v| v.rem_euclid(16) as usize);
         let index = ((y * 16 + z) * 16 + x) * 2;
-        Some(bytes[index] != 0 || bytes[index + 1] != 0)
+        let id = u16::from_le_bytes([bytes[index], bytes[index + 1]]);
+        Some(id != 0 && !self.noncolliding.contains(&id))
     }
 
     /// Query packed voxels only: this does not select gameplay actions or advance time.

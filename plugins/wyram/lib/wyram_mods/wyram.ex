@@ -9,7 +9,7 @@ end
 defmodule WyramMods.Wyram.BlockCatalog do
   @moduledoc false
   use Wyram.Plugin.Declarations, plugin: WyramMods.Wyram
-  alias Wyram.Capability.Material
+  alias Wyram.Capability.{Collision, Liquid, Material}
 
   defblock Solid, template: true do
     capability(%Material{color: {160, 160, 160}})
@@ -33,6 +33,22 @@ defmodule WyramMods.Wyram.BlockCatalog do
   defblock Wood, id: "wood" do
     template(WyramMods.Wyram.Blocks.Solid)
     capability(%Material{color: {135, 94, 54}}, override: true)
+  end
+
+  defblock Fluid, template: true do
+    capability(%Collision{shape: :none})
+  end
+
+  defblock Water, id: "water" do
+    template(WyramMods.Wyram.Blocks.Fluid)
+    capability(%Liquid{flow_ms: 200, max_level: 7})
+    capability(%Material{color: {40, 105, 220}, mode: :blended, opacity: 160})
+  end
+
+  defblock Lava, id: "lava" do
+    template(WyramMods.Wyram.Blocks.Fluid)
+    capability(%Liquid{flow_ms: 800, max_level: 3})
+    capability(%Material{color: {245, 90, 18}, mode: :emissive})
   end
 end
 

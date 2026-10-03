@@ -1,5 +1,7 @@
 alias Wyram.Engine.{PluginManager, World}
 
+Code.require_file("test-liquids.exs", __DIR__)
+
 package = Path.join(System.fetch_env!("WYRAM_DATA_DIR"), "plugins/wyram.wyrplug")
 {:ok, files} = :zip.extract(String.to_charlist(package), [:memory])
 {_, manifest_bytes} = Enum.find(files, fn {name, _} -> name == ~c"manifest.json" end)

@@ -13,16 +13,16 @@ defmodule Wyram.Plugin.Providers.Collision do
   def kinds, do: [:block]
 
   @impl true
-  def config_schema, do: %{shape: Cube}
+  def config_schema, do: %{shape: {:one_of, [Cube, :none]}}
 
   @impl true
   def owned_fields, do: %{collision: :exclusive}
 
   @impl true
   def validate(%Collision{shape: shape} = config, context) do
-    if valid_cube?(shape),
+    if shape == :none or valid_cube?(shape),
       do: validate_fields(config, context),
-      else: invalid(config, context, "collision shape must be Wyram.Shape.Cube")
+      else: invalid(config, context, "collision shape must be Wyram.Shape.Cube or :none")
   end
 
   def validate(config, context),
@@ -31,7 +31,7 @@ defmodule Wyram.Plugin.Providers.Collision do
   @impl true
   def lower(%Collision{} = config, context) do
     with :ok <- validate(config, context) do
-      {:ok, %{collision: %{primitive: :cube}}}
+      {:ok, %{collision: %{primitive: if(config.shape == :none, do: :none, else: :cube)}}}
     end
   end
 

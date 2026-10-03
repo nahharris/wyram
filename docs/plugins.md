@@ -22,7 +22,29 @@ end
 
 This creates `WyramMods.MyPlugin.Blocks.Amber`. Ordinary Elixir code calls `Amber.ref/0` to obtain a validated `Wyram.Block.Ref`; the persistent identity is `my_plugin:amber`. Numeric handles are assigned only by the engine. Templates have no persistent ID or placement reference. Registered blocks can also serve as templates.
 
-Duplicate capabilities fail compilation. `override: true` requires an existing capability from the same provider and replaces its complete configuration. Defaults fill missing geometry, collision, and material after authored composition; defaults are not override targets. The initial backend supports solid cube geometry/collision and opaque RGB materials. Unsupported shapes, transparency, states, light, and movement effects fail explicitly until their backend phases are implemented.
+Duplicate capabilities fail compilation. `override: true` requires an existing capability from the same provider and replaces its complete configuration. Defaults fill missing geometry, collision, and material after authored composition; defaults are not override targets. The backend supports cube geometry, cube or explicitly absent collision, opaque/blended/emissive RGB materials, and finite liquid states. Other shapes, general authored state schemas, propagated light, and movement effects remain unsupported.
+
+## Liquids
+
+```elixir
+alias Wyram.Capability.{Collision, Liquid, Material}
+
+defblock Water, id: "water" do
+  capability %Collision{shape: :none}
+  capability %Liquid{flow_ms: 200, max_level: 7}
+  capability %Material{color: {40, 105, 220}, mode: :blended, opacity: 160}
+end
+```
+
+`Liquid` requires explicitly noncolliding cube geometry. `flow_ms` is an integer in 100..5000; `max_level` is in 1..7. These settings are data consumed by the core flow system, so third-party liquids use the same machinery as the official plugin. Material opacity is 1..254 for `:blended`; `:opaque` and `:emissive` require the default 255. Emissive surfaces retain their color without directional shading; they do not illuminate neighboring cells.
+
+Placement creates a persistent source. Supply falls downward at full height; supported cells spread horizontally with diminishing levels up to `max_level`. Horizontal level `n` has height `(max_level + 1 - n) / (max_level + 1)` blocks. Flowing cells drain without supply. Sources remain until edited; there is no automatic source creation. Solid blocks and other liquid sources cannot be replaced by flow. Different liquids do not react in this foundation.
+
+The registry allocates one source handle plus `max_level` horizontal handles and one falling handle per liquid. Saves retain logical names such as `wyram:water`, `wyram:water#flow_1`, and `wyram:water#falling`; numeric handles remain engine-owned. Only declared sources appear in placement selection. Internal variants cannot be placed through ordinary world edits. Existing saved mappings retain their handles; removed variants or exhausted capacity fail startup.
+
+Region actors own packed cells and deduplicated pending positions. A coordinator samples immutable neighborhoods and requests conditional chunk batches, processing at most eight regions and 64 cells per region per 100 ms tick. Regions validate expected cell handles, persist each changed chunk, and publish one revisioned chunk message. Pending work resumes by scanning liquid cells after an owner or coordinator restart. Cross-region flow uses snapshots and conditional writes without cyclic owner calls; conflicting player edits win and cause reevaluation. Busy worlds may advance flow more slowly than the configured minimum interval.
+
+Water uses seven levels and a 200 ms interval with transparent blue surfaces. Lava uses three levels and an 800 ms interval with emissive orange surfaces. Both remain selectable and noncolliding. Swimming, buoyancy, damage, mixing reactions, and propagated lighting are later systems. World generation can place sources using their public block references once its terrain API supports authored generators.
 
 Block bodies accept only `template` and `capability` entries. Configuration expressions are constrained literals and named structs, not function calls or variables. The linker resolves module symbols after all source modules compile, including local forward references. Separate catalogs use `use Wyram.Plugin.Declarations, plugin: WyramMods.MyPlugin` and are listed in the entry's `declarations:` option. The entry itself contributes automatically.
 

@@ -5,7 +5,7 @@ defmodule Wyram.Plugin.Providers.Material do
   alias Wyram.Capability.Material
   alias Wyram.Plugin.{Diagnostic, SourceLocation}
 
-  @modes [:opaque]
+  @modes [:opaque, :blended, :emissive]
 
   @impl true
   def config_module, do: Material
@@ -14,7 +14,7 @@ defmodule Wyram.Plugin.Providers.Material do
   def kinds, do: [:block]
 
   @impl true
-  def config_schema, do: %{color: :rgb8, mode: :opaque}
+  def config_schema, do: %{color: :rgb8, mode: {:one_of, @modes}, opacity: {:integer, 1..255}}
 
   @impl true
   def owned_fields, do: %{material: :exclusive}
@@ -39,7 +39,14 @@ defmodule Wyram.Plugin.Providers.Material do
       mode not in @modes ->
         invalid(
           :unsupported_material_mode,
-          "only opaque material is supported by this backend",
+          "material mode must be opaque, blended or emissive",
+          context
+        )
+
+      not valid_opacity?(config) ->
+        invalid(
+          :invalid_material_opacity,
+          "blended opacity must be 1..254; opaque and emissive require 255",
           context
         )
 
@@ -60,13 +67,23 @@ defmodule Wyram.Plugin.Providers.Material do
   @impl true
   def lower(%Material{color: color, mode: mode} = config, context) do
     with :ok <- validate(config, context) do
-      {:ok, %{material: %{color: color, mode: mode}}}
+      material = %{color: color, mode: mode}
+
+      material =
+        if mode == :blended, do: Map.put(material, :opacity, config.opacity), else: material
+
+      {:ok, %{material: material}}
     end
   end
 
   def lower(config, context), do: validate(config, context)
 
-  defp unknown_fields(config), do: Map.keys(config) -- [:__struct__, :color, :mode]
+  defp unknown_fields(config), do: Map.keys(config) -- [:__struct__, :color, :mode, :opacity]
+
+  defp valid_opacity?(%Material{mode: :blended, opacity: opacity}),
+    do: is_integer(opacity) and opacity in 1..254
+
+  defp valid_opacity?(%Material{opacity: opacity}), do: opacity == 255
 
   defp valid_rgb?({r, g, b}),
     do: Enum.all?([r, g, b], &(is_integer(&1) and &1 >= 0 and &1 <= 255))

@@ -7,6 +7,7 @@ mod outbound;
 mod replica;
 mod rig;
 mod telemetry;
+mod transparency;
 mod world;
 
 use std::collections::{HashMap, HashSet};
@@ -26,7 +27,7 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 use crate::meshing::MeshPipeline;
 use crate::replica::{Replica, Snapshot};
 use crate::telemetry::{FrameSample, FrameTelemetry};
-use crate::world::{Vertex, VoxelWorld};
+use crate::world::{RenderDescriptor, Vertex, VoxelWorld};
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -43,6 +44,9 @@ enum ServerPacket {
     },
     Hello {
         colors: HashMap<String, [u8; 3]>,
+        descriptors: HashMap<String, RenderDescriptor>,
+        noncolliding: Vec<u16>,
+        placeable: Vec<u16>,
         characters: Vec<Snapshot>,
         #[serde(default)]
         models: Vec<rig::Source>,
@@ -127,6 +131,8 @@ struct Graphics {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
+    blended_pipeline: wgpu::RenderPipeline,
+    blended: transparency::BlendedMeshes,
     depth: wgpu::TextureView,
     camera: wgpu::Buffer,
     camera_group: wgpu::BindGroup,
@@ -194,36 +200,48 @@ impl Graphics {
             immediate_size: 0,
         });
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Voxel pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[Some(Vertex::layout())],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(config.format.into())],
-            }),
-            primitive: wgpu::PrimitiveState {
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let make_pipeline = |blended| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Voxel pipeline"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(Vertex::layout())],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: config.format,
+                        blend: if blended {
+                            Some(wgpu::BlendState::ALPHA_BLENDING)
+                        } else {
+                            None
+                        },
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(!blended),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipeline = make_pipeline(false);
+        let blended_pipeline = make_pipeline(true);
         let depth = Self::create_depth(&device, &config);
         let characters = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Character vertex batch"),
@@ -237,6 +255,8 @@ impl Graphics {
             queue,
             config,
             pipeline,
+            blended_pipeline,
+            blended: transparency::BlendedMeshes::default(),
             depth,
             camera,
             camera_group,
@@ -275,6 +295,13 @@ impl Graphics {
     }
 
     fn replace_mesh(&mut self, key: [i32; 3], vertices: &[Vertex]) {
+        self.blended.replace(key, vertices);
+        let opaque: Vec<_> = vertices
+            .iter()
+            .filter(|v| v.opacity == 1.0)
+            .copied()
+            .collect();
+        let vertices = opaque.as_slice();
         if vertices.is_empty() {
             self.meshes.remove(&key);
         } else {
@@ -290,6 +317,7 @@ impl Graphics {
     }
 
     fn render(&mut self, position: Vec3, direction: Vec3, characters: &[Vertex]) {
+        self.blended.prepare(&self.device, &self.queue, position);
         let characters = &characters[..characters.len().min(rig::MAX_VERTICES)];
         if !characters.is_empty() {
             self.queue
@@ -362,6 +390,8 @@ impl Graphics {
                 pass.set_vertex_buffer(0, self.characters.slice(..));
                 pass.draw(0..characters.len() as u32, 0..1);
             }
+            pass.set_pipeline(&self.blended_pipeline);
+            self.blended.draw(&mut pass);
         }
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(frame);
@@ -385,6 +415,7 @@ struct Game {
     pressed: HashSet<KeyCode>,
     cursor_locked: bool,
     selected: u16,
+    placeable: Vec<u16>,
     meshing: MeshPipeline,
     telemetry: FrameTelemetry,
     decode_ms: f64,
@@ -412,6 +443,7 @@ impl Game {
             cancel_actions: false,
             cursor_locked: false,
             selected: 1,
+            placeable: Vec::new(),
             meshing: MeshPipeline::new(),
             telemetry: FrameTelemetry::from_env(),
             decode_ms: 0.0,
@@ -515,7 +547,7 @@ impl Game {
                 point.y.floor() as i32,
                 point.z.floor() as i32,
             );
-            if self.world.block(key.0, key.1, key.2) != 0 {
+            if self.world.selects(point) {
                 let target = if place { previous.unwrap_or(key) } else { key };
                 self.send_packet(ClientPacket::Edit {
                     x: target.0,
@@ -570,10 +602,19 @@ impl ApplicationHandler<UserEvent> for Game {
             }) => self.apply_teleport(x, y, z, yaw, pitch),
             UserEvent::Packet(ServerPacket::Hello {
                 colors,
+                descriptors,
+                noncolliding,
+                placeable,
                 characters,
                 models,
             }) => {
                 self.world.set_palette(colors);
+                self.world.set_descriptors(descriptors, noncolliding);
+                self.placeable = placeable
+                    .into_iter()
+                    .filter(|id| self.world.has_block_id(*id))
+                    .collect();
+                self.selected = self.placeable.first().copied().unwrap_or(0);
                 self.characters.models(models);
                 self.accept_characters(characters);
             }
@@ -593,6 +634,7 @@ impl ApplicationHandler<UserEvent> for Game {
                 self.world.forget(key);
                 if let Some(graphics) = self.graphics.as_mut() {
                     graphics.meshes.remove(&key);
+                    graphics.blended.replace(key, &[]);
                 }
             }
             UserEvent::Disconnected => event_loop.exit(),
@@ -643,10 +685,10 @@ impl ApplicationHandler<UserEvent> for Game {
                                 KeyCode::Digit9 => Some(9),
                                 _ => None,
                             };
-                            if let Some(id) = number
-                                && self.world.has_block_id(id)
+                            if let Some(index) = number
+                                && let Some(id) = self.placeable.get(index - 1)
                             {
-                                self.selected = id;
+                                self.selected = *id;
                             }
                         }
                         ElementState::Released => {

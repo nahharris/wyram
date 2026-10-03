@@ -2,8 +2,9 @@ defmodule Wyram.Engine.PluginCatalog do
   @moduledoc "Validates installed compiled catalogs and builds immutable engine lookup tables."
 
   alias Wyram.Block.Ref
+  alias Wyram.Engine.BlockRegistry
   alias Wyram.Game.Config
-  alias Wyram.Plugin.{Declaration, ModuleName, SourceLocation}
+  alias Wyram.Plugin.{Declaration, Descriptor, ModuleName, SourceLocation}
 
   @id_pattern ~r/^[a-z][a-z0-9_-]*$/
   @module_segment ~r/^[A-Z][A-Za-z0-9_]*$/
@@ -21,12 +22,14 @@ defmodule Wyram.Engine.PluginCatalog do
          {:ok, blocks} <- collect_blocks(packages),
          :ok <- validate_all_game_refs(packages, blocks),
          {:ok, game_id, game} <- select_game(packages, Keyword.get(options, :game)),
-         {:ok, block_ids} <- assign_block_ids(blocks, Keyword.get(options, :saved_block_ids, %{})) do
+         states <- BlockRegistry.expand(blocks),
+         {:ok, block_ids} <- assign_block_ids(states, Keyword.get(options, :saved_block_ids, %{})) do
       {:ok,
-       %{
+       Map.merge(BlockRegistry.tables(states, block_ids), %{
          blocks: block_ids,
+         placeable: Map.new(blocks, &{&1.id, block_ids[&1.id]}),
          colors:
-           Map.new(blocks, fn block ->
+           Map.new(states, fn block ->
              {Map.fetch!(block_ids, block.id), Tuple.to_list(block.descriptor.material.color)}
            end),
          palette:
@@ -42,7 +45,7 @@ defmodule Wyram.Engine.PluginCatalog do
              {package.manifest["id"], package.manifest["version"]}
            end),
          game_id: game_id
-       }}
+       })}
     end
   rescue
     _ -> {:error, :invalid_plugin_catalog}
@@ -329,20 +332,7 @@ defmodule Wyram.Engine.PluginCatalog do
       end) and Map.get(block, :kind) == :block
   end
 
-  defp valid_descriptor?(descriptor) when is_map(descriptor) do
-    Map.keys(descriptor) |> Enum.sort() == [:collision, :geometry, :material] and
-      descriptor.geometry == %{primitive: :cube} and descriptor.collision == %{primitive: :cube} and
-      valid_material?(descriptor.material)
-  end
-
-  defp valid_descriptor?(_), do: false
-
-  defp valid_material?(%{color: {red, green, blue}, mode: :opaque} = material) do
-    Map.keys(material) |> Enum.sort() == [:color, :mode] and
-      Enum.all?([red, green, blue], &(is_integer(&1) and &1 in 0..255))
-  end
-
-  defp valid_material?(_), do: false
+  defp valid_descriptor?(descriptor), do: Descriptor.valid?(descriptor)
 
   defp valid_source?(%{file: file, line: line} = source) do
     Map.keys(source) -- [:file, :line, :column, :module] == [] and is_binary(file) and file != "" and
@@ -572,12 +562,21 @@ defmodule Wyram.Engine.PluginCatalog do
 
   defp valid_canonical_id?(id) when is_binary(id) do
     case String.split(id, ":", parts: 2) do
-      [plugin_id, local_id] -> valid_id?(plugin_id) and valid_id?(local_id)
+      [plugin_id, local_state] -> valid_id?(plugin_id) and valid_local_state?(local_state)
       _ -> false
     end
   end
 
   defp valid_canonical_id?(_), do: false
+
+  defp valid_local_state?(value) do
+    case String.split(value, "#") do
+      [id] -> valid_id?(id)
+      [id, "falling"] -> valid_id?(id)
+      [id, "flow_" <> level] -> valid_id?(id) and level in ~w(1 2 3 4 5 6 7)
+      _ -> false
+    end
+  end
 
   defp valid_module_list?(modules) when is_list(modules),
     do: modules == Enum.sort(Enum.uniq(modules)) and Enum.all?(modules, &valid_module?/1)

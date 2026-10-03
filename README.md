@@ -2,7 +2,7 @@
 
 Wyram is an experimental local voxel game built around an Elixir actor simulation and a Rust graphics and computation layer. The default creative game is a compiled plugin using the same API available to other trusted plugins. All artwork and world generation in this repository are original placeholders.
 
-The current slice supports procedural terrain, walking/running, sneaking, crawling, jumping, climbing, floor/wall sliding, rolling, original animated characters and external cameras, alongside block editing and save/load. It is Windows-first. The renderer uses shaded block colors; fluid gameplay, textures, lighting propagation and the full benchmark targets remain upcoming work.
+The current slice supports procedural terrain, walking/running, sneaking, crawling, jumping, climbing, floor/wall sliding, rolling, original animated characters and external cameras, alongside block editing and save/load. Water and lava have persistent sources, falling and horizontal flow, and source-removal drainage. Water is transparent; lava is emissive and flows more slowly. It is Windows-first. Swimming, fluid contact damage, mixing reactions, textures, lighting propagation and the full benchmark targets remain upcoming work.
 
 ## Windows development
 
@@ -17,6 +17,8 @@ mise run dev
 Run `setup` once to prepare dependencies and the native client. Both `dev` and `dev:agent` rebuild and temporarily stage the Wyram game plugin before launch. When the game exits, the temporary plugin is removed, or the previously installed package is restored. The mise tasks invoke Windows PowerShell themselves, so they work from either shell.
 
 Click the window to capture the mouse. Use WASD to move, Space to jump, Ctrl to sprint, Left Shift to sneak (or slide while running), C to crawl, Q with WASD to roll (Q alone rolls forward), hold Space toward a nearby two/three-block ledge for jump-assisted climbing, the number keys to select a block, left click to remove a block, right click to place it, and Escape to release the mouse. F5 cycles first/third/front-facing views; the captured mouse wheel adjusts external camera distance. Game data and installed plugins live in `%LOCALAPPDATA%\Wyram`, or the directory specified by `WYRAM_DATA_DIR`.
+
+Number keys select authored blocks in logical ID order, independently of saved numeric handles. With only Wyram installed: 1 dirt, 2 grass, 3 lava, 4 stone, 5 water, 6 wood. Liquid placement creates a source; internal flow levels are managed by the engine. See [liquid authoring and ownership](docs/plugins.md#liquids).
 
 Run `mise run check` and `mise run test` before publishing changes. The test layers are described in [docs/testing.md](docs/testing.md). `mise run package` builds a Windows engine release and native client in `dist/windows`. From that directory, run `powershell -ExecutionPolicy Bypass -File run.ps1` to start the packaged game. The launcher installs the bundled Wyram game plugin into the user data directory if it is absent.
 
