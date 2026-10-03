@@ -6,6 +6,47 @@ defmodule Wyram.Engine.PluginCatalogTest do
   alias Wyram.Game.Config
   alias Wyram.Plugin.{Declaration, SourceLocation}
 
+  test "liquid variants keep logical identities across registry growth and save reload" do
+    liquid = block("test_game", "water", {40, 100, 220})
+
+    liquid = %{
+      liquid
+      | descriptor: %{
+          geometry: %{primitive: :cube},
+          collision: %{primitive: :none},
+          material: %{color: {40, 100, 220}, mode: :blended, opacity: 160},
+          liquid: %{flow_ms: 200, max_level: 3}
+        }
+    }
+
+    blocks = [block("test_game", "grass", {1, 2, 3}), liquid]
+    packaged = package("test_game", blocks, [], game_config("test_game"))
+    assert {:ok, registry} = PluginCatalog.build([packaged])
+    source = registry.blocks["test_game:water"]
+    falling = registry.blocks["test_game:water#falling"]
+    assert registry.liquids[falling].source == source
+    assert registry.liquids[falling].falling
+    assert length(registry.noncolliding) == 5
+    assert registry.render[registry.blocks["test_game:water#flow_3"]].height == 0.25
+    assert map_size(registry.placeable) == 2
+
+    grown =
+      package(
+        "test_game",
+        [block("test_game", "amber", {9, 8, 7}) | blocks],
+        [],
+        game_config("test_game")
+      )
+
+    assert {:ok, reloaded} = PluginCatalog.build([grown], saved_block_ids: registry.blocks)
+    assert Map.take(reloaded.blocks, Map.keys(registry.blocks)) == registry.blocks
+
+    assert {:error, :invalid_saved_block_ids} =
+             PluginCatalog.build([packaged],
+               saved_block_ids: %{"test_game:water#flow_9" => 12}
+             )
+  end
+
   test "builds current block and color tables from compiled descriptors" do
     package =
       package(

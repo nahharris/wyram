@@ -4,6 +4,7 @@ use std::sync::Arc;
 use base64::Engine;
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
+use serde::Deserialize;
 #[cfg(test)]
 use wyram_core::BLOCK_COUNT;
 use wyram_core::{BYTE_COUNT, CHUNK_SIDE};
@@ -13,6 +14,7 @@ use wyram_core::{BYTE_COUNT, CHUNK_SIDE};
 pub struct Vertex {
     pub(crate) position: [f32; 3],
     pub(crate) color: [f32; 3],
+    pub(crate) opacity: f32,
 }
 
 impl Vertex {
@@ -31,6 +33,11 @@ impl Vertex {
                     shader_location: 1,
                     format: wgpu::VertexFormat::Float32x3,
                 },
+                wgpu::VertexAttribute {
+                    offset: 24,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32,
+                },
             ],
         }
     }
@@ -41,10 +48,31 @@ struct Chunk {
     data: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct RenderDescriptor {
+    pub opacity: u8,
+    pub emissive: bool,
+    pub height: f32,
+    pub liquid: u16,
+}
+
+impl Default for RenderDescriptor {
+    fn default() -> Self {
+        Self {
+            opacity: 255,
+            emissive: false,
+            height: 1.0,
+            liquid: 0,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct VoxelWorld {
     chunks: HashMap<[i32; 3], Arc<Chunk>>,
     colors: Arc<HashMap<u16, [u8; 3]>>,
+    descriptors: Arc<HashMap<u16, RenderDescriptor>>,
+    noncolliding: Arc<Vec<u16>>,
     generations: HashMap<[i32; 3], u64>,
     dirty: HashSet<[i32; 3]>,
     epoch: u64,
@@ -64,9 +92,13 @@ impl MeshJob {
             .get(&self.key)
             .expect("mesh snapshot has its chunk")
             .data;
-        crate::chunk_mesh::build(data, self.key, &self.snapshot.colors, |p| {
-            self.snapshot.block(p[0], p[1], p[2])
-        })
+        crate::chunk_mesh::build(
+            data,
+            self.key,
+            &self.snapshot.colors,
+            &self.snapshot.descriptors,
+            |p| self.snapshot.block(p[0], p[1], p[2]),
+        )
     }
 }
 
@@ -80,6 +112,23 @@ const NEIGHBORS: [[i32; 3]; 6] = [
 ];
 
 impl VoxelWorld {
+    pub fn set_descriptors(
+        &mut self,
+        descriptors: HashMap<String, RenderDescriptor>,
+        noncolliding: Vec<u16>,
+    ) {
+        self.descriptors = Arc::new(
+            descriptors
+                .into_iter()
+                .filter_map(|(key, value)| key.parse::<u16>().ok().map(|id| (id, value)))
+                .collect(),
+        );
+        self.noncolliding = Arc::new(noncolliding);
+        let keys: Vec<_> = self.chunks.keys().copied().collect();
+        for key in keys {
+            self.invalidate(key);
+        }
+    }
     pub fn set_palette(&mut self, colors: HashMap<String, [u8; 3]>) {
         self.colors = Arc::new(
             colors
@@ -168,6 +217,8 @@ impl VoxelWorld {
             snapshot: Self {
                 chunks,
                 colors: Arc::clone(&self.colors),
+                descriptors: Arc::clone(&self.descriptors),
+                noncolliding: Arc::clone(&self.noncolliding),
                 ..Self::default()
             },
         })
@@ -215,16 +266,27 @@ impl VoxelWorld {
     pub fn aim_point(&self, eye: Vec3, aim: Vec3) -> Vec3 {
         for step in 1..=60 {
             let point = eye + aim * (step as f32 * 0.1);
-            if self.block(
-                point.x.floor() as i32,
-                point.y.floor() as i32,
-                point.z.floor() as i32,
-            ) != 0
-            {
+            if self.selects(point) {
                 return point;
             }
         }
         eye + aim * 6.
+    }
+
+    pub fn selects(&self, point: Vec3) -> bool {
+        let id = self.block(
+            point.x.floor() as i32,
+            point.y.floor() as i32,
+            point.z.floor() as i32,
+        );
+        id != 0
+            && point.y - point.y.floor()
+                < self
+                    .descriptors
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_default()
+                    .height
     }
 
     /// Short straight camera sweep, sharing a single borrowed packed world for <=60 probes.
@@ -238,8 +300,9 @@ impl VoxelWorld {
             .chunks
             .iter()
             .filter(|(key, _)| (0..3).all(|i| (key[i] - center[i]).abs() <= 1));
-        let packed =
-            wyram_core::PackedWorld::new(chunks.map(|(key, c)| (*key, c.data.as_slice()))).ok()?;
+        let packed = wyram_core::PackedWorld::new(chunks.map(|(key, c)| (*key, c.data.as_slice())))
+            .ok()?
+            .with_noncolliding(&self.noncolliding);
         let count = (delta.length() / 0.1).ceil().clamp(1., 60.) as usize;
         let mut position = eye - Vec3::Y * 0.12;
         for step in 1..=count {
@@ -278,7 +341,8 @@ impl VoxelWorld {
             .filter(|(key, _)| (0..3).all(|i| (key[i] - center[i]).abs() <= 1));
         let world =
             wyram_core::PackedWorld::new(chunks.map(|(key, chunk)| (*key, chunk.data.as_slice())))
-                .ok()?;
+                .ok()?
+                .with_noncolliding(&self.noncolliding);
         let result = world
             .sweep(
                 feet.map(f64::from),
@@ -339,6 +403,7 @@ impl VoxelWorld {
                                 z as f32 + corners[corner][2],
                             ],
                             color,
+                            opacity: 1.0,
                         });
                     }
                 }

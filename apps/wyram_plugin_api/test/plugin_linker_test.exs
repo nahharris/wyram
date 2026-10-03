@@ -4,6 +4,7 @@ defmodule Wyram.Plugin.LinkerTest do
   alias Wyram.Capability.{Geometry, Material}
 
   alias Wyram.Plugin.{
+    BlockDefaults,
     CapabilityContribution,
     Declaration,
     Diagnostic,
@@ -377,7 +378,24 @@ defmodule Wyram.Plugin.LinkerTest do
            }
 
     assert Enum.all?(block.entries, &(&1.origin == :default))
-    assert Enum.map(block.entries, & &1.provider) == Enum.map(Provider.builtins(), & &1)
+
+    assert Enum.map(block.entries, & &1.provider) ==
+             Enum.map(BlockDefaults.entries(source()), & &1.provider)
+  end
+
+  test "liquid declarations require explicit noncollision after template composition" do
+    liquid = contribution(Wyram.Plugin.Providers.Liquid, %Wyram.Capability.Liquid{})
+    block = declaration("a", "one", One, :registered, [liquid])
+
+    assert {:error, [%Diagnostic{code: :invalid_capability_composition}]} =
+             Linker.link_set([plugin("a", [], [block])])
+
+    collision =
+      contribution(Wyram.Plugin.Providers.Collision, %Wyram.Capability.Collision{shape: :none})
+
+    block = %{block | entries: [liquid, collision]}
+    assert {:ok, linked} = Linker.link_set([plugin("a", [], [block])])
+    assert hd(linked.catalogs["a"].blocks).descriptor.liquid.max_level == 7
   end
 
   test "extension provider can author supported RGB material output and suppresses material default" do
@@ -433,7 +451,7 @@ defmodule Wyram.Plugin.LinkerTest do
   test "unsupported material modes and lowerer output fields fail before catalog emission" do
     unsupported =
       declaration("a", "one", Symbols.One, :registered, [
-        contribution(Wyram.Plugin.Providers.Material, %Material{color: {1, 2, 3}, mode: :blended})
+        contribution(Wyram.Plugin.Providers.Material, %Material{color: {1, 2, 3}, mode: :cutout})
       ])
 
     assert {:error, diagnostics} = Linker.link_set([plugin("a", [], [unsupported])])

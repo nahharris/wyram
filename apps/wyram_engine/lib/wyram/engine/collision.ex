@@ -1,14 +1,14 @@
 defmodule Wyram.Engine.Collision do
   @moduledoc "One packed collision query batch over immutable region-owned chunk snapshots."
   alias Wyram.Character.State
-  alias Wyram.Engine.{Native, World}
+  alias Wyram.Engine.{Native, PluginManager, World}
 
   @spec sweep([State.query()]) :: {:ok, [State.result()]} | {:error, term()}
   def sweep(queries) do
     keys = queries |> Enum.flat_map(&chunk_keys/1) |> Enum.uniq()
 
     if length(keys) <= 4096 and length(queries) <= 256 do
-      Native.sweep_bodies(World.get_chunks(keys), queries)
+      Native.sweep_bodies(World.get_chunks(keys), queries, PluginManager.noncolliding())
     else
       {:error, :oversized_character_batch}
     end

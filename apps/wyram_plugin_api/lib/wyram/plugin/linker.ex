@@ -7,6 +7,7 @@ defmodule Wyram.Plugin.Linker do
     BlockDefaults,
     CapabilityContribution,
     Declaration,
+    Descriptor,
     Diagnostic,
     ModuleName,
     Provider,
@@ -918,8 +919,22 @@ defmodule Wyram.Plugin.Linker do
 
   defp maybe_complete_registered(authored, provider_set, declaration) do
     with {:ok, completed} <- add_defaults(authored, provider_set, declaration),
-         {:ok, descriptor} <- lower_descriptor(completed, provider_set, declaration) do
+         {:ok, descriptor} <- lower_descriptor(completed, provider_set, declaration),
+         :ok <- validate_composition(descriptor, declaration) do
       {:ok, completed, descriptor}
+    end
+  end
+
+  defp validate_composition(descriptor, declaration) do
+    if Descriptor.valid?(descriptor) do
+      :ok
+    else
+      {:error,
+       Diagnostic.new!(
+         :invalid_capability_composition,
+         "liquid requires explicit noncolliding cube geometry",
+         declaration.source
+       )}
     end
   end
 
@@ -1217,7 +1232,7 @@ defmodule Wyram.Plugin.Linker do
   defp validate_lowered_fields(provider, fields, source) do
     owned = Map.keys(provider.owned_fields()) |> Enum.sort()
     keys = Map.keys(fields) |> Enum.sort()
-    unsupported = keys -- [:geometry, :collision, :material]
+    unsupported = keys -- [:geometry, :collision, :material, :liquid]
 
     cond do
       keys != owned ->
@@ -1249,18 +1264,7 @@ defmodule Wyram.Plugin.Linker do
     end
   end
 
-  defp valid_backend_field?(:geometry, %{primitive: :cube} = value),
-    do: Map.keys(value) == [:primitive]
-
-  defp valid_backend_field?(:collision, %{primitive: :cube} = value),
-    do: Map.keys(value) == [:primitive]
-
-  defp valid_backend_field?(:material, %{color: {r, g, b}, mode: :opaque} = value) do
-    Map.keys(value) |> Enum.sort() == [:color, :mode] and
-      Enum.all?([r, g, b], &(is_integer(&1) and &1 in 0..255))
-  end
-
-  defp valid_backend_field?(_, _), do: false
+  defp valid_backend_field?(field, value), do: Descriptor.valid_field?(field, value)
 
   defp build_result(plugins, order, expanded) do
     by_id = Map.new(plugins, &{&1.id, &1})

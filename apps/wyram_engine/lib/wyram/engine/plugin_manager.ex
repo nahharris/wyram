@@ -15,6 +15,7 @@ defmodule Wyram.Engine.PluginManager do
     Wyram.Capability.Collision,
     Wyram.Capability.Geometry,
     Wyram.Capability.Material,
+    Wyram.Capability.Liquid,
     Wyram.Character.Definition,
     Wyram.Character.Model,
     Wyram.Character.Profile,
@@ -36,6 +37,8 @@ defmodule Wyram.Engine.PluginManager do
     Wyram.Plugin.Providers.Collision,
     Wyram.Plugin.Providers.Geometry,
     Wyram.Plugin.Providers.Material,
+    Wyram.Plugin.Providers.Liquid,
+    Wyram.Plugin.Descriptor,
     Wyram.Plugin.SourceLocation
   ]
 
@@ -46,6 +49,11 @@ defmodule Wyram.Engine.PluginManager do
 
   @spec block_colors() :: %{pos_integer() => [integer()]}
   def block_colors, do: GenServer.call(__MODULE__, :block_colors)
+
+  def liquids, do: GenServer.call(__MODULE__, :liquids)
+  def render_descriptors, do: GenServer.call(__MODULE__, :render)
+  def noncolliding, do: GenServer.call(__MODULE__, :noncolliding)
+  def placeable, do: GenServer.call(__MODULE__, :placeable)
 
   @spec terrain_palette() :: [pos_integer()]
   def terrain_palette, do: GenServer.call(__MODULE__, :terrain_palette)
@@ -98,6 +106,10 @@ defmodule Wyram.Engine.PluginManager do
     do: {:reply, Enum.map(state.character_models, &Model.to_wire/1), state}
 
   def handle_call(:blocks, _from, state), do: {:reply, state.blocks, state}
+  def handle_call(:liquids, _from, state), do: {:reply, state.liquids, state}
+  def handle_call(:render, _from, state), do: {:reply, state.render, state}
+  def handle_call(:noncolliding, _from, state), do: {:reply, state.noncolliding, state}
+  def handle_call(:placeable, _from, state), do: {:reply, state.placeable, state}
   def handle_call(:block_colors, _from, state), do: {:reply, state.colors, state}
   def handle_call(:terrain_palette, _from, state), do: {:reply, state.palette, state}
   def handle_call(:plugin_versions, _from, state), do: {:reply, state.versions, state}

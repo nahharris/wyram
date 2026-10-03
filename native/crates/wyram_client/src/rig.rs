@@ -232,6 +232,7 @@ fn cuboid(vertices: &mut Vec<Vertex>, part: &Cuboid, transform: Mat4) {
             vertices.push(Vertex {
                 position: transform.transform_point3(point).to_array(),
                 color,
+                opacity: 1.0,
             });
         }
     }

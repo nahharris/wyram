@@ -21,7 +21,8 @@ defmodule Wyram.Plugin.Provider do
     [
       Wyram.Plugin.Providers.Geometry,
       Wyram.Plugin.Providers.Collision,
-      Wyram.Plugin.Providers.Material
+      Wyram.Plugin.Providers.Material,
+      Wyram.Plugin.Providers.Liquid
     ]
   end
 

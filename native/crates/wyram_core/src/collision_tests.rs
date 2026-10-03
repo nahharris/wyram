@@ -13,6 +13,22 @@ fn chunks() -> Vec<([i32; 3], Vec<u8>)> {
 }
 
 #[test]
+fn noncolliding_voxels_do_not_block_bodies_but_unknown_handles_remain_solid() {
+    let mut data = chunks();
+    let chunk = data.iter_mut().find(|(key, _)| *key == [0, 0, 0]).unwrap();
+    chunk.1 = crate::write_block(&chunk.1, 2, 0, 0, 10).unwrap();
+    chunk.1 = crate::write_block(&chunk.1, 4, 0, 0, 99).unwrap();
+    let world = PackedWorld::new(data.iter().map(|(key, bytes)| (*key, bytes.as_slice())))
+        .unwrap()
+        .with_noncolliding(&[10]);
+    let result = world
+        .sweep([0.5, 0.0, 0.5], [5.0, 0.0, 0.0], 0.28, 0.8)
+        .unwrap();
+    assert!((result.position[0] - 3.72).abs() < 1e-8);
+    assert!(result.blocked[0]);
+}
+
+#[test]
 fn sweep_stops_at_wall_and_slides_along_it_without_tunneling() {
     let mut data = chunks();
     let chunk = data.iter_mut().find(|(key, _)| *key == [0, 0, 0]).unwrap();

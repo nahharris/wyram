@@ -245,7 +245,8 @@ defmodule Wyram.PluginContractsTest do
     assert Provider.builtins() == [
              Wyram.Plugin.Providers.Geometry,
              Wyram.Plugin.Providers.Collision,
-             Wyram.Plugin.Providers.Material
+             Wyram.Plugin.Providers.Material,
+             Wyram.Plugin.Providers.Liquid
            ]
 
     assert Provider.ownership_conflicts([

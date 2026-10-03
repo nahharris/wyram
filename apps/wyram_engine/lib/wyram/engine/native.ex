@@ -28,11 +28,16 @@ defmodule Wyram.Engine.Native do
           {:ok, binary()} | {:error, String.t()}
   def write_block(_data, _x, _y, _z, _id), do: :erlang.nif_error(:nif_not_loaded)
 
+  def read_blocks(_data, _positions), do: :erlang.nif_error(:nif_not_loaded)
+  def compare_write_blocks(_data, _edits), do: :erlang.nif_error(:nif_not_loaded)
+  def liquid_positions(_data, _ids), do: :erlang.nif_error(:nif_not_loaded)
+
   @spec sweep_bodies([{{integer(), integer(), integer()}, binary()}], [
           Wyram.Character.State.query()
         ]) ::
           {:ok, [Wyram.Character.State.result()]} | {:error, String.t()}
-  def sweep_bodies(_chunks, _queries), do: :erlang.nif_error(:nif_not_loaded)
+  def sweep_bodies(chunks, queries), do: sweep_bodies(chunks, queries, [])
+  def sweep_bodies(_chunks, _queries, _noncolliding), do: :erlang.nif_error(:nif_not_loaded)
   @spec watch_process(non_neg_integer()) :: {:ok, reference()} | {:error, String.t()}
   def watch_process(_pid), do: :erlang.nif_error(:nif_not_loaded)
   @spec process_status(reference()) :: {:ok, nil | non_neg_integer()} | {:error, String.t()}

@@ -1,3 +1,4 @@
+pub mod batch;
 pub mod collision;
 pub use collision::PackedWorld;
 
@@ -9,6 +10,7 @@ pub const BYTE_COUNT: usize = BLOCK_COUNT * 2;
 pub enum ChunkError {
     BadLength,
     OutOfBounds,
+    Precondition,
 }
 
 #[inline]

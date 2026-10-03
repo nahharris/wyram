@@ -16,6 +16,184 @@ fn job(data: Vec<u8>) -> MeshJob {
     world.mesh_job([-2, 3, -4]).unwrap()
 }
 
+#[test]
+fn liquid_mesh_keeps_solid_banks_visible_and_uses_flow_height_and_opacity() {
+    let mut world = VoxelWorld::default();
+    world.set_palette(HashMap::from([
+        ("1".into(), [80, 80, 80]),
+        ("10".into(), [40, 100, 220]),
+    ]));
+    world.set_descriptors(
+        HashMap::from([(
+            "10".into(),
+            RenderDescriptor {
+                opacity: 160,
+                height: 0.5,
+                liquid: 10,
+                emissive: false,
+            },
+        )]),
+        vec![10],
+    );
+    let data = bytes(|i| {
+        if i == 0 {
+            1
+        } else if i == 1 {
+            10
+        } else {
+            0
+        }
+    });
+    world.receive_chunk(
+        [0, 0, 0],
+        0,
+        &base64::engine::general_purpose::STANDARD.encode(data),
+    );
+    let vertices = world.mesh_job([0, 0, 0]).unwrap().build();
+    assert_eq!(vertices.iter().filter(|v| v.opacity == 1.0).count(), 36);
+    let water: Vec<_> = vertices.iter().filter(|v| v.opacity < 1.0).collect();
+    assert!(!water.is_empty());
+    assert!(water.iter().all(|v| v.position[1] <= 0.5));
+    assert!(
+        water
+            .iter()
+            .all(|v| (v.opacity - 160.0 / 255.0).abs() < 1e-6)
+    );
+    let before = world.camera_eye(Vec3::new(0.5, 0.3, 0.5), Vec3::X * 1.5);
+    assert!(before.is_some());
+}
+
+#[test]
+fn same_liquid_family_culls_shared_faces_and_emissive_faces_are_unshaded() {
+    let mut world = VoxelWorld::default();
+    world.set_palette(HashMap::from([
+        ("10".into(), [240, 80, 10]),
+        ("11".into(), [240, 80, 10]),
+    ]));
+    world.set_descriptors(
+        HashMap::from([
+            (
+                "10".into(),
+                RenderDescriptor {
+                    opacity: 255,
+                    height: 1.0,
+                    liquid: 10,
+                    emissive: true,
+                },
+            ),
+            (
+                "11".into(),
+                RenderDescriptor {
+                    opacity: 255,
+                    height: 0.5,
+                    liquid: 10,
+                    emissive: true,
+                },
+            ),
+        ]),
+        vec![10, 11],
+    );
+    world.receive_chunk(
+        [0, 0, 0],
+        0,
+        &base64::engine::general_purpose::STANDARD.encode(bytes(|i| {
+            if i == 0 {
+                10
+            } else if i == 1 {
+                11
+            } else {
+                0
+            }
+        })),
+    );
+    let vertices = world.mesh_job([0, 0, 0]).unwrap().build();
+    assert!(
+        vertices
+            .iter()
+            .all(|v| v.color == [240.0 / 255.0, 80.0 / 255.0, 10.0 / 255.0])
+    );
+    // The higher cell exposes only the strip above its lower neighbor.
+    let interface: Vec<_> = vertices
+        .as_chunks::<6>()
+        .0
+        .iter()
+        .filter(|q| q.iter().all(|v| v.position[0] == 1.0))
+        .collect();
+    assert_eq!(interface.len(), 1);
+    assert!(interface[0].iter().all(|v| v.position[1] >= 0.5));
+}
+
+#[test]
+fn liquid_prediction_crosses_a_noncolliding_cell_and_descriptor_changes_invalidate_jobs() {
+    let mut world = VoxelWorld::default();
+    world.receive_chunk(
+        [0, 0, 0],
+        0,
+        &base64::engine::general_purpose::STANDARD.encode(bytes(|i| if i == 1 { 10 } else { 0 })),
+    );
+    let old_job = world.mesh_job([0, 0, 0]).unwrap();
+    assert_eq!(
+        world
+            .predict_body([1.5, 0.0, 0.5], Vec3::X, 0.1, 0.5, 0.3)
+            .unwrap()
+            .x,
+        1.5
+    );
+    world.set_descriptors(
+        HashMap::from([(
+            "10".into(),
+            RenderDescriptor {
+                opacity: 160,
+                height: 1.0,
+                liquid: 10,
+                emissive: false,
+            },
+        )]),
+        vec![10],
+    );
+    assert!(!world.mesh_is_current(old_job.key, old_job.generation));
+    assert_eq!(
+        world
+            .predict_body([1.5, 0.0, 0.5], Vec3::X, 0.1, 0.5, 0.3)
+            .unwrap()
+            .x,
+        2.5
+    );
+    assert!(
+        world
+            .camera_eye(Vec3::new(1.5, 0.3, 0.5), Vec3::X)
+            .unwrap()
+            .x
+            > 2.4
+    );
+}
+
+#[test]
+fn selection_rays_pass_through_the_empty_space_above_flowing_liquid() {
+    let mut world = VoxelWorld::default();
+    world.receive_chunk(
+        [0, 0, 0],
+        0,
+        &base64::engine::general_purpose::STANDARD.encode(bytes(|i| if i == 1 { 10 } else { 0 })),
+    );
+    world.set_descriptors(
+        HashMap::from([(
+            "10".into(),
+            RenderDescriptor {
+                opacity: 160,
+                height: 0.5,
+                liquid: 10,
+                emissive: false,
+            },
+        )]),
+        vec![10],
+    );
+    let upper = world.aim_point(Vec3::new(0.5, 0.75, 0.5), Vec3::X);
+    let lower = world.aim_point(Vec3::new(0.5, 0.25, 0.5), Vec3::X);
+    assert!(upper.x > 6.0);
+    assert!(lower.x >= 1.0 && lower.x <= 1.1);
+}
+
 fn bytes(mut material: impl FnMut(usize) -> u16) -> Vec<u8> {
     (0..BLOCK_COUNT)
         .flat_map(|i| material(i).to_le_bytes())

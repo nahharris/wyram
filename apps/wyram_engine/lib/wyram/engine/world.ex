@@ -38,6 +38,45 @@ defmodule Wyram.Engine.World do
     GenServer.call(region_pid(elem(key, 0), elem(key, 2)), {:set, key, local, id})
   end
 
+  def get_blocks(positions) do
+    positions
+    |> Enum.uniq()
+    |> group_positions()
+    |> Enum.flat_map(fn {pid, entries} -> GenServer.call(pid, {:read_blocks, entries}) end)
+    |> Map.new()
+  end
+
+  def schedule_liquids(positions, due) do
+    Enum.each(group_positions(positions), fn {pid, entries} ->
+      GenServer.cast(pid, {:schedule_liquids, entries, due})
+    end)
+  end
+
+  def apply_liquid_edits(edits) do
+    edits
+    |> Enum.group_by(fn {{x, _, z}, _, _} ->
+      region_pid(Integer.floor_div(x, 16), Integer.floor_div(z, 16))
+    end)
+    |> Enum.each(fn {pid, owned} ->
+      entries =
+        Enum.map(owned, fn {position, expected, id} ->
+          {key, local} = address(position)
+          {position, key, local, expected, id}
+        end)
+
+      GenServer.call(pid, {:liquid_edits, entries})
+    end)
+  end
+
+  defp group_positions(positions) do
+    positions
+    |> Enum.map(fn position ->
+      {key, local} = address(position)
+      {position, key, local}
+    end)
+    |> Enum.group_by(fn {_, {cx, _, cz}, _} -> region_pid(cx, cz) end)
+  end
+
   @spec region_pid(integer(), integer()) :: pid()
   def region_pid(cx, cz) do
     region = {Integer.floor_div(cx, @region_side), Integer.floor_div(cz, @region_side)}

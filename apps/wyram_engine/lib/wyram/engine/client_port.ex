@@ -52,6 +52,9 @@ defmodule Wyram.Engine.ClientPort do
       type: "hello",
       blocks: PluginManager.blocks(),
       colors: PluginManager.block_colors(),
+      descriptors: PluginManager.render_descriptors(),
+      noncolliding: PluginManager.noncolliding(),
+      placeable: PluginManager.placeable() |> Enum.sort() |> Enum.map(&elem(&1, 1)),
       characters: Characters.latest(),
       models: PluginManager.character_models()
     })

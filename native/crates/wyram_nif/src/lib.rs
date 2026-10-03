@@ -50,9 +50,59 @@ type Query = (Position, Position, f64, f64);
 type QueryResult = (Position, (bool, bool, bool), bool);
 
 #[rustler::nif(schedule = "DirtyCpu")]
+fn read_blocks(
+    data: Binary<'_>,
+    positions: Vec<(usize, usize, usize)>,
+) -> Result<Vec<u16>, &'static str> {
+    if positions.len() > 4096 {
+        return Err("oversized voxel batch");
+    }
+    positions
+        .into_iter()
+        .map(|(x, y, z)| {
+            wyram_core::read_block(data.as_slice(), x, y, z).map_err(|_| "invalid voxel batch")
+        })
+        .collect()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn compare_write_blocks<'a>(
+    env: Env<'a>,
+    data: Binary<'a>,
+    edits: Vec<(usize, usize, usize, u16, u16)>,
+) -> Result<Binary<'a>, &'static str> {
+    wyram_core::batch::compare_write(data.as_slice(), &edits)
+        .map(|bytes| binary_from_bytes(env, &bytes))
+        .map_err(|_| "stale or invalid voxel batch")
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn liquid_positions(
+    data: Binary<'_>,
+    ids: Vec<u16>,
+) -> Result<Vec<(usize, usize, usize)>, &'static str> {
+    if data.len() != wyram_core::BYTE_COUNT {
+        return Err("invalid chunk");
+    }
+    let ids: std::collections::HashSet<_> = ids.into_iter().collect();
+    Ok(data
+        .as_slice()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .enumerate()
+        .filter_map(|(i, bytes)| {
+            ids.contains(&u16::from_le_bytes([bytes[0], bytes[1]]))
+                .then_some((i % 16, i / 256, (i / 16) % 16))
+        })
+        .collect())
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
 fn sweep_bodies(
     chunks: Vec<((i32, i32, i32), Binary<'_>)>,
     queries: Vec<Query>,
+    noncolliding: Vec<u16>,
 ) -> Result<Vec<QueryResult>, &'static str> {
     if queries.len() > 256 {
         return Err("oversized character batch");
@@ -61,7 +111,8 @@ fn sweep_bodies(
         chunks
             .iter()
             .map(|(key, bytes)| ([key.0, key.1, key.2], bytes.as_slice())),
-    )?;
+    )?
+    .with_noncolliding(&noncolliding);
     queries
         .into_iter()
         .map(|(p, d, r, h)| {
