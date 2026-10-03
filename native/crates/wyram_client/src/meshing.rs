@@ -10,9 +10,17 @@ const WORKERS: usize = 2;
 // Includes queued jobs, active jobs and completed results awaiting admission.
 // A bounded window lets workers refill without waiting for a redraw.
 const MAX_JOBS: usize = 32;
-const MAX_UPLOADS: usize = 2;
+const MAX_UPLOADS: usize = 8;
 const MAX_UPLOAD_BYTES: usize = 2 * 1024 * 1024;
 const UPLOAD_TIME: Duration = Duration::from_millis(1);
+
+pub fn upload_limit() -> usize {
+    std::env::var("WYRAM_MESH_UPLOAD_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|limit| (1..=MAX_UPLOADS).contains(limit))
+        .unwrap_or(MAX_UPLOADS)
+}
 
 struct MeshResult {
     key: [i32; 3],
@@ -34,6 +42,7 @@ struct UploadBudget {
     start: Instant,
     count: usize,
     bytes: usize,
+    limit: usize,
 }
 
 impl UploadBudget {
@@ -42,6 +51,7 @@ impl UploadBudget {
             start: Instant::now(),
             count: 0,
             bytes: 0,
+            limit: MAX_UPLOADS,
         }
     }
 
@@ -49,7 +59,7 @@ impl UploadBudget {
         // One indivisible oversized mesh must be allowed to progress. The time
         // limit controls admission, not the duration of a driver call.
         self.count == 0
-            || (self.count < MAX_UPLOADS
+            || (self.count < self.limit
                 && self.bytes + bytes <= MAX_UPLOAD_BYTES
                 && self.start.elapsed() < UPLOAD_TIME)
     }
@@ -66,6 +76,7 @@ pub struct MeshPipeline {
     receiver: Receiver<MeshResult>,
     in_flight: HashMap<[i32; 3], u64>,
     deferred: VecDeque<MeshResult>,
+    upload_limit: usize,
 }
 
 impl MeshPipeline {
@@ -107,6 +118,7 @@ impl MeshPipeline {
             receiver,
             in_flight: HashMap::new(),
             deferred: VecDeque::new(),
+            upload_limit: upload_limit(),
         }
     }
 
@@ -122,6 +134,7 @@ impl MeshPipeline {
     ) -> MeshStats {
         let mut stats = MeshStats::default();
         let mut budget = UploadBudget::new();
+        budget.limit = self.upload_limit;
         while self.deferred.len() < MAX_JOBS {
             match self.receiver.try_recv() {
                 Ok(result) => self.deferred.push_back(result),
@@ -242,6 +255,20 @@ mod tests {
         let mut budget = UploadBudget::new();
         budget.record(MAX_UPLOAD_BYTES / 2);
         assert!(!budget.allows(MAX_UPLOAD_BYTES));
+    }
+
+    #[test]
+    fn cheap_uploads_use_the_available_time_budget_with_a_finite_count_bound() {
+        let mut budget = UploadBudget::new();
+        // A future start fixes elapsed() at zero, independent of CI scheduling.
+        budget.start = Instant::now() + Duration::from_secs(60);
+        for _ in 0..8 {
+            assert!(budget.allows(1024));
+            budget.record(1024);
+        }
+        assert!(!budget.allows(1024));
+        budget.start = Instant::now() - Duration::from_secs(1);
+        assert!(!budget.allows(1));
     }
 
     #[test]

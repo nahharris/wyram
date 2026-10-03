@@ -2,7 +2,10 @@ mod animation;
 mod camera;
 mod characters;
 mod chunk_mesh;
+mod chunk_wire;
 mod flight_input;
+mod frustum;
+mod gpu_timer;
 mod meshing;
 mod outbound;
 mod replica;
@@ -60,6 +63,10 @@ enum ServerPacket {
     Chunks {
         chunks: Vec<ChunkPacket>,
     },
+    #[serde(skip)]
+    PackedChunks {
+        chunks: Vec<chunk_wire::PackedChunk>,
+    },
     Forget {
         key: [i32; 3],
     },
@@ -91,6 +98,9 @@ struct Intent {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientPacket {
+    Capabilities {
+        chunk_protocol: u8,
+    },
     Input {
         sequence: u64,
         epoch: u64,
@@ -107,11 +117,20 @@ enum ClientPacket {
 
 #[derive(Debug)]
 enum UserEvent {
+    PacketReady,
     Packet(ServerPacket),
     Disconnected,
 }
 
-fn start_reader(proxy: EventLoopProxy<UserEvent>) {
+struct ReceivedPacket {
+    packet: ServerPacket,
+    decode_cpu_ms: f64,
+    wire_bytes: usize,
+    queued_at: Instant,
+}
+
+fn start_reader(proxy: EventLoopProxy<UserEvent>) -> std::sync::mpsc::Receiver<ReceivedPacket> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(32);
     std::thread::spawn(move || {
         let mut input = io::stdin().lock();
         loop {
@@ -130,11 +149,63 @@ fn start_reader(proxy: EventLoopProxy<UserEvent>) {
                 let _ = proxy.send_event(UserEvent::Disconnected);
                 break;
             }
-            if let Ok(packet) = serde_json::from_slice::<ServerPacket>(&bytes) {
-                let _ = proxy.send_event(UserEvent::Packet(packet));
+            let start = Instant::now();
+            if let Some(packet) = decode_packet(&bytes) {
+                let packet = ReceivedPacket {
+                    packet,
+                    decode_cpu_ms: start.elapsed().as_secs_f64() * 1000.0,
+                    wire_bytes: length,
+                    queued_at: Instant::now(),
+                };
+                if sender.send(packet).is_err() || proxy.send_event(UserEvent::PacketReady).is_err()
+                {
+                    break;
+                }
             }
         }
     });
+    receiver
+}
+
+fn decode_packet(bytes: &[u8]) -> Option<ServerPacket> {
+    use base64::Engine;
+    if bytes.starts_with(b"WYC1") {
+        return chunk_wire::decode(bytes)
+            .ok()
+            .map(|chunks| ServerPacket::PackedChunks { chunks });
+    }
+    let packet: ServerPacket = serde_json::from_slice(bytes).ok()?;
+    let chunks = match packet {
+        ServerPacket::Chunk {
+            key,
+            revision,
+            data,
+        } => vec![ChunkPacket {
+            key,
+            revision,
+            data,
+        }],
+        ServerPacket::Chunks { chunks } if chunks.len() <= 16 => chunks,
+        ServerPacket::Chunks { .. } => return None,
+        packet => return Some(packet),
+    };
+    let chunks = chunks
+        .into_iter()
+        .filter_map(|chunk| {
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(chunk.data)
+                .ok()?;
+            if data.len() != wyram_core::BYTE_COUNT {
+                return None;
+            }
+            Some(chunk_wire::PackedChunk {
+                key: chunk.key,
+                revision: chunk.revision,
+                data,
+            })
+        })
+        .collect();
+    Some(ServerPacket::PackedChunks { chunks })
 }
 
 struct Graphics {
@@ -149,6 +220,8 @@ struct Graphics {
     camera: wgpu::Buffer,
     camera_group: wgpu::BindGroup,
     meshes: HashMap<[i32; 3], (wgpu::Buffer, u32)>,
+    culling: bool,
+    gpu_timer: Option<gpu_timer::GpuTimer>,
     characters: wgpu::Buffer,
 }
 
@@ -165,9 +238,15 @@ impl Graphics {
             apply_limit_buckets: false,
         }))
         .map_err(|error| error.to_string())?;
+        let timing = std::env::var_os("WYRAM_CLIENT_METRICS").is_some()
+            && adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("Wyram device"),
-            required_features: wgpu::Features::empty(),
+            required_features: if timing {
+                wgpu::Features::TIMESTAMP_QUERY
+            } else {
+                wgpu::Features::empty()
+            },
             required_limits: wgpu::Limits::default(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::MemoryUsage,
@@ -180,6 +259,24 @@ impl Graphics {
             .ok_or("GPU surface is unavailable")?;
         config.desired_maximum_frame_latency = 2;
         surface.configure(&device, &config);
+        let culling = std::env::var("WYRAM_FRUSTUM_CULLING").as_deref() != Ok("0");
+        if let Some(path) = std::env::var_os("WYRAM_CLIENT_METRICS") {
+            let info = adapter.get_info();
+            let metadata = serde_json::json!({ "adapter": info.name, "vendor": info.vendor,
+                "device": info.device, "backend": format!("{:?}", info.backend), "driver": info.driver,
+                "driver_info": info.driver_info, "width": config.width, "height": config.height,
+                "present_mode": format!("{:?}", config.present_mode), "timestamp_queries": timing,
+                "culling": culling, "mesh_upload_limit": meshing::upload_limit(),
+                "chunk_protocol": std::env::var("WYRAM_CHUNK_PROTOCOL").as_deref() != Ok("0") });
+            let path = std::path::Path::new(&path).with_extension("adapter.json");
+            match std::fs::File::create_new(path)
+                .and_then(|file| serde_json::to_writer(file, &metadata).map_err(io::Error::other))
+            {
+                Ok(()) => {}
+                Err(error) => eprintln!("GPU capture metadata unavailable: {error}"),
+            }
+        }
+        let gpu_timer = timing.then(|| gpu_timer::GpuTimer::new(&device, &queue));
         let camera = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera matrix"),
             contents: bytemuck::cast_slice(&Mat4::IDENTITY.to_cols_array()),
@@ -273,6 +370,8 @@ impl Graphics {
             camera,
             camera_group,
             meshes: HashMap::new(),
+            culling,
+            gpu_timer,
             characters,
         })
     }
@@ -330,8 +429,16 @@ impl Graphics {
 
     fn render(&mut self, position: Vec3, direction: Vec3, characters: &[Vertex]) -> FrameSample {
         let mut stats = FrameSample::default();
+        if let Some(timer) = &mut self.gpu_timer {
+            stats.gpu_render_ms = timer.collect(&self.device);
+        }
         let blended_start = Instant::now();
-        stats.blended_write_bytes = self.blended.prepare(&self.device, &self.queue, position);
+        let blended = self.blended.prepare(&self.device, &self.queue, position);
+        stats.blended_write_bytes = blended.bytes;
+        stats.blended_collect_cpu_ms = blended.collect_ms;
+        stats.blended_sort_cpu_ms = blended.sort_ms;
+        stats.blended_write_cpu_ms = blended.write_ms;
+        stats.blended_quads = blended.quads;
         stats.blended_prepare_cpu_ms = blended_start.elapsed().as_secs_f64() * 1000.0;
         let characters = &characters[..characters.len().min(rig::MAX_VERTICES)];
         if !characters.is_empty() {
@@ -341,6 +448,7 @@ impl Graphics {
         let aspect = self.config.width as f32 / self.config.height as f32;
         let matrix = Mat4::perspective_rh(70f32.to_radians(), aspect, 0.05, 512.0)
             * Mat4::look_to_rh(position, direction, Vec3::Y);
+        let frustum = frustum::Frustum::new(matrix);
         self.queue.write_buffer(
             &self.camera,
             0,
@@ -395,13 +503,16 @@ impl Graphics {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: self.gpu_timer.as_ref().and_then(|timer| timer.writes()),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.camera_group, &[]);
-            for (buffer, count) in self.meshes.values() {
+            for (key, (buffer, count)) in &self.meshes {
+                if self.culling && !frustum.intersects_chunk(*key) {
+                    continue;
+                }
                 pass.set_vertex_buffer(0, buffer.slice(..));
                 pass.draw(0..*count, 0..1);
                 stats.opaque_draws += 1;
@@ -414,10 +525,16 @@ impl Graphics {
             pass.set_pipeline(&self.blended_pipeline);
             self.blended.draw(&mut pass);
         }
+        if let Some(timer) = &self.gpu_timer {
+            timer.resolve(&mut encoder);
+        }
         let commands = encoder.finish();
         stats.render_encode_cpu_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
         let submit_start = Instant::now();
         self.queue.submit(Some(commands));
+        if let Some(timer) = &mut self.gpu_timer {
+            timer.submitted();
+        }
         self.queue.present(frame);
         stats.render_submit_cpu_ms = submit_start.elapsed().as_secs_f64() * 1000.0;
         stats
@@ -427,6 +544,10 @@ impl Graphics {
 struct Game {
     window: Option<Arc<Window>>,
     graphics: Option<Graphics>,
+    inbound: Option<std::sync::mpsc::Receiver<ReceivedPacket>>,
+    inbound_decode_ms: f64,
+    inbound_wire_bytes: usize,
+    inbound_queue_max_ms: f64,
     world: VoxelWorld,
     position: Vec3,
     yaw: f32,
@@ -456,6 +577,10 @@ impl Game {
         Self {
             window: None,
             graphics: None,
+            inbound: None,
+            inbound_decode_ms: 0.0,
+            inbound_wire_bytes: 0,
+            inbound_queue_max_ms: 0.0,
             world: VoxelWorld::default(),
             position: Vec3::new(0.5, 73.0, 0.5),
             yaw: 0.0,
@@ -624,6 +749,24 @@ impl ApplicationHandler<UserEvent> for Game {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
+            UserEvent::PacketReady => {
+                if let Some(packet) = self.inbound.as_ref().and_then(|r| r.try_recv().ok()) {
+                    self.inbound_decode_ms += packet.decode_cpu_ms;
+                    self.inbound_wire_bytes += packet.wire_bytes;
+                    self.inbound_queue_max_ms = self
+                        .inbound_queue_max_ms
+                        .max(packet.queued_at.elapsed().as_secs_f64() * 1000.0);
+                    self.user_event(event_loop, UserEvent::Packet(packet.packet));
+                }
+            }
+            UserEvent::Packet(ServerPacket::PackedChunks { chunks }) => {
+                let start = Instant::now();
+                for chunk in chunks {
+                    self.world
+                        .receive_packed(chunk.key, chunk.revision, chunk.data);
+                }
+                self.decode_ms += start.elapsed().as_secs_f64() * 1000.0;
+            }
             UserEvent::Packet(ServerPacket::Teleport {
                 x,
                 y,
@@ -812,6 +955,9 @@ impl ApplicationHandler<UserEvent> for Game {
                         frame_ms,
                         redraw_cpu_ms: start.elapsed().as_secs_f64() * 1000.0,
                         decode_ms: std::mem::take(&mut self.decode_ms),
+                        inbound_decode_ms: std::mem::take(&mut self.inbound_decode_ms),
+                        inbound_wire_bytes: std::mem::take(&mut self.inbound_wire_bytes),
+                        inbound_queue_max_ms: std::mem::take(&mut self.inbound_queue_max_ms),
                         worker_mesh_ms: stats.mesh_ms,
                         upload_cpu_ms: stats.upload_ms,
                         uploaded_meshes: stats.uploads,
@@ -877,14 +1023,18 @@ fn main() {
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .expect("event loop creation failed");
-    start_reader(event_loop.create_proxy());
+    let inbound = start_reader(event_loop.create_proxy());
     let mut game = Game::new();
+    game.inbound = Some(inbound);
     let proxy = event_loop.create_proxy();
     let (outbound, _worker) = outbound::Outbound::start(io::stdout(), move |error| {
         let _ = proxy.send_event(UserEvent::Disconnected);
         eprintln!("engine connection write failed: {error}");
     });
     game.outbound = Some(outbound);
+    if std::env::var("WYRAM_CHUNK_PROTOCOL").as_deref() != Ok("0") {
+        game.send_packet(ClientPacket::Capabilities { chunk_protocol: 1 });
+    }
     event_loop
         .run_app(&mut game)
         .expect("game event loop failed");
@@ -897,6 +1047,26 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn background_decode_preserves_json_packed_parity_and_skips_bad_entries() {
+        use base64::Engine;
+        let data = vec![7; wyram_core::BYTE_COUNT];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
+        let json = serde_json::to_vec(&serde_json::json!({"type":"chunks", "chunks":[
+            {"key":[-1,-12,0],"revision":9,"data":encoded},
+            {"key":[0,19,0],"revision":2,"data":"invalid"}
+        ]}))
+        .unwrap();
+        let Some(super::ServerPacket::PackedChunks { chunks }) = super::decode_packet(&json) else {
+            panic!("JSON chunks lost");
+        };
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].key, [-1, -12, 0]);
+        assert_eq!(chunks[0].revision, 9);
+        assert_eq!(chunks[0].data, data);
+        assert!(super::decode_packet(b"WYC1\0\x01").is_none());
+    }
+
     #[test]
     fn decodes_chunk_batches_at_negative_and_high_world_layers() {
         let packet = serde_json::json!({"type":"chunks","chunks":[{"key":[-1,-12,0],"revision":0,"data":""},{"key":[0,19,0],"revision":2,"data":""}]});

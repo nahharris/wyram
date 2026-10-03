@@ -1,6 +1,16 @@
 use crate::world::Vertex;
 use glam::Vec3;
 use std::collections::BTreeMap;
+use std::time::Instant;
+
+#[derive(Default)]
+pub struct PrepareStats {
+    pub collect_ms: f64,
+    pub sort_ms: f64,
+    pub write_ms: f64,
+    pub bytes: usize,
+    pub quads: usize,
+}
 
 #[derive(Default)]
 pub struct BlendedMeshes {
@@ -30,20 +40,35 @@ impl BlendedMeshes {
         }
     }
 
-    pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, eye: Vec3) -> usize {
+    pub fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        eye: Vec3,
+    ) -> PrepareStats {
+        let mut stats = PrepareStats {
+            quads: self.count as usize / 6,
+            ..PrepareStats::default()
+        };
         if !self.dirty && self.eye == Some(eye) {
-            return 0;
+            return stats;
         }
         self.eye = Some(eye);
         self.dirty = false;
+        let collect = Instant::now();
         self.scratch.clear();
         self.scratch
             .extend(self.chunks.values().flat_map(|q| q.iter().copied()));
+        stats.collect_ms = collect.elapsed().as_secs_f64() * 1000.0;
+        let sort = Instant::now();
         sort_quads(&mut self.scratch, eye);
+        stats.sort_ms = sort.elapsed().as_secs_f64() * 1000.0;
+        stats.quads = self.scratch.len();
         self.count = (self.scratch.len() * 6) as u32;
         if self.scratch.is_empty() {
-            return 0;
+            return stats;
         }
+        let write = Instant::now();
         let bytes = bytemuck::cast_slice(&self.scratch);
         if bytes.len() > self.capacity {
             self.capacity = bytes.len().next_power_of_two();
@@ -59,7 +84,9 @@ impl BlendedMeshes {
             0,
             bytes,
         );
-        bytes.len()
+        stats.bytes = bytes.len();
+        stats.write_ms = write.elapsed().as_secs_f64() * 1000.0;
+        stats
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {

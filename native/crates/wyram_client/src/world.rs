@@ -147,6 +147,13 @@ impl VoxelWorld {
     }
 
     pub fn receive_chunk(&mut self, key: [i32; 3], revision: u64, data: &str) -> bool {
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) else {
+            return false;
+        };
+        self.receive_packed(key, revision, bytes)
+    }
+
+    pub fn receive_packed(&mut self, key: [i32; 3], revision: u64, bytes: Vec<u8>) -> bool {
         if self
             .chunks
             .get(&key)
@@ -154,9 +161,6 @@ impl VoxelWorld {
         {
             return false;
         }
-        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) else {
-            return false;
-        };
         if bytes.len() != BYTE_COUNT {
             return false;
         }
