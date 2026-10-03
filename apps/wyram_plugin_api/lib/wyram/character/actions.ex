@@ -1,10 +1,12 @@
 defmodule Wyram.Character.Actions do
   @moduledoc "Shared action dispatch keeps character ownership independent of each traversal policy."
-  alias Wyram.Character.{Climb, Input, Roll, Slide, WallSlide}
+  alias Wyram.Character.{Climb, Flight, Input, Roll, Slide, WallSlide}
 
   def begin(entries) do
     entries =
       Enum.map(entries, fn {id, body, input} ->
+        body = Flight.begin(body, input)
+
         if input.cancel_actions,
           do: {id, %{body | action: nil}, Input.release(input)},
           else: {id, body, input}
@@ -14,8 +16,11 @@ defmodule Wyram.Character.Actions do
   end
 
   def choose(entries, collision) do
+    {flying, entries} = Enum.split_with(entries, fn {_, body, _} -> body.mode == :fly end)
+
     with {:ok, entries} <- WallSlide.choose(entries, collision) do
-      entries |> Slide.choose() |> Climb.choose(collision)
+      with {:ok, walking} <- entries |> Slide.choose() |> Climb.choose(collision),
+           do: {:ok, walking ++ flying}
     end
   end
 

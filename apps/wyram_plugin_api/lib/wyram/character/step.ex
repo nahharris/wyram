@@ -1,6 +1,6 @@
 defmodule Wyram.Character.Step do
   @moduledoc "Reusable batched simulation phases; owners inject packed collision queries."
-  alias Wyram.Character.{Actions, Posture}
+  alias Wyram.Character.{Actions, Flight, Posture}
 
   def advance(entries, collision) do
     entries = Actions.begin(entries)
@@ -14,9 +14,11 @@ defmodule Wyram.Character.Step do
            end),
          {:ok, results} <- collision.(Enum.map(prepared, &elem(&1, 3))),
          {:ok, results} <- edges(prepared, results, collision) do
-      {:ok,
-       Enum.zip(prepared, results)
-       |> Map.new(fn {{id, _, body, _}, result} -> {id, Actions.finish(body, result)} end)}
+      bodies =
+        Enum.zip(prepared, results)
+        |> Map.new(fn {{id, _, body, _}, result} -> {id, Actions.finish(body, result)} end)
+
+      Flight.ground(bodies, collision)
     end
   end
 

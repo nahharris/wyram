@@ -1,7 +1,12 @@
 defmodule Wyram.Character.Profile do
   @moduledoc "Reusable locomotion tuning and intent policy shared by characters and game plugins."
 
-  defstruct walk_speed: 5.0,
+  # Keep authored tuning as one flat public data record, consistent with existing plugin profiles.
+  # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount
+  defstruct fly_enabled: false,
+            fly_speed: 12.0,
+            fly_acceleration: 40.0,
+            walk_speed: 5.0,
             run_speed: 9.0,
             jump_speed: 9.4,
             gravity: 36.0,
@@ -34,6 +39,9 @@ defmodule Wyram.Character.Profile do
             roll_cooldown: 0.8
 
   @type t :: %__MODULE__{
+          fly_enabled: boolean(),
+          fly_speed: number(),
+          fly_acceleration: number(),
           walk_speed: number(),
           run_speed: number(),
           jump_speed: number(),
@@ -79,6 +87,8 @@ defmodule Wyram.Character.Profile do
   @spec validate(term()) :: :ok | {:error, :invalid_character_profile}
   def validate(%__MODULE__{} = profile) do
     values = [
+      profile.fly_speed,
+      profile.fly_acceleration,
       profile.walk_speed,
       profile.run_speed,
       profile.jump_speed,
@@ -168,6 +178,9 @@ defmodule Wyram.Character.Profile do
 
   defp valid_capabilities?(p),
     do:
-      Enum.all?([p.slide_enabled, p.wall_slide_enabled, p.roll_enabled], &is_boolean/1) and
+      Enum.all?(
+        [p.fly_enabled, p.slide_enabled, p.wall_slide_enabled, p.roll_enabled],
+        &is_boolean/1
+      ) and
         valid_climb?(p) and valid_roll?(p)
 end

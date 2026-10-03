@@ -188,6 +188,7 @@ mod tests {
                 pitch: 0.0,
                 running,
                 jump: false,
+                flight_request: 0,
                 sneaking: false,
                 crawling: false,
                 climbing: false,
@@ -279,6 +280,40 @@ mod tests {
             EDIT_CAPACITY as u64 - 1
         );
         assert_eq!(packets.last().unwrap()["running"], false);
+    }
+
+    #[test]
+    fn flight_requests_survive_coalescing_with_a_released_space_key() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (outbound, worker) = Outbound::start(
+            GateWriter {
+                entered: entered_tx,
+                release: release_rx,
+                bytes: Vec::new(),
+            },
+            |_| panic!("unexpected connection failure"),
+        );
+        outbound.send(edit(1)).unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let mut pressed = input(1, false);
+        if let ClientPacket::Input { intent, .. } = &mut pressed {
+            intent.jump = true;
+            intent.flight_request = 1;
+        }
+        outbound.send(pressed).unwrap();
+        let mut released = input(2, false);
+        if let ClientPacket::Input { intent, .. } = &mut released {
+            intent.flight_request = 1;
+        }
+        outbound.send(released).unwrap();
+        release_tx.send(()).unwrap();
+        drop(outbound);
+        let packets = decode(&worker.join().unwrap().unwrap().bytes);
+        assert_eq!(packets.len(), 2);
+        assert_eq!(packets[1]["sequence"], 2);
+        assert_eq!(packets[1]["flight_request"], 1);
+        assert_eq!(packets[1]["jump"], false);
     }
 
     struct ClosedWriter;

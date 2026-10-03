@@ -102,6 +102,8 @@ defmodule Wyram.Engine.Characters do
           velocity: {0.0, 0.0, 0.0},
           grounded: false,
           jump_held: false,
+          flight_request: 0,
+          mode: :walk,
           jump_pending: nil,
           jump_origin: nil,
           transition: :idle,

@@ -6,7 +6,8 @@ defmodule WyramMods.Characters do
   def player_profile do
     %{
       Profile.default()
-      | radius: Units.pixels(3),
+      | fly_enabled: true,
+        radius: Units.pixels(3),
         standing_height: Units.blocks(1, 3),
         standing_eye: Units.blocks(1, 1),
         crouch_height: Units.pixels(10),
@@ -25,7 +26,8 @@ defmodule WyramMods.Characters do
   def definitions do
     small = %{
       player_profile()
-      | walk_speed: 3.2,
+      | fly_enabled: false,
+        walk_speed: 3.2,
         run_speed: 6.5,
         climb_height: 2,
         wall_slide_enabled: false,
