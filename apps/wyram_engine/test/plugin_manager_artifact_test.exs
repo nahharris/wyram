@@ -196,6 +196,7 @@ defmodule Wyram.Engine.PluginManagerArtifactTest do
       modules: [module_name],
       game: nil,
       compiled_game: nil,
+      compiled_content: [],
       compile_data: compile_data,
       compiled_blocks: [],
       module_hashes: %{module_name => sha256(beam)}
@@ -225,7 +226,7 @@ defmodule Wyram.Engine.PluginManagerArtifactTest do
         provider_modules: [],
         game: nil
       },
-      catalog: %{id: id, dependencies: interface.dependencies, blocks: [], game: nil},
+      catalog: %{id: id, dependencies: interface.dependencies, blocks: [], content: [], game: nil},
       interface: interface,
       interface_fingerprint: interface_fingerprint,
       dependency_interfaces: dependency_interfaces

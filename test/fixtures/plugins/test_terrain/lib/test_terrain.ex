@@ -1,14 +1,13 @@
-defmodule WyramMods.TestTerrain do
+defmodule TestTerrain do
   @moduledoc "Test-only terrain with names unrelated to the Wyram game."
-  use Wyram.Plugin,
-    id: "test_terrain",
-    declarations: [WyramMods.TestTerrain.BlockCatalog],
-    game: WyramMods.TestTerrain.Game
+  use Wyram.Plugin
+  catalog(:blocks, TestTerrain.BlockCatalog)
+  game(TestTerrain.Game)
 end
 
-defmodule WyramMods.TestTerrain.BlockCatalog do
+defmodule TestTerrain.BlockCatalog do
   @moduledoc false
-  use Wyram.Plugin.Declarations, plugin: WyramMods.TestTerrain
+  use Wyram.Plugin.Catalog, kind: :block, plugin: TestTerrain
   alias Wyram.Capability.Material
 
   defblock Violet, id: "violet" do
@@ -24,11 +23,11 @@ defmodule WyramMods.TestTerrain.BlockCatalog do
   end
 end
 
-defmodule WyramMods.TestTerrain.Game do
+defmodule TestTerrain.Game do
   @moduledoc false
   @behaviour Wyram.Game.Provider
+  alias TestTerrain.Blocks
   alias Wyram.Game.Config
-  alias WyramMods.TestTerrain.Blocks
 
   @impl true
   def build do

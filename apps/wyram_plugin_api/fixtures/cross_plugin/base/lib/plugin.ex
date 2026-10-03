@@ -1,15 +1,14 @@
-defmodule WyramMods.CrossPluginBase.Plugin do
-  use Wyram.Plugin,
-    id: "fixture-base",
-    declarations: [WyramMods.CrossPluginBase.Blocks],
-    providers: [WyramMods.CrossPluginBase.ProviderHelper]
+defmodule CrossPluginBase.Plugin do
+  use Wyram.Plugin
+  catalog(:blocks, CrossPluginBase.Blocks)
+  provider(CrossPluginBase.ProviderHelper)
 end
 
-defmodule WyramMods.CrossPluginBase.Blocks do
-  use Wyram.Plugin.Declarations, plugin: WyramMods.CrossPluginBase.Plugin
+defmodule CrossPluginBase.Blocks do
+  use Wyram.Plugin.Catalog, kind: :block, plugin: CrossPluginBase.Plugin
 
   defblock Stone, id: "stone" do
-    capability(%WyramMods.CrossPluginBase.TintConfig{
+    capability(%CrossPluginBase.TintConfig{
       channel: :base,
       marker: :terrain_catalog_only_atom
     })

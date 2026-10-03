@@ -2,6 +2,7 @@ defmodule Wyram.Engine.PluginCatalogTest do
   use ExUnit.Case, async: true
 
   alias Wyram.Block.Ref
+  alias Wyram.Character.Profile
   alias Wyram.Engine.PluginCatalog
   alias Wyram.Game.Config
   alias Wyram.Plugin.{Declaration, SourceLocation}
@@ -427,6 +428,74 @@ defmodule Wyram.Engine.PluginCatalogTest do
     assert {:error, :catalog_identity_mismatch} = PluginCatalog.build([changed])
   end
 
+  test "compiled content is registered by kind and validated even when unused by the game" do
+    package = package("game", [block("game", "grass", {1, 2, 3})], [], game_config("game"))
+    module = "Elixir.Forest.Profiles.Walker"
+    package = with_owned_module(package, module)
+
+    content = %{
+      id: "game:walker",
+      plugin_id: "game",
+      local_id: "walker",
+      kind: :profile,
+      module: module,
+      data: Profile.default(),
+      references: []
+    }
+
+    package = with_content(package, [content])
+    assert {:ok, registry} = PluginCatalog.build([package])
+    assert registry.content[{:profile, "game:walker"}] == content.data
+
+    invalid = %{content | data: %{content.data | radius: -1}}
+
+    assert {:error, :invalid_content_catalog} =
+             PluginCatalog.build([with_content(package, [invalid])])
+
+    assert {:error, :invalid_content_catalog} =
+             PluginCatalog.build([with_content(package, [content, content])])
+  end
+
+  test "runtime rejects changed typed bindings despite a refreshed interface fingerprint" do
+    grass = block("game", "grass", {1, 2, 3})
+    stone = block("game", "stone", {4, 5, 6})
+    package = package("game", [grass, stone], [], game_config("game"))
+    module = "Elixir.Forest.Biomes.Woodland"
+    package = with_owned_module(package, module)
+    ref = Ref.new!("game", "grass")
+
+    content = %{
+      id: "game:woodland",
+      plugin_id: "game",
+      local_id: "woodland",
+      kind: :biome,
+      module: module,
+      data: Biome.new!(%{id: "game:woodland", surface: ref, soil: ref, rock: ref}),
+      references: [%{id: grass.id, plugin_id: "game", kind: :block, module: grass.module}]
+    }
+
+    assert {:ok, _registry} = PluginCatalog.build([with_content(package, [content])])
+
+    changed_data = put_in(content.data.surface, Ref.new!("game", "stone"))
+    wrong_kind = put_in(content.references, [%{hd(content.references) | kind: :profile}])
+    wrong_owner = put_in(content.references, [%{hd(content.references) | module: stone.module}])
+
+    for invalid <- [changed_data, wrong_kind, wrong_owner, %{content | references: []}] do
+      assert {:error, :invalid_content_catalog} =
+               PluginCatalog.build([with_content(package, [invalid])])
+    end
+
+    mismatch = with_content(package, [content]) |> put_in([:catalog, :catalog, :content], [])
+    assert {:error, :invalid_catalog_interface} = PluginCatalog.build([mismatch])
+  end
+
+  defp with_content(package, content) do
+    package
+    |> put_in([:catalog, :catalog, :content], content)
+    |> put_in([:catalog, :interface, :compiled_content], content)
+    |> refresh_fingerprint()
+  end
+
   defp package(id, blocks, dependencies, game_config \\ nil) do
     entry = "Elixir.WyramMods.#{Macro.camelize(id)}"
     block_modules = Enum.map(blocks, & &1.module)
@@ -461,6 +530,7 @@ defmodule Wyram.Engine.PluginCatalogTest do
       modules: modules,
       game: game_provider,
       compiled_game: game_config,
+      compiled_content: [],
       compiled_blocks: blocks,
       module_hashes: Map.new(modules, &{&1, String.duplicate("a", 64)})
     }
@@ -475,7 +545,13 @@ defmodule Wyram.Engine.PluginCatalogTest do
         provider_modules: if(game_provider, do: [game_provider], else: []),
         game: game_provider
       },
-      catalog: %{id: id, dependencies: dependencies, blocks: blocks, game: game_config},
+      catalog: %{
+        id: id,
+        dependencies: dependencies,
+        blocks: blocks,
+        content: [],
+        game: game_config
+      },
       interface: interface,
       interface_fingerprint: fingerprint(interface),
       dependency_interfaces: %{}

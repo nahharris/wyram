@@ -7,6 +7,29 @@ defmodule Wyram.Plugin.Compiler.DependencyArtifacts do
   @max_compile_data_bytes 16 * 1024 * 1024
   @max_catalog_bytes 16 * 1024 * 1024
 
+  def project_dependencies do
+    apps = Mix.Dep.cached() |> Enum.filter(& &1.top_level) |> Enum.map(& &1.app)
+
+    Enum.reduce_while(apps, {:ok, %{}}, fn app, {:ok, dependencies} ->
+      case load_dependency_artifact(app) do
+        :none ->
+          {:cont, {:ok, dependencies}}
+
+        {:ok, artifact} ->
+          add_project_dependency(app, artifact, dependencies)
+
+        error ->
+          {:halt, error}
+      end
+    end)
+  end
+
+  defp add_project_dependency(app, artifact, dependencies) do
+    if artifact.plugin.id == Atom.to_string(app),
+      do: {:cont, {:ok, Map.put(dependencies, artifact.plugin.id, artifact)}},
+      else: {:halt, dependency_load_failure(app, :application_identity_mismatch)}
+  end
+
   def discover(metadata) when is_map(metadata) do
     with {:ok, artifacts} <- dependency_artifacts(),
          :ok <- unique_dependency_ids(artifacts) do
@@ -143,7 +166,9 @@ defmodule Wyram.Plugin.Compiler.DependencyArtifacts do
     if File.exists?(catalog_path) do
       read_dependency_catalog(app, catalog_path, app_modules)
     else
-      :none
+      if Enum.any?(app_modules, &function_exported?(&1, :__wyram_plugin__, 0)),
+        do: dependency_load_failure(app, :missing_plugin_catalog),
+        else: :none
     end
   end
 
@@ -346,7 +371,8 @@ defmodule Wyram.Plugin.Compiler.DependencyArtifacts do
 
   defp validate_compile_data_owner(declarations, [owner | _], interface) when is_map(owner) do
     valid_owner =
-      owner_matches_interface?(owner, interface) and Map.get(owner, :declarations) == declarations
+      owner_matches_interface?(owner, interface) and Map.get(owner, :declarations) == declarations and
+        Map.get(owner, :compiled_content, []) == Map.get(interface, :compiled_content, [])
 
     if valid_owner, do: :ok, else: {:error, invalid_compile_data()}
   end

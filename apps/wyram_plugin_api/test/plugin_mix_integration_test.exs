@@ -62,6 +62,20 @@ defmodule Wyram.Plugin.MixIntegrationTest do
     refute changed_base_fingerprint == first_base_fingerprint
     assert changed_dependency_fingerprint == changed_base_fingerprint
 
+    mix_path = Path.join(base_dir, "mix.exs")
+    original_mix = File.read!(mix_path)
+    File.write!(mix_path, String.replace(original_mix, " ++ [:wyram]", ""))
+    File.rm!(base_catalog)
+
+    assert {missing_output, missing_status} =
+             run_mix(addon_dir, build_path, api_path, ["compile"])
+
+    refute missing_status == 0
+    assert missing_output =~ "missing_plugin_catalog"
+    refute File.exists?(addon_catalog)
+    File.write!(mix_path, original_mix)
+    assert {_, 0} = run_mix(addon_dir, build_path, api_path, ["compile"])
+
     File.write!(Path.join(addon_dir, "lib/plugin.ex"), "defmodule BrokenPlugin do\n")
     assert {syntax_output, status} = run_mix(addon_dir, build_path, api_path, ["compile"])
     refute status == 0
@@ -75,7 +89,7 @@ defmodule Wyram.Plugin.MixIntegrationTest do
       beam_path(
         build_path,
         "wyram_cross_plugin_base",
-        "Elixir.WyramMods.CrossPluginBase.Plugin.Blocks.Stone"
+        "Elixir.CrossPluginBase.Plugin.Blocks.Stone"
       )
 
     assert File.exists?(declaration_beam)

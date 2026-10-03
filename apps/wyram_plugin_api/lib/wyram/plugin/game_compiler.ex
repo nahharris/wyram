@@ -3,14 +3,14 @@ defmodule Wyram.Plugin.GameCompiler do
 
   alias Wyram.Block.Ref
   alias Wyram.Game.Config
-  alias Wyram.Plugin.{Diagnostic, ModuleName, SourceLocation}
+  alias Wyram.Plugin.{Diagnostic, GameComposition, ModuleName, SourceLocation}
 
   @spec compile(map(), map(), map()) :: {:ok, Config.t() | nil} | {:error, [Diagnostic.t()]}
   def compile(%{game: nil}, _catalog, _dependencies), do: {:ok, nil}
 
   def compile(metadata, catalog, dependencies) do
     with :ok <- validate_builder(metadata),
-         config <- metadata.game.build(),
+         {:ok, config} <- build(metadata, catalog, dependencies),
          :ok <- Config.validate(config),
          :ok <- validate_references(config, metadata, catalog, dependencies) do
       {:ok, config}
@@ -33,9 +33,16 @@ defmodule Wyram.Plugin.GameCompiler do
     game = Map.get(metadata, :game)
 
     if ModuleName.valid?(game) and game in Map.get(metadata, :modules, []) and
-         Code.ensure_loaded?(game) and function_exported?(game, :build, 0),
+         Code.ensure_loaded?(game) and
+         (function_exported?(game, :__wyram_game__, 0) or function_exported?(game, :build, 0)),
        do: :ok,
        else: {:error, :invalid_game_builder}
+  end
+
+  defp build(metadata, catalog, dependencies) do
+    if function_exported?(metadata.game, :__wyram_game__, 0),
+      do: GameComposition.compile(metadata, catalog, dependencies),
+      else: {:ok, metadata.game.build()}
   end
 
   defp validate_references(config, metadata, catalog, dependencies) do

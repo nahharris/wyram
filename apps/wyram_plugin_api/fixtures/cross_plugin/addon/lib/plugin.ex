@@ -1,24 +1,22 @@
-defmodule WyramMods.CrossPluginAddon.Plugin do
-  use Wyram.Plugin,
-    id: "fixture-addon",
-    dependencies: ["fixture-base"],
-    declarations: [WyramMods.CrossPluginAddon.Blocks],
-    game: WyramMods.CrossPluginAddon.Game
+defmodule CrossPluginAddon.Plugin do
+  use Wyram.Plugin
+  catalog(:blocks, CrossPluginAddon.Blocks)
+  game(CrossPluginAddon.Game)
 end
 
-defmodule WyramMods.CrossPluginAddon.Blocks do
-  use Wyram.Plugin.Declarations, plugin: WyramMods.CrossPluginAddon.Plugin
+defmodule CrossPluginAddon.Blocks do
+  use Wyram.Plugin.Catalog, kind: :block, plugin: CrossPluginAddon.Plugin
 
   defblock Cobble, id: "cobble" do
-    template(WyramMods.CrossPluginBase.Plugin.Blocks.Stone)
+    template(CrossPluginBase.Plugin.Blocks.Stone)
   end
 end
 
-defmodule WyramMods.CrossPluginAddon.Game do
+defmodule CrossPluginAddon.Game do
   @behaviour Wyram.Game.Provider
 
   alias Wyram.Game.Config
-  alias WyramMods.CrossPluginBase.Plugin.Blocks.Stone
+  alias CrossPluginBase.Plugin.Blocks.Stone
 
   @impl true
   def build do

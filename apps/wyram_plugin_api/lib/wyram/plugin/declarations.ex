@@ -1,26 +1,9 @@
 defmodule Wyram.Plugin.Declarations do
-  @moduledoc "Collects block declarations for one plugin entry module."
+  @moduledoc false
 
   alias Wyram.Block.Ref
   alias Wyram.Plugin.{Declaration, SourceLocation}
   alias Wyram.Plugin.DSL.{Capability, CollectedDeclaration, Entry, Literal, StructLiteral}
-
-  defmacro __using__(options) do
-    options = Entry.keyword_options!(options, __CALLER__, "declarations")
-    unknown = Keyword.keys(options) -- [:plugin]
-
-    if unknown != [],
-      do: Entry.error!(__CALLER__, "unknown declarations option(s): #{inspect(unknown)}")
-
-    plugin = Entry.module!(Keyword.get(options, :plugin), __CALLER__, "plugin")
-    Module.register_attribute(__CALLER__.module, :wyram_collected_declarations, accumulate: true)
-    Module.put_attribute(__CALLER__.module, :wyram_plugin_module, plugin)
-
-    quote do
-      @before_compile Wyram.Plugin.Declarations
-      import Wyram.Plugin.Declarations, only: [defblock: 2, defblock: 3]
-    end
-  end
 
   defmacro defblock(name, options), do: define_block(name, options, nil, __CALLER__)
   defmacro defblock(name, options, do: body), do: define_block(name, options, body, __CALLER__)
@@ -35,6 +18,9 @@ defmodule Wyram.Plugin.Declarations do
   end
 
   defp define_block(name_ast, options_ast, body, env) do
+    unless Module.get_attribute(env.module, :wyram_catalog_kind) in [nil, :block],
+      do: Entry.error!(env, "defblock requires a block catalog")
+
     {template?, local_id} = block_role!(options_ast, env)
 
     symbol = symbol!(name_ast, env)

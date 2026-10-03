@@ -4,10 +4,9 @@ defmodule Wyram.Engine.PluginCatalog do
   alias Wyram.Block.Ref
   alias Wyram.Engine.BlockRegistry
   alias Wyram.Game.Config
-  alias Wyram.Plugin.{Declaration, Descriptor, ModuleName, SourceLocation}
+  alias Wyram.Plugin.{Content, Declaration, Descriptor, ModuleName, SourceLocation}
 
   @id_pattern ~r/^[a-z][a-z0-9_-]*$/
-  @module_segment ~r/^[A-Z][A-Za-z0-9_]*$/
   @sha256_pattern ~r/^[0-9a-f]{64}$/
   @max_block_id 65_535
   @max_compile_data_bytes 16 * 1024 * 1024
@@ -20,6 +19,7 @@ defmodule Wyram.Engine.PluginCatalog do
          {:ok, graph} <- validate_graph(packages),
          :ok <- validate_dependency_interfaces(packages, graph.by_id),
          {:ok, blocks} <- collect_blocks(packages),
+         {:ok, content} <- collect_content(packages, blocks),
          :ok <- validate_all_game_refs(packages, blocks),
          {:ok, game_id, game} <- select_game(packages, Keyword.get(options, :game)),
          states <- BlockRegistry.expand(blocks),
@@ -27,6 +27,7 @@ defmodule Wyram.Engine.PluginCatalog do
       {:ok,
        Map.merge(BlockRegistry.tables(states, block_ids), %{
          blocks: block_ids,
+         content: Map.new(content, &{{&1.kind, &1.id}, &1.data}),
          placeable: Map.new(blocks, &{&1.id, block_ids[&1.id]}),
          colors:
            Map.new(states, fn block ->
@@ -188,18 +189,49 @@ defmodule Wyram.Engine.PluginCatalog do
 
     interface[:providers] == providers and interface[:game] == plugin[:game] and
       interface[:compiled_blocks] == catalog[:blocks] and valid_module_list?(providers) and
-      interface[:compiled_game] == catalog[:game] and
+      matching_compiled_content?(interface, catalog) and
       Enum.all?(providers, &(&1 in modules)) and
       valid_interface_declarations?(interface[:declarations], manifest["id"], modules) and
       valid_module_hashes?(interface[:module_hashes], modules) and
       valid_game_module?(plugin[:game], modules)
   end
 
+  defp matching_compiled_content?(interface, catalog),
+    do:
+      interface[:compiled_game] == catalog[:game] and
+        interface[:compiled_content] == catalog[:content]
+
   defp valid_compile_data?(<<131, tag, _rest::binary>> = bytes)
        when byte_size(bytes) <= @max_compile_data_bytes and tag != 80,
        do: true
 
   defp valid_compile_data?(_), do: false
+
+  defp collect_content(packages, blocks) do
+    valid =
+      Enum.all?(packages, fn package ->
+        Content.valid_records?(
+          package.catalog.catalog[:content],
+          package.manifest["id"],
+          package.manifest["modules"]
+        )
+      end)
+
+    if valid do
+      records = Enum.flat_map(packages, & &1.catalog.catalog.content)
+      index = Map.new(records ++ blocks, &{{&1.kind, &1.id}, &1})
+
+      linked =
+        Enum.all?(packages, fn package ->
+          allowed = [package.manifest["id"] | package.manifest["dependencies"]]
+          Enum.all?(package.catalog.catalog.content, &Content.links_valid?(&1, index, allowed))
+        end)
+
+      if linked, do: {:ok, records}, else: {:error, :invalid_content_catalog}
+    else
+      {:error, :invalid_content_catalog}
+    end
+  end
 
   defp valid_module_hashes?(hashes, modules) when is_map(hashes) do
     Map.keys(hashes) |> Enum.sort() == modules and Enum.all?(Map.values(hashes), &valid_hash?/1)
@@ -585,17 +617,7 @@ defmodule Wyram.Engine.PluginCatalog do
 
   defp valid_module_list?(_), do: false
 
-  defp valid_module?(name) when is_binary(name) do
-    case String.split(name, ".") do
-      ["Elixir", "WyramMods" | segments] when segments != [] ->
-        Enum.all?(segments, &Regex.match?(@module_segment, &1))
-
-      _ ->
-        false
-    end
-  end
-
-  defp valid_module?(_), do: false
+  defp valid_module?(name), do: ModuleName.valid_string?(name)
 
   defp valid_id?(id) when is_binary(id), do: Regex.match?(@id_pattern, id)
   defp valid_id?(_), do: false

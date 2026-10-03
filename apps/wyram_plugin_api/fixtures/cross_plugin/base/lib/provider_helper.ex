@@ -1,12 +1,12 @@
-defmodule WyramMods.CrossPluginBase.TintConfig do
+defmodule CrossPluginBase.TintConfig do
   defstruct [:channel, :marker]
 end
 
-defmodule WyramMods.CrossPluginBase.ProviderHelper do
+defmodule CrossPluginBase.ProviderHelper do
   @behaviour Wyram.Plugin.Provider
 
   @impl true
-  def config_module, do: WyramMods.CrossPluginBase.TintConfig
+  def config_module, do: CrossPluginBase.TintConfig
 
   @impl true
   def kinds, do: [:block]
@@ -18,7 +18,7 @@ defmodule WyramMods.CrossPluginBase.ProviderHelper do
   def owned_fields, do: %{material: :exclusive}
 
   @impl true
-  def validate(%WyramMods.CrossPluginBase.TintConfig{channel: :base}, _context), do: :ok
+  def validate(%CrossPluginBase.TintConfig{channel: :base}, _context), do: :ok
 
   def validate(_config, context) do
     {:error,
