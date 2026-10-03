@@ -39,8 +39,8 @@ expected_terrain =
   end)
 
 unless match?(%Wyram.Game.Config{}, addon.catalog.game) and
-         addon.catalog.game.terrain == expected_terrain do
-  raise "addon game configuration did not preserve its dependency terrain references"
+         addon.catalog.game.palette == expected_terrain do
+  raise "addon game configuration did not preserve its dependency palette references"
 end
 
 block = Enum.find(addon.catalog.blocks, &(&1.local_id == "cobble"))

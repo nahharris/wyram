@@ -74,7 +74,7 @@ defmodule Wyram.Plugin.Content do
   defp valid_data?(:profile, data, _id),
     do: Schema.complete?(data, Profile) and Profile.validate(data) == :ok
 
-  defp valid_data?(:terrain, data, _id), do: Terrain.validate(data) == :ok
+  defp valid_data?(:shaping, data, _id), do: Terrain.validate(data) == :ok
   defp valid_data?(:biome, data, id), do: Biome.validate(data) == :ok and data.id == id
   defp valid_data?(:worldgen, data, _id), do: Config.validate(data) == :ok
 
@@ -100,7 +100,7 @@ defmodule Wyram.Plugin.Content do
   defp fields?(value, fields) when is_map(value), do: Enum.sort(Map.keys(value)) == fields
   defp fields?(_value, _fields), do: false
 
-  defp bindings_valid?(kind, _data, references) when kind in [:profile, :model, :terrain],
+  defp bindings_valid?(kind, _data, references) when kind in [:profile, :model, :shaping],
     do: references == []
 
   defp bindings_valid?(:biome, data, references) do
@@ -121,10 +121,10 @@ defmodule Wyram.Plugin.Content do
 
   defp bindings_valid?(:worldgen, data, references) do
     biomes = Enum.filter(references, &(&1.kind == :biome)) |> Enum.map(& &1.data)
-    terrains = Enum.filter(references, &(&1.kind == :terrain))
+    shaping = Enum.filter(references, &(&1.kind == :shaping))
 
-    Enum.all?(references, &(&1.kind in [:biome, :terrain])) and
+    Enum.all?(references, &(&1.kind in [:biome, :shaping])) and
       Enum.sort_by(biomes, & &1.id) == Enum.sort_by(data.biomes, & &1.id) and
-      (terrains == [] or match?([%{data: terrain}] when terrain == data.terrain, terrains))
+      (shaping == [] or match?([%{data: value}] when value == data.terrain, shaping))
   end
 end

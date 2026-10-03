@@ -6,12 +6,12 @@ defmodule Wyram.Game.Config do
 
   alias Wyram.WorldGen.Config, as: WorldGenConfig
 
-  @enforce_keys [:terrain, :profile, :models, :characters]
-  defstruct [:terrain, :profile, :models, :characters, worldgen: nil, spawn: :configured]
+  @enforce_keys [:profile, :models, :characters]
+  defstruct [:profile, :models, :characters, palette: nil, worldgen: nil, spawn: :configured]
 
-  @type terrain :: %{surface: Ref.t(), soil: Ref.t(), rock: Ref.t()}
+  @type palette :: %{surface: Ref.t(), soil: Ref.t(), rock: Ref.t()}
   @type t :: %__MODULE__{
-          terrain: terrain(),
+          palette: palette() | nil,
           profile: Profile.t(),
           models: [Model.t()],
           characters: [Definition.t()],
@@ -19,18 +19,18 @@ defmodule Wyram.Game.Config do
           spawn: :configured | :surface
         }
 
-  @fields [:terrain, :profile, :models, :characters, :worldgen, :spawn]
+  @fields [:palette, :profile, :models, :characters, :worldgen, :spawn]
   @bone_fields [:name, :parent, :role, :pivot, :boxes]
   @box_fields [:center, :size, :color]
 
   @spec new(map()) :: {:ok, t()} | {:error, atom()}
   def new(attrs) when is_map(attrs) do
-    terrain = Map.get(attrs, :terrain)
+    palette = Map.get(attrs, :palette)
     profile = Map.get(attrs, :profile, Profile.default())
     models = Map.get(attrs, :models, [Model.fallback()])
 
     with :ok <- known_fields(attrs),
-         :ok <- valid_terrain(terrain),
+         :ok <- valid_generation(palette, Map.get(attrs, :worldgen)),
          :ok <- valid_profile(profile),
          :ok <- valid_worldgen(Map.get(attrs, :worldgen)),
          :ok <- valid_spawn(Map.get(attrs, :spawn, :configured)),
@@ -39,7 +39,7 @@ defmodule Wyram.Game.Config do
          :ok <- valid_catalog(models, characters) do
       {:ok,
        %__MODULE__{
-         terrain: terrain,
+         palette: palette,
          profile: profile,
          models: models,
          characters: characters,
@@ -70,7 +70,11 @@ defmodule Wyram.Game.Config do
 
   def validate(_), do: {:error, :invalid_game_config}
 
-  def references(config), do: Map.values(config.terrain) ++ worldgen_references(config.worldgen)
+  def references(config),
+    do: palette_references(config.palette) ++ worldgen_references(config.worldgen)
+
+  defp palette_references(nil), do: []
+  defp palette_references(palette), do: Map.values(palette)
   defp worldgen_references(nil), do: []
   defp worldgen_references(value), do: WorldGenConfig.references(value)
   defp valid_spawn(policy) when policy in [:configured, :surface], do: :ok
@@ -128,14 +132,19 @@ defmodule Wyram.Game.Config do
       else: {:error, :unknown_game_field}
   end
 
-  defp valid_terrain(terrain) when is_map(terrain) do
-    if Enum.sort(Map.keys(terrain)) == Enum.sort([:surface, :soil, :rock]) and
-         Enum.all?(Map.values(terrain), &valid_ref?/1),
+  defp valid_generation(nil, nil), do: {:error, :missing_generation}
+  defp valid_generation(palette, nil), do: valid_palette(palette)
+  defp valid_generation(nil, _worldgen), do: :ok
+  defp valid_generation(_palette, _worldgen), do: {:error, :ambiguous_generation}
+
+  defp valid_palette(palette) when is_map(palette) do
+    if Enum.sort(Map.keys(palette)) == Enum.sort([:surface, :soil, :rock]) and
+         Enum.all?(Map.values(palette), &valid_ref?/1),
        do: :ok,
-       else: {:error, :invalid_terrain}
+       else: {:error, :invalid_palette}
   end
 
-  defp valid_terrain(_), do: {:error, :invalid_terrain}
+  defp valid_palette(_), do: {:error, :invalid_palette}
 
   defp valid_ref?(%Ref{plugin_id: plugin_id, local_id: local_id} = ref) do
     Map.keys(ref) |> Enum.sort() == [:__struct__, :local_id, :plugin_id] and

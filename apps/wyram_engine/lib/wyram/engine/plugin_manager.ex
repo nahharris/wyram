@@ -68,8 +68,8 @@ defmodule Wyram.Engine.PluginManager do
   def noncolliding, do: GenServer.call(__MODULE__, :noncolliding)
   def placeable, do: GenServer.call(__MODULE__, :placeable)
 
-  @spec terrain_palette() :: [pos_integer()]
-  def terrain_palette, do: GenServer.call(__MODULE__, :terrain_palette)
+  @spec palette() :: [pos_integer()] | nil
+  def palette, do: GenServer.call(__MODULE__, :palette)
 
   @spec plugin_versions() :: %{String.t() => String.t()}
   def plugin_versions, do: GenServer.call(__MODULE__, :plugin_versions)
@@ -126,7 +126,7 @@ defmodule Wyram.Engine.PluginManager do
   def handle_call(:noncolliding, _from, state), do: {:reply, state.noncolliding, state}
   def handle_call(:placeable, _from, state), do: {:reply, state.placeable, state}
   def handle_call(:block_colors, _from, state), do: {:reply, state.colors, state}
-  def handle_call(:terrain_palette, _from, state), do: {:reply, state.palette, state}
+  def handle_call(:palette, _from, state), do: {:reply, state.palette, state}
   def handle_call(:plugin_versions, _from, state), do: {:reply, state.versions, state}
 
   defp scan(directory) do

@@ -15,7 +15,7 @@ defmodule CrossPluginAddon.MixProject do
         {:wyram_cross_plugin_base, path: "../base"}
       ],
       compilers: [:wyram_prepare] ++ Mix.compilers() ++ [:wyram],
-      wyram_plugin: [entry: CrossPluginAddon.Plugin]
+      wyram_plugin: CrossPluginAddon.Plugin
     ]
   end
 

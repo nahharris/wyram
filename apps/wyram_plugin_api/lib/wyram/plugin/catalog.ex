@@ -7,10 +7,10 @@ defmodule Wyram.Plugin.Catalog do
     env = __CALLER__
     options = Entry.keyword_options!(options, env, "catalog")
 
-    if Keyword.keys(options) -- [:plugin, :kind] != [],
+    if Keyword.keys(options) != [:kind],
       do: Entry.error!(env, "unknown catalog option")
 
-    plugin = Entry.module!(Keyword.get(options, :plugin), env, "plugin")
+    plugin = Entry.plugin!(env)
     kind = Kind.validate!(Keyword.get(options, :kind), env)
     Module.put_attribute(env.module, :wyram_plugin_module, plugin)
     Module.put_attribute(env.module, :wyram_catalog_kind, kind)
@@ -22,14 +22,15 @@ defmodule Wyram.Plugin.Catalog do
       case kind do
         :block ->
           quote do
-            import Wyram.Plugin.Declarations, only: [defblock: 2, defblock: 3]
+            import Wyram.Plugin.Declarations, only: [defblock: 1, defblock: 2, defblock: 3]
           end
 
         kind ->
           name = String.to_atom("def#{kind}")
 
           quote do
-            import Wyram.Plugin.ContentDSL, only: [{unquote(name), 2}, {unquote(name), 3}]
+            import Wyram.Plugin.ContentDSL,
+              only: [{unquote(name), 1}, {unquote(name), 2}, {unquote(name), 3}]
           end
       end
 

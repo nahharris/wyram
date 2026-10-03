@@ -7,7 +7,7 @@ defmodule Example.MixProject do
       version: "0.1.0",
       elixir: "~> 1.20",
       compilers: [:wyram_prepare] ++ Mix.compilers() ++ [:wyram],
-      wyram_plugin: [entry: Example],
+      wyram_plugin: Example,
       deps: [
         {:wyram_plugin_api, path: "../../apps/wyram_plugin_api"},
         {:wyram, path: "../wyram"}

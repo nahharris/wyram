@@ -1,11 +1,11 @@
 defmodule CrossPluginBase.Plugin do
   use Wyram.Plugin
-  catalog(:blocks, CrossPluginBase.Blocks)
+  catalog(CrossPluginBase.Blocks)
   provider(CrossPluginBase.ProviderHelper)
 end
 
 defmodule CrossPluginBase.Blocks do
-  use Wyram.Plugin.Catalog, kind: :block, plugin: CrossPluginBase.Plugin
+  use Wyram.Plugin.Catalog, kind: :block
 
   defblock Stone, id: "stone" do
     capability(%CrossPluginBase.TintConfig{

@@ -1,6 +1,6 @@
 defmodule Wyram.Plugin.CatalogCollector do
   @moduledoc false
-  alias Wyram.Plugin.Diagnostic
+  alias Wyram.Plugin.{Diagnostic, Kind}
 
   def collect(metadata, owned) do
     initial = %{seen: MapSet.new(), active: [], modules: [], blocks: [], content: []}
@@ -52,7 +52,7 @@ defmodule Wyram.Plugin.CatalogCollector do
           content: state.content ++ catalog.declarations
       }
 
-      collect_includes(catalog.includes, root.kind, entry, owned, state)
+      collect_includes(catalog.includes, catalog.kind, entry, owned, state)
       |> case do
         {:ok, state} -> {:ok, %{state | active: tl(state.active)}}
         error -> error
@@ -86,7 +86,10 @@ defmodule Wyram.Plugin.CatalogCollector do
       catalog.plugin != entry ->
         error(:catalog_ownership_mismatch, "catalog belongs to another plugin", root)
 
-      catalog.kind != root.kind ->
+      catalog.kind not in Kind.kinds() ->
+        error(:catalog_kind_mismatch, "catalog has an unsupported content kind", root)
+
+      not is_nil(Map.get(root, :kind)) and catalog.kind != root.kind ->
         error(:catalog_kind_mismatch, "included catalog has the wrong content kind", root)
 
       true ->

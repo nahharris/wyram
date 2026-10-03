@@ -261,11 +261,11 @@ defmodule Wyram.Plugin.CompilerTest do
     source = """
     defmodule #{entry_name} do
       use Wyram.Plugin
-      catalog :blocks, #{blocks_name}
+      catalog #{blocks_name}
     end
 
     defmodule #{blocks_name} do
-      use Wyram.Plugin.Catalog, plugin: #{entry_name}, kind: :block
+      use Wyram.Plugin.Catalog, kind: :block
       defblock Stone, id: "stone" do
         #{body}
         capability %Wyram.Capability.Material{color: {12, 34, 56}, mode: :opaque}#{override}
@@ -279,9 +279,13 @@ defmodule Wyram.Plugin.CompilerTest do
     File.write!(file, source)
 
     compiled =
-      Wyram.PluginTestProject.with_app(String.to_atom(plugin_id), fn ->
-        Code.compile_file(file)
-      end)
+      Wyram.PluginTestProject.with_app(
+        String.to_atom(plugin_id),
+        Module.concat([entry_name]),
+        fn ->
+          Code.compile_file(file)
+        end
+      )
 
     Enum.each(compiled, fn {module, bytes} ->
       beam_path = Path.join(compile_path, Atom.to_string(module) <> ".beam")

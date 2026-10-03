@@ -1,8 +1,8 @@
-defmodule WyramGame.Biomes do
+defmodule Wyram.Biomes do
   @moduledoc "Wyram's first wilderness palette over the public generation pipeline; specialized biomes follow later."
-  use Wyram.Plugin.Catalog, plugin: WyramGame, kind: :biome
+  use Wyram.Plugin.Catalog, kind: :biome
   alias Wyram.WorldGen.Feature
-  alias WyramGame.Blocks
+  alias Wyram.Blocks
 
   defbiome Wilderness, id: "wilds" do
     %{

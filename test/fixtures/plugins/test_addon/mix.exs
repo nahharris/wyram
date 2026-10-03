@@ -7,7 +7,7 @@ defmodule TestAddon.MixProject do
       version: "0.1.0",
       elixir: "~> 1.20",
       compilers: [:wyram_prepare] ++ Mix.compilers() ++ [:wyram],
-      wyram_plugin: [entry: TestAddon],
+      wyram_plugin: TestAddon,
       deps: [
         {:wyram_plugin_api, path: "../../../../apps/wyram_plugin_api"},
         {:test_terrain, path: "../test_terrain"}

@@ -7,10 +7,9 @@ defmodule Wyram.Game do
     env = __CALLER__
     options = Entry.keyword_options!(options, env, "game")
 
-    if Keyword.keys(options) != [:plugin],
-      do: Entry.error!(env, "game requires only a :plugin module")
+    if options != [], do: Entry.error!(env, "game takes no metadata options")
 
-    plugin = Entry.module!(Keyword.get(options, :plugin), env, "plugin")
+    plugin = Entry.plugin!(env)
     Module.put_attribute(env.module, :wyram_game_plugin, plugin)
     Module.register_attribute(env.module, :wyram_game_entries, accumulate: true)
 
@@ -18,13 +17,13 @@ defmodule Wyram.Game do
       import Kernel, except: [spawn: 1, spawn: 2]
 
       import Wyram.Game,
-        only: [terrain: 1, worldgen: 1, player: 1, spawn: 1, spawn: 2, spawn_policy: 1]
+        only: [palette: 1, worldgen: 1, player: 1, spawn: 1, spawn: 2, spawn_policy: 1]
 
       @before_compile Wyram.Game
     end
   end
 
-  defmacro terrain(fields), do: put(:terrain, Literal.normalize!(fields, __CALLER__), __CALLER__)
+  defmacro palette(fields), do: put(:palette, Literal.normalize!(fields, __CALLER__), __CALLER__)
 
   defmacro worldgen(module),
     do: put(:worldgen, Entry.module!(module, __CALLER__, "worldgen"), __CALLER__)

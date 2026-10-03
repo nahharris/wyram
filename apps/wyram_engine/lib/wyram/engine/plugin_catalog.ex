@@ -33,10 +33,7 @@ defmodule Wyram.Engine.PluginCatalog do
            Map.new(states, fn block ->
              {Map.fetch!(block_ids, block.id), Tuple.to_list(block.descriptor.material.color)}
            end),
-         palette:
-           Enum.map([game.terrain.surface, game.terrain.soil, game.terrain.rock], fn ref ->
-             Map.fetch!(block_ids, Ref.canonical_id(ref))
-           end),
+         palette: generation_palette(game.palette, block_ids),
          worldgen: game.worldgen,
          spawn_policy: game.spawn,
          player_profile: game.profile,
@@ -55,6 +52,14 @@ defmodule Wyram.Engine.PluginCatalog do
   end
 
   def build(_packages, _options), do: {:error, :invalid_plugin_catalog}
+
+  defp generation_palette(nil, _block_ids), do: nil
+
+  defp generation_palette(palette, block_ids) do
+    Enum.map([:surface, :soil, :rock], fn role ->
+      Map.fetch!(block_ids, Ref.canonical_id(Map.fetch!(palette, role)))
+    end)
+  end
 
   @spec interface_fingerprint(map()) :: String.t()
   def interface_fingerprint(interface) do

@@ -19,7 +19,7 @@ The tectonics and erosion inputs currently shape noise-based geology. They are n
 
 ## Public authoring API
 
-Add `worldgen:` to `Wyram.Game.Config.new!/1`. Existing games may omit it to keep the legacy generator. The Wyram plugin provides a working example in `plugins/wyram/lib/wyram_game/world_gen.ex`.
+Select a `worldgen Module` in game composition, or pass `worldgen:` to `Wyram.Game.Config.new!/1` in a procedural builder. Biomes own the palettes; no game palette is needed. The simple layered generator uses an explicit `palette:` instead. The Wyram plugin provides a working example in `plugins/wyram/lib/world_gen.ex`.
 
 ```elixir
 alias Wyram.WorldGen.{Biome, Config, Feature}
@@ -51,7 +51,7 @@ Use a typed biome catalog in an owned plugin module:
 
 ```elixir
 defmodule MyGame.Biomes do
-  use Wyram.Plugin.Catalog, plugin: MyGame, kind: :biome
+  use Wyram.Plugin.Catalog, kind: :biome
   alias MyGame.Blocks
 
   defbiome Wilderness, id: "wilderness" do
@@ -61,7 +61,7 @@ defmodule MyGame.Biomes do
 end
 ```
 
-The plugin entry links it with `catalog :biomes, MyGame.Biomes`. A world-generation catalog declares `defworldgen Wilderness, id: "wilderness" do %{biomes: [MyGame.Biomes.Wilderness]} end`, and the game composition selects that preset with `worldgen MyGame.WorldGen.Wilderness`. Persistent biome IDs derive from the application's name and local ID. Module aliases are typed references resolved after compilation; arbitrary calls do not execute inside declarations. Biomes can be split across included family catalogs. The compiler validates every biome, feature, and world-generation preset, including unselected content. The public data constructors remain available to explicit procedural builders.
+The plugin entry links it with `catalog MyGame.Biomes`. A world-generation catalog declares `defworldgen Wilderness, id: "wilderness" do %{biomes: [MyGame.Biomes.Wilderness]} end`, and the game composition selects that preset with `worldgen MyGame.WorldGen.Wilderness`. Persistent biome IDs derive from the application's name and local ID. Module aliases are typed references resolved after compilation; arbitrary calls do not execute inside declarations. Biomes can be split across included family catalogs. The compiler validates every biome, feature, and world-generation preset, including unselected content. The public data constructors remain available to explicit procedural builders.
 
 `Biome` is the common data model for these declarations. Game builders can assemble multiple biomes and transition biomes. Unspecified climate axes default to 0.5. A transition biome is a separately named biome with its own climate center, surface palette and feature rules; placing it between other centers gives it weight through that region. `blend` controls how broadly centers overlap. Material choices are seeded categorical choices, while elevation offsets use continuous weighted blending; contrasting palettes may need an explicitly authored transition palette.
 

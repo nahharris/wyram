@@ -1,11 +1,16 @@
 defmodule Wyram.Plugin.ContentDSL do
   @moduledoc false
-  alias Wyram.Block.Ref
   alias Wyram.Plugin.{Catalog, ContentRef, Kind}
   alias Wyram.Plugin.DSL.{Entry, Literal, StructLiteral}
 
-  for kind <- [:biome, :terrain, :profile, :model, :character, :worldgen] do
+  for kind <- [:biome, :shaping, :profile, :model, :character, :worldgen] do
     name = String.to_atom("def#{kind}")
+
+    defmacro unquote(name)(symbol),
+      do: define(unquote(kind), symbol, [], nil, __CALLER__)
+
+    defmacro unquote(name)(symbol, do: body),
+      do: define(unquote(kind), symbol, [], body, __CALLER__)
 
     defmacro unquote(name)(symbol, options),
       do: define(unquote(kind), symbol, options, nil, __CALLER__)
@@ -23,10 +28,7 @@ defmodule Wyram.Plugin.ContentDSL do
     if Keyword.keys(options) -- [:id, :build] != [],
       do: Entry.error!(env, "unknown def#{kind} option")
 
-    id = Keyword.get(options, :id)
-
-    unless Ref.valid_local_id?(id),
-      do: Entry.error!(env, "declarations require a literal local id")
+    id = Entry.local_id!(symbol, options, env)
 
     plugin = Module.get_attribute(env.module, :wyram_plugin_module)
     module = Module.concat(plugin, Kind.namespace(kind) <> ".#{symbol}")

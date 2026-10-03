@@ -1,11 +1,11 @@
 defmodule CrossPluginAddon.Plugin do
   use Wyram.Plugin
-  catalog(:blocks, CrossPluginAddon.Blocks)
+  catalog(CrossPluginAddon.Blocks)
   game(CrossPluginAddon.Game)
 end
 
 defmodule CrossPluginAddon.Blocks do
-  use Wyram.Plugin.Catalog, kind: :block, plugin: CrossPluginAddon.Plugin
+  use Wyram.Plugin.Catalog, kind: :block
 
   defblock Cobble, id: "cobble" do
     template(CrossPluginBase.Plugin.Blocks.Stone)
@@ -23,7 +23,7 @@ defmodule CrossPluginAddon.Game do
     stone = Stone.ref()
 
     Config.new!(%{
-      terrain: Map.new([:surface, :soil, :rock], &{&1, stone})
+      palette: Map.new([:surface, :soil, :rock], &{&1, stone})
     })
   end
 end

@@ -27,7 +27,7 @@ defmodule Wyram.Plugin.GameComposition do
     ]
 
     models = characters |> Enum.map(& &1.model) |> Enum.uniq() |> Enum.map(&model(&1, index))
-    terrain = terrain(Map.fetch!(entries, :terrain), plugin, index)
+    palette = if Map.has_key?(entries, :palette), do: palette(entries.palette, plugin, index)
 
     worldgen =
       if Map.has_key?(entries, :worldgen),
@@ -35,7 +35,7 @@ defmodule Wyram.Plugin.GameComposition do
 
     {:ok,
      Config.new!(%{
-       terrain: terrain,
+       palette: palette,
        profile: player.data.profile,
        models: models,
        characters: characters,
@@ -54,7 +54,7 @@ defmodule Wyram.Plugin.GameComposition do
     ContentCompiler.select(entry.value, kind, plugin, index, entry.source)
   end
 
-  defp terrain(entry, plugin, index) do
+  defp palette(entry, plugin, index) do
     Map.new(entry.value, fn {key, {:__wyram_module__, module}} ->
       {key, ContentCompiler.select(module, :block, plugin, index, entry.source).data}
     end)
@@ -64,6 +64,7 @@ defmodule Wyram.Plugin.GameComposition do
     {module, options} = entry.value
 
     if not Keyword.keyword?(options) or
+         length(options) != length(Enum.uniq(Keyword.keys(options))) or
          Keyword.keys(options) -- [:id, :position, :yaw, :pitch] != [],
        do: raise(ArgumentError, "spawn accepts only :id, :position, :yaw, and :pitch")
 

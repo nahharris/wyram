@@ -64,7 +64,7 @@ defmodule Wyram.Engine.WorldTest do
   test "compiled test terrain defines the native palette without game block names" do
     blocks = PluginManager.blocks()
 
-    assert PluginManager.terrain_palette() ==
+    assert PluginManager.palette() ==
              Enum.map(
                ["test_terrain:violet", "test_terrain:ochre", "test_terrain:slate"],
                &Map.fetch!(blocks, &1)

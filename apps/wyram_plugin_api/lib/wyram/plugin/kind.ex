@@ -1,41 +1,19 @@
 defmodule Wyram.Plugin.Kind do
-  @moduledoc "Supported content kinds and their catalog names."
+  @moduledoc "Supported content kinds and their generated declaration namespaces."
   alias Wyram.Plugin.DSL.Entry
 
-  @catalogs %{
-    blocks: :block,
-    biomes: :biome,
-    terrains: :terrain,
-    profiles: :profile,
-    models: :model,
-    characters: :character,
-    worldgen: :worldgen
-  }
   @namespaces %{
     block: "Blocks",
     biome: "Biomes",
-    terrain: "Terrains",
+    shaping: "Shaping",
     profile: "Profiles",
     model: "Models",
     character: "Characters",
     worldgen: "WorldGen"
   }
 
-  def kinds, do: Map.values(@catalogs)
+  def kinds, do: Map.keys(@namespaces)
   def namespace(kind), do: Map.fetch!(@namespaces, kind)
-
-  def catalog_kind!(name, env) do
-    case Map.fetch(@catalogs, name) do
-      {:ok, kind} ->
-        kind
-
-      :error ->
-        Entry.error!(
-          env,
-          "unknown catalog #{inspect(name)}; expected #{inspect(Map.keys(@catalogs))}"
-        )
-    end
-  end
 
   def validate!(kind, env) do
     if kind in kinds(),

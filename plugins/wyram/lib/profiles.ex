@@ -1,9 +1,9 @@
-defmodule WyramGame.Profiles do
+defmodule Wyram.Profiles do
   @moduledoc false
-  use Wyram.Plugin.Catalog, plugin: WyramGame, kind: :profile
+  use Wyram.Plugin.Catalog, kind: :profile
   alias Wyram.Units
 
-  defprofile Player, id: "player" do
+  defprofile Player do
     %{
       fly_enabled: true,
       radius: Units.pixels(3),
@@ -16,7 +16,7 @@ defmodule WyramGame.Profiles do
     }
   end
 
-  defprofile Companion, id: "companion" do
+  defprofile Companion do
     %{
       walk_speed: 3.2,
       run_speed: 6.5,

@@ -1,5 +1,5 @@
 defmodule Wyram.Plugin.GameCompiler do
-  @moduledoc "Validates explicit game builders and resolves terrain references during compilation."
+  @moduledoc "Validates game composition and resolves generation block references during compilation."
 
   alias Wyram.Block.Ref
   alias Wyram.Game.Config

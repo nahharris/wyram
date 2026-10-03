@@ -241,7 +241,7 @@ defmodule Wyram.Plugin.ContentCompiler do
   defp expected_kind(key, _source) when key in @block_fields, do: :block
   defp expected_kind(:model, _source), do: :model
   defp expected_kind(:profile, _source), do: :profile
-  defp expected_kind(:terrain, _source), do: :terrain
+  defp expected_kind(:shaping, _source), do: :shaping
 
   defp expected_kind(key, source),
     do: fail(:content_reference_kind_mismatch, "unexpected reference in #{key}", source)
@@ -312,14 +312,14 @@ defmodule Wyram.Plugin.ContentCompiler do
       :profile ->
         validated_struct(Profile, fields)
 
-      :terrain ->
+      :shaping ->
         Terrain.new!(fields)
 
       :biome ->
         Biome.new!(Map.put(fields, :id, id))
 
       :worldgen ->
-        Config.new!(fields)
+        Config.new!(worldgen_fields!(fields))
 
       :model ->
         validated_struct(Model, Map.put(fields, :id, id))
@@ -327,6 +327,15 @@ defmodule Wyram.Plugin.ContentCompiler do
       :character ->
         build_character(fields, id)
     end
+  end
+
+  defp worldgen_fields!(fields) do
+    if Map.has_key?(fields, :terrain),
+      do: raise(ArgumentError, "use :shaping for landscape tuning")
+
+    if Map.has_key?(fields, :shaping),
+      do: fields |> Map.put(:terrain, fields.shaping) |> Map.delete(:shaping),
+      else: fields
   end
 
   defp build_character(fields, id) do

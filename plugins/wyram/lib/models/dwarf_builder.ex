@@ -1,4 +1,4 @@
-defmodule WyramGame.Models.DwarfBuilder do
+defmodule Wyram.Models.DwarfBuilder do
   @moduledoc false
   alias Wyram.Character.Model
   alias Wyram.Units

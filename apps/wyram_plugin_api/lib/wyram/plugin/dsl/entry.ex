@@ -2,10 +2,15 @@ defmodule Wyram.Plugin.DSL.Entry do
   @moduledoc false
 
   alias Wyram.Block.Ref
+  alias Wyram.Plugin.ModuleName
 
   def options!(options, env) do
     options = keyword_options!(options, env, "plugin")
     reject_unknown!(options, [], env, "plugin")
+
+    unless plugin!(env) == env.module,
+      do: error!(env, "use Wyram.Plugin belongs in the configured Mix entrypoint")
+
     app = Mix.Project.config()[:app]
 
     unless is_atom(app) and app not in [nil, true, false] and
@@ -21,6 +26,33 @@ defmodule Wyram.Plugin.DSL.Entry do
       providers: [],
       game: nil
     }
+  end
+
+  def project_entry do
+    case Mix.Project.config()[:wyram_plugin] do
+      nil ->
+        :none
+
+      entry ->
+        if ModuleName.valid?(entry),
+          do: {:ok, entry},
+          else: {:error, ":wyram_plugin must be a module alias"}
+    end
+  end
+
+  def plugin!(env) do
+    case project_entry() do
+      {:ok, entry} -> entry
+      _ -> error!(env, "declare the plugin entry module with wyram_plugin: Module in mix.exs")
+    end
+  end
+
+  def local_id!(symbol, options, env) do
+    id =
+      Keyword.get_lazy(options, :id, fn -> symbol |> Atom.to_string() |> Macro.underscore() end)
+
+    unless Ref.valid_local_id?(id), do: error!(env, "id must be a valid literal local ID string")
+    id
   end
 
   def keyword_options!(options, env, label) when is_list(options) do

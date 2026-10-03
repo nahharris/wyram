@@ -1,6 +1,6 @@
 # Declarative plugin framework plan
 
-Status: phases 1-3 implement the public contracts, declaration compiler and compiled-package replacement. Authoring now derives identity from Mix `:app` and uses explicit typed catalogs for blocks, biomes, terrain, profiles, models, characters, and world generation; see [plugins.md](plugins.md). Later runtime capability phases retain their separate acceptance gates.
+Status: phases 1-3 implement the public contracts, declaration compiler and compiled-package replacement. Authoring derives identity and direct dependencies from Mix and uses typed catalogs for blocks, biomes, shaping, profiles, models, characters, and world generation; see [plugins.md](plugins.md). Later runtime capability phases retain their separate acceptance gates.
 
 ## Goal and scope
 
@@ -10,9 +10,9 @@ This is a pre-alpha replacement. Break existing callbacks, packages, protocol ta
 
 ## Current state
 
-- The public API provides logical block references, typed declaration IR, source diagnostics and capability provider contracts. The first backend supports opaque RGB cubes with solid cube collision.
-- The declaration compiler collects inline and split catalogs, validates dependency/template composition, and writes deterministic catalogs plus exported interfaces. Mix configuration names the entry; plugin identity and dependencies live in the DSL.
-- The package/runtime replacement consumes compiled catalogs, verifies package ownership and dependency fingerprints, and assigns runtime block handles. Terrain and characters are compiled through an explicit public game builder; runtime startup does not invoke declaration or provider callbacks.
+- The public API provides typed content catalogs and references, source diagnostics, and capability provider contracts. Supported block descriptors include cube geometry, solid or absent collision, opaque/blended/emissive RGB materials, and bounded liquids.
+- The compiler collects explicit catalogs and includes, validates dependency/template composition, and writes deterministic catalogs plus exported interfaces. Mix names the entry, application identity, and direct dependencies; catalogs declare their kind once. Declaration IDs default to snake_case symbols, with explicit overrides for stable identities.
+- Runtime consumes compiled catalogs, verifies ownership and dependency fingerprints, and assigns block handles. Game composition selects worldgen or a simple palette and reusable characters. Procedural builders are explicit build-time extensions; runtime startup does not invoke them.
 - Regions continue to own packed chunks. Native code still consumes batched cube data and palettes. Later phases must implement state, shape, material and lighting behavior before those capabilities become accepted content.
 
 ## Public authoring model
@@ -22,7 +22,7 @@ Use `Wyram.Plugin` as the framework entry point, replacing its current callback 
 Each `defblock` produces a named declaration module, giving authors an importable symbol similar to a registered Java block constant. Supported authoring syntax:
 
 ~~~elixir
-defmodule WyramGame do
+defmodule Wyram do
   use Wyram.Plugin
 
   alias Wyram.Capability.{Geometry, Collision, Material}
@@ -35,21 +35,21 @@ defmodule WyramGame do
   end
 
   defblock Ice, id: "ice" do
-    template WyramGame.Blocks.SolidBlock
+    template Wyram.Blocks.SolidBlock
     capability %Material{color: {180, 220, 255}, mode: :opaque}, override: true
   end
 end
 ~~~
 
-This generates `WyramGame.Blocks.SolidBlock` and `WyramGame.Blocks.Ice`. Authors may alias these modules and use the symbols directly in DSL expressions such as `template SolidBlock`. The explicit local ID separates the Elixir symbol from the persistent identity: `Ice` identifies the declaration module, while `"wyram:ice"` identifies the content externally. Renaming a module does not implicitly rename its content ID.
+This generates `Wyram.Blocks.SolidBlock` and `Wyram.Blocks.Ice`. Authors may alias these modules and use the symbols directly in DSL expressions such as `template SolidBlock`. The explicit local ID separates the Elixir symbol from persistent identity: `Ice` identifies the declaration module, while `"wyram:ice"` identifies content externally. Without an explicit ID, the compiler derives it from the symbol. Supply an ID before renaming a symbol when its persistent identity must stay unchanged.
 
-Generated modules expose compiler-owned declaration metadata and `ref/0`. Ordinary gameplay code uses `WyramGame.Blocks.Ice.ref()` to obtain a `Wyram.Block.Ref`. These modules are declarations, not world instances, actors or registration side effects. They never allocate numeric registry handles during source compilation.
+Generated modules expose compiler-owned declaration metadata and `ref/0`. Ordinary gameplay code uses `Wyram.Blocks.Ice.ref()` to obtain a `Wyram.Block.Ref`. These modules are declarations, not world instances, actors or registration side effects. They never allocate numeric registry handles during source compilation.
 
 Within the DSL, reference-bearing fields consume module symbols and resolve them against collected declarations or dependency interfaces; they do not execute `ref/0` or arbitrary functions to discover their target. The compiler verifies that the symbol exists, is a Wyram declaration, has the required kind, is automatically public and belongs to this plugin or an explicit dependency. An Elixir alias by itself is not proof of any of these conditions.
 
 Support local forward references independently of source order, including references across explicitly listed declaration modules. Collect and normalize symbols first, then resolve them. Do not call `Code.ensure_compiled!` on sibling declaration modules from inside macros or introduce circular BEAM compilation dependencies merely to reference declarations. Cross-plugin symbols resolve through dependency interfaces after required dependencies build.
 
-For larger plugins, `use Wyram.Plugin.Catalog, plugin: WyramGame, kind: :block` collects families explicitly linked by `catalog :blocks, Module` and `include Module`. Catalogs can mix local declarations and includes. All declarations and registered capability providers are automatically public, including templates; there are no export lists or visibility modifiers. Developers choose module namespaces and file layout. All contributions retain the plugin entry namespace, so splitting a family does not change its generated symbol or content ID. Reject duplicate symbols, handwritten-module collisions, catalog inclusion cycles, duplicate inclusion, and incompatible kinds.
+For larger plugins, `use Wyram.Plugin.Catalog, kind: :block` collects families explicitly linked by `catalog Module` and `include Module`. Catalogs can mix local declarations and includes. All declarations and registered capability providers are automatically public, including templates; there are no export lists or visibility modifiers. Developers choose module namespaces and file layout. All contributions retain the plugin entry namespace, so splitting a family does not change its generated symbol or content ID. Reject duplicate symbols, handwritten-module collisions, catalog inclusion cycles, duplicate inclusion, and incompatible kinds.
 
 Shared declarations may use approved templates and constants with deterministic expansion. Keep the accepted expression language small: literals, named structs, declaration-module symbols, state selectors and registered templates. Unsupported dynamic expressions fail with a source diagnostic instead of silently becoming runtime declarations.
 
@@ -65,14 +65,14 @@ Check template cycles and expansion budgets independently of plugin dependency c
 
 A plugin may also export providers and explicit behaviour handlers. The framework should make data declarations easy and imperative gameplay exceptional, without forbidding it.
 
-A plugin selects an explicit `game Module` startup composition. `use Wyram.Game, plugin: Entry` declares terrain block references, world generation, player definition, additional spawns, and spawn policy. Typed catalogs provide reusable profiles, models, character definitions, biomes, terrain tuning, and generation presets. `defmodel` permits an explicitly declared owned build-time builder for procedural rigs; the public `Wyram.Game.Provider.build/0` contract also permits procedural game composition. All returned data is validated and serialized; runtime never calls authoring builders. Automatic game selection succeeds only when exactly one installed plugin supplies a game.
+A plugin selects an explicit `game Module` startup composition. `use Wyram.Game` selects world generation or a simple palette, player definition, additional spawns, and spawn policy. Typed catalogs provide reusable profiles, models, character definitions, biomes, shaping, and generation presets. `defmodel` permits an explicitly declared owned build-time builder for procedural rigs; the public `Wyram.Game.Provider.build/0` contract also permits procedural game composition. All returned data is validated and serialized; runtime never calls authoring builders. Automatic game selection succeeds only when exactly one installed plugin supplies a game.
 
 ## Identity and validation guarantees
 
 | Concern | Representation and guarantee |
 | --- | --- |
 | Plugin/block identity | Plugin ID from Mix `:app`, plus explicit local ID. Canonical strings such as `wyram:ice` at persistence/import boundaries; generated declaration modules in the DSL and `Wyram.Block.Ref` values in gameplay code. |
-| Declaration symbols | Generated modules such as `WyramGame.Blocks.Ice`. Metadata/linking verifies existence, kind, role and dependency ownership; a module alias alone is not validation. |
+| Declaration symbols | Generated modules such as `Wyram.Blocks.Ice`. Metadata/linking verifies existence, kind, role and dependency ownership; a module alias alone is not validation. |
 | Local state symbols | Finite source-authored atoms such as `:facing` and `:north`. An atom alone does not prove that a state field or value exists. |
 | Capability identity | Imported provider/configuration modules, never free-form capability-name strings. The compiler verifies registration and provider contracts. |
 | Configuration | Named structs with required fields, public typespecs and domain schemas. Struct field checks are supplemented by value/range/reference validation. |

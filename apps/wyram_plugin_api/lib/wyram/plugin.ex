@@ -1,7 +1,7 @@
 defmodule Wyram.Plugin do
   @moduledoc "Public contracts and declaration entry point for installed game plugins."
 
-  alias Wyram.Plugin.{Catalog, Kind}
+  alias Wyram.Plugin.Catalog
   alias Wyram.Plugin.DSL.Entry
 
   @doc "Defines explicit plugin compiler metadata for an entry module."
@@ -18,18 +18,16 @@ defmodule Wyram.Plugin do
     quote do
       @before_compile Wyram.Plugin.Declarations
       @before_compile Wyram.Plugin
-      import Wyram.Plugin, only: [catalog: 2, provider: 1, game: 1]
-      import Wyram.Plugin.Declarations, only: [defblock: 2, defblock: 3]
+      import Wyram.Plugin, only: [catalog: 1, provider: 1, game: 1]
+      import Wyram.Plugin.Declarations, only: [defblock: 1, defblock: 2, defblock: 3]
     end
   end
 
-  defmacro catalog(name, module_ast) do
-    kind = Kind.catalog_kind!(name, __CALLER__)
+  defmacro catalog(module_ast) do
     module = Entry.module!(module_ast, __CALLER__, "catalog module")
     source = Catalog.source(__CALLER__)
 
     Module.put_attribute(__CALLER__.module, :wyram_catalogs, %{
-      kind: kind,
       module: module,
       source: source
     })

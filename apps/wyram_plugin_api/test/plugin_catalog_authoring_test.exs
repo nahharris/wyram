@@ -8,19 +8,121 @@ defmodule Wyram.Plugin.CatalogAuthoringTest do
     def project, do: Process.get(:catalog_test_project)
   end
 
+  test "Mix owns catalog and composition metadata and symbols supply default IDs" do
+    source = """
+    defmodule Forest do
+      use Wyram.Plugin
+      catalog GroundFamily
+      catalog Forest.ProfileFamily
+      catalog Forest.ModelFamily
+      catalog Forest.CharacterFamily
+      game Forest.Startup
+    end
+    defmodule GroundFamily do
+      use Wyram.Plugin.Catalog, kind: :block
+      defblock Moss
+      defblock HTTPStone
+      defblock OldName, id: "stable_name"
+      defblock Solid, template: true
+    end
+    defmodule Forest.ProfileFamily do
+      use Wyram.Plugin.Catalog, kind: :profile
+      defprofile Walker
+    end
+    defmodule Forest.ModelFamily do
+      use Wyram.Plugin.Catalog, kind: :model
+      defmodel Rig, build: {Forest.RigFactory, :build}
+    end
+    defmodule Forest.RigFactory do
+      def build(id), do: %{Wyram.Character.Model.fallback() | id: id}
+    end
+    defmodule Forest.CharacterFamily do
+      use Wyram.Plugin.Catalog, kind: :character
+      defcharacter Hero do
+        %{profile: Forest.Profiles.Walker, model: Forest.Models.Rig}
+      end
+    end
+    defmodule Forest.Startup do
+      use Wyram.Game
+      palette surface: Forest.Blocks.Moss, soil: Forest.Blocks.Moss, rock: Forest.Blocks.Moss
+      player Forest.Characters.Hero
+    end
+    """
+
+    artifact = compile_plugin!(source)
+
+    assert Enum.map(artifact.catalog.blocks, & &1.id) == [
+             "forest:http_stone",
+             "forest:moss",
+             "forest:stable_name"
+           ]
+
+    assert Enum.any?(artifact.catalog.content, &(&1.id == "forest:walker"))
+    assert invoke(GroundFamily, :__wyram_catalog__, []).plugin == Forest
+    assert artifact.catalog.game.palette.surface == Ref.new!("forest", "moss")
+  end
+
+  test "worldgen composition does not repeat a biome palette" do
+    artifact = compile_plugin!(content_source())
+    assert is_nil(artifact.catalog.game.palette)
+    assert hd(artifact.catalog.game.worldgen.biomes).surface == Ref.new!("forest", "moss")
+  end
+
+  test "catalog and game ownership comes only from the configured application entry" do
+    for source <- [
+          "defmodule Forest.Catalog do\nuse Wyram.Plugin.Catalog, kind: :block, plugin: Forest\nend",
+          "defmodule Forest.Startup do\nuse Wyram.Game, plugin: Forest\nend",
+          "defmodule OtherEntry do\nuse Wyram.Plugin\nend"
+        ] do
+      assert_raise CompileError, fn -> compile_plugin(source) end
+    end
+
+    assert_raise CompileError, ~r/declare the plugin entry/, fn ->
+      compile_plugin("defmodule Forest.Catalog do\nuse Wyram.Plugin.Catalog, kind: :block\nend",
+        entry: nil
+      )
+    end
+  end
+
+  test "unregistered catalogs are not discovered through their namespace or files" do
+    source = String.replace(content_source(), "  catalog Forest.Profiles\n", "")
+    assert {:error, diagnostics} = compile_plugin(source)
+    assert Enum.any?(diagnostics, &(&1.code == :unresolved_content_reference))
+  end
+
+  test "game generation and spawn options reject duplicated configuration" do
+    both =
+      String.replace(content_source(), "  worldgen Forest.WorldGen.Wilderness", """
+        palette surface: Forest.Blocks.Moss, soil: Forest.Blocks.Moss, rock: Forest.Blocks.Moss
+        worldgen Forest.WorldGen.Wilderness
+      """)
+
+    assert {:error, diagnostics} = compile_plugin(both)
+    assert Enum.any?(diagnostics, &(&1.code == :invalid_game_config))
+
+    source =
+      String.replace(content_source(), "  spawn_policy :surface", """
+        spawn Forest.Characters.Hero, id: "guest", id: "second_guest"
+        spawn_policy :surface
+      """)
+
+    assert {:error, diagnostics} = compile_plugin(source)
+    assert Enum.any?(diagnostics, &(&1.code == :invalid_game_config))
+  end
+
   test "application identity and explicit family catalogs work with a developer namespace" do
     artifact =
       compile_plugin!("""
       defmodule Forest do
         use Wyram.Plugin
-        catalog :blocks, Forest.Blocks
+        catalog Forest.Blocks
       end
       defmodule Forest.Blocks do
-        use Wyram.Plugin.Catalog, plugin: Forest, kind: :block
+        use Wyram.Plugin.Catalog, kind: :block
         include Forest.Blocks.Ground
       end
       defmodule Forest.Blocks.Ground do
-        use Wyram.Plugin.Catalog, plugin: Forest, kind: :block
+        use Wyram.Plugin.Catalog, kind: :block
         defblock Moss, id: "moss" do
           capability %Wyram.Capability.Material{color: {75, 120, 60}}
         end
@@ -43,16 +145,27 @@ defmodule Wyram.Plugin.CatalogAuthoringTest do
       source = """
       defmodule Forest do
         use Wyram.Plugin
-        catalog :blocks, Forest.Blocks
+        catalog Forest.Blocks
       end
       defmodule Forest.Blocks do
-        use Wyram.Plugin.Catalog, plugin: Forest, kind: :block
+        use Wyram.Plugin.Catalog, kind: :block
         #{body}
       end
       defmodule Forest.Family do
-        use Wyram.Plugin.Catalog, plugin: #{owner}, kind: #{inspect(family_kind)}
+        use Wyram.Plugin.Catalog, kind: #{inspect(family_kind)}
       end
       """
+
+      source =
+        if owner == "Foreign" do
+          String.replace(source, "use Wyram.Plugin.Catalog, kind: :block\nend", """
+          def __wyram_catalog__, do: %{plugin: Foreign, kind: :block, includes: [], declarations: []}
+          def __wyram_declarations__, do: []
+          end
+          """)
+        else
+          source
+        end
 
       assert {:error, diagnostics} = compile_plugin(source)
       assert Enum.any?(diagnostics, &(&1.code == expected))
@@ -62,8 +175,8 @@ defmodule Wyram.Plugin.CatalogAuthoringTest do
   test "catalog kind and entry metadata mistakes fail module compilation" do
     for source <- [
           "defmodule Forest do\nuse Wyram.Plugin, id: \"forest\"\nend",
-          "defmodule Forest.Catalog do\nuse Wyram.Plugin.Catalog, plugin: Forest, kind: :typo\nend",
-          "defmodule Forest.Catalog do\nuse Wyram.Plugin.Catalog, plugin: Forest, kind: :profile\nrequire Wyram.Plugin.Declarations\nWyram.Plugin.Declarations.defblock Moss, id: \"moss\"\nend"
+          "defmodule Forest.Catalog do\nuse Wyram.Plugin.Catalog, kind: :typo\nend",
+          "defmodule Forest.Catalog do\nuse Wyram.Plugin.Catalog, kind: :profile\nrequire Wyram.Plugin.Declarations\nWyram.Plugin.Declarations.defblock Moss, id: \"moss\"\nend"
         ] do
       assert_raise CompileError, fn -> compile_plugin(source) end
     end
@@ -73,12 +186,12 @@ defmodule Wyram.Plugin.CatalogAuthoringTest do
     artifact = compile_plugin!(content_source())
 
     assert Enum.sort(Enum.map(artifact.catalog.content, & &1.kind)) ==
-             [:biome, :character, :model, :profile, :terrain, :worldgen]
+             [:biome, :character, :model, :profile, :shaping, :worldgen]
 
     game = artifact.catalog.game
     assert game.profile.fly_enabled
     assert game.spawn == :surface
-    assert game.terrain.surface == Ref.new!("forest", "moss")
+    assert is_nil(game.palette)
     assert hd(game.worldgen.biomes).id == "forest:woodland"
     assert hd(game.models).id == "forest:dwarf"
     assert hd(game.characters).model == "forest:dwarf"
@@ -184,10 +297,10 @@ defmodule Wyram.Plugin.CatalogAuthoringTest do
     middle_source = """
     defmodule Middle do
       use Wyram.Plugin
-      catalog :characters, Middle.Characters
+      catalog Middle.Characters
     end
     defmodule Middle.Characters do
-      use Wyram.Plugin.Catalog, plugin: Middle, kind: :character
+      use Wyram.Plugin.Catalog, kind: :character
       defcharacter Hero, id: "hero" do
         %{profile: CatalogBase.Profiles.Walker, model: CatalogBase.Models.Dwarf}
       end
@@ -206,16 +319,16 @@ defmodule Wyram.Plugin.CatalogAuthoringTest do
     addon_source = """
     defmodule Addon do
       use Wyram.Plugin
-      catalog :blocks, Addon.Blocks
+      catalog Addon.Blocks
       game Addon.Game
     end
     defmodule Addon.Blocks do
-      use Wyram.Plugin.Catalog, plugin: Addon, kind: :block
+      use Wyram.Plugin.Catalog, kind: :block
       defblock Ground, id: "ground"
     end
     defmodule Addon.Game do
-      use Wyram.Game, plugin: Addon
-      terrain surface: Addon.Blocks.Ground, soil: Addon.Blocks.Ground, rock: Addon.Blocks.Ground
+      use Wyram.Game
+      palette surface: Addon.Blocks.Ground, soil: Addon.Blocks.Ground, rock: Addon.Blocks.Ground
       player Middle.Characters.Hero
     end
     """
@@ -255,57 +368,56 @@ defmodule Wyram.Plugin.CatalogAuthoringTest do
     """
     defmodule Forest do
       use Wyram.Plugin
-      catalog :blocks, Forest.Blocks
-      catalog :profiles, Forest.Profiles
-      catalog :models, Forest.Models
-      catalog :characters, Forest.Characters
-      catalog :biomes, Forest.Biomes
-      catalog :terrains, Forest.Terrains
-      catalog :worldgen, Forest.WorldGen
+      catalog Forest.Blocks
+      catalog Forest.Profiles
+      catalog Forest.Models
+      catalog Forest.Characters
+      catalog Forest.Biomes
+      catalog Forest.Shaping
+      catalog Forest.WorldGen
       game Forest.Game
     end
     defmodule Forest.Blocks do
-      use Wyram.Plugin.Catalog, plugin: Forest, kind: :block
+      use Wyram.Plugin.Catalog, kind: :block
       defblock Moss, id: "moss"
     end
     defmodule Forest.Profiles do
-      use Wyram.Plugin.Catalog, plugin: Forest, kind: :profile
+      use Wyram.Plugin.Catalog, kind: :profile
       defprofile Walker, id: "walker" do
         %{fly_enabled: true}
       end
     end
     defmodule Forest.Models do
-      use Wyram.Plugin.Catalog, plugin: Forest, kind: :model
+      use Wyram.Plugin.Catalog, kind: :model
       defmodel Dwarf, id: "dwarf" do
         %{bones: [%{name: "root", parent: nil, role: "root", pivot: [0.0, 0.0, 0.0],
           boxes: [%{center: [0.0, 0.9, 0.0], size: [0.5, 1.8, 0.3], color: [180, 160, 120]}]}]}
       end
     end
     defmodule Forest.Characters do
-      use Wyram.Plugin.Catalog, plugin: Forest, kind: :character
+      use Wyram.Plugin.Catalog, kind: :character
       defcharacter Hero, id: "hero" do
         %{profile: Forest.Profiles.Walker, model: Forest.Models.Dwarf}
       end
     end
     defmodule Forest.Biomes do
-      use Wyram.Plugin.Catalog, plugin: Forest, kind: :biome
+      use Wyram.Plugin.Catalog, kind: :biome
       defbiome Woodland, id: "woodland" do
         %{surface: Forest.Blocks.Moss, soil: Forest.Blocks.Moss, rock: Forest.Blocks.Moss}
       end
     end
     defmodule Forest.WorldGen do
-      use Wyram.Plugin.Catalog, plugin: Forest, kind: :worldgen
+      use Wyram.Plugin.Catalog, kind: :worldgen
       defworldgen Wilderness, id: "wilderness" do
-        %{terrain: Forest.Terrains.Default, biomes: [Forest.Biomes.Woodland]}
+        %{shaping: Forest.Shaping.Default, biomes: [Forest.Biomes.Woodland]}
       end
     end
-    defmodule Forest.Terrains do
-      use Wyram.Plugin.Catalog, plugin: Forest, kind: :terrain
-      defterrain Default, id: "default"
+    defmodule Forest.Shaping do
+      use Wyram.Plugin.Catalog, kind: :shaping
+      defshaping Default, id: "default"
     end
     defmodule Forest.Game do
-      use Wyram.Game, plugin: Forest
-      terrain surface: Forest.Blocks.Moss, soil: Forest.Blocks.Moss, rock: Forest.Blocks.Moss
+      use Wyram.Game
       worldgen Forest.WorldGen.Wilderness
       player Forest.Characters.Hero
       spawn_policy :surface
@@ -327,6 +439,7 @@ defmodule Wyram.Plugin.CatalogAuthoringTest do
     Process.put(:catalog_test_project,
       app: Keyword.get(options, :app, :forest),
       version: "0.1.0",
+      wyram_plugin: Keyword.get(options, :entry, Forest),
       deps: []
     )
 

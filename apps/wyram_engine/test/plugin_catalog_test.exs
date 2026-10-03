@@ -21,7 +21,12 @@ defmodule Wyram.Engine.PluginCatalogTest do
         water: Ref.new!("unrelated", "water")
       })
 
-    game = %{game_config("test_game") | worldgen: WorldGenConfig.new!(%{biomes: [biome]})}
+    game = %{
+      game_config("test_game")
+      | palette: nil,
+        worldgen: WorldGenConfig.new!(%{biomes: [biome]})
+    }
+
     packaged = package("test_game", [block("test_game", "grass", {1, 2, 3})], [], game)
     assert {:error, :invalid_game_configuration} = PluginCatalog.build([packaged])
   end
@@ -80,7 +85,7 @@ defmodule Wyram.Engine.PluginCatalogTest do
     assert registry.blocks == %{"test_game:grass" => 1}
     assert registry.colors == %{1 => [12, 34, 56]}
     assert registry.palette == [1, 1, 1]
-    assert registry.player_profile == Config.new!(%{terrain: terrain("test_game")}).profile
+    assert registry.player_profile == Config.new!(%{palette: palette("test_game")}).profile
   end
 
   test "requires explicit game selection when multiple compiled game configs are installed" do
@@ -335,22 +340,22 @@ defmodule Wyram.Engine.PluginCatalogTest do
     assert {:error, :invalid_catalog_interface} = PluginCatalog.build([changed])
   end
 
-  test "game terrain references must resolve to registered block identities" do
+  test "game palette references must resolve to registered block identities" do
     valid = package("game", [block("game", "grass", {1, 2, 3})], [], game_config("game"))
     missing_ref = Ref.new!("game", "missing")
-    game = put_in(valid.catalog.catalog.game.terrain.surface, missing_ref)
+    game = put_in(valid.catalog.catalog.game.palette.surface, missing_ref)
     invalid_game = with_compiled_game(valid, game)
     assert {:error, :invalid_game_configuration} = PluginCatalog.build([invalid_game])
   end
 
-  test "game terrain references require a direct declared plugin dependency" do
+  test "game palette references require a direct declared plugin dependency" do
     game = package("game", [block("game", "grass", {1, 2, 3})], [], game_config("game"))
     addon = package("addon", [block("addon", "grass", {4, 5, 6})], [])
     ref = Ref.new!("addon", "grass")
     external_config = game.catalog.catalog.game
-    external_config = put_in(external_config.terrain.surface, ref)
-    external_config = put_in(external_config.terrain.soil, ref)
-    external_config = put_in(external_config.terrain.rock, ref)
+    external_config = put_in(external_config.palette.surface, ref)
+    external_config = put_in(external_config.palette.soil, ref)
+    external_config = put_in(external_config.palette.rock, ref)
     external = with_compiled_game(game, external_config)
 
     assert {:error, :invalid_game_configuration} =
@@ -366,9 +371,9 @@ defmodule Wyram.Engine.PluginCatalogTest do
 
     missing = Ref.new!("missing", "grass")
     invalid_config = invalid_other.catalog.catalog.game
-    invalid_config = put_in(invalid_config.terrain.surface, missing)
-    invalid_config = put_in(invalid_config.terrain.soil, missing)
-    invalid_config = put_in(invalid_config.terrain.rock, missing)
+    invalid_config = put_in(invalid_config.palette.surface, missing)
+    invalid_config = put_in(invalid_config.palette.soil, missing)
+    invalid_config = put_in(invalid_config.palette.rock, missing)
     invalid_other = with_compiled_game(invalid_other, invalid_config)
 
     assert {:error, :invalid_game_configuration} =
@@ -592,7 +597,7 @@ defmodule Wyram.Engine.PluginCatalogTest do
 
   defp game_config(plugin_id) do
     Config.new!(%{
-      terrain: terrain(plugin_id)
+      palette: palette(plugin_id)
     })
   end
 
@@ -622,7 +627,7 @@ defmodule Wyram.Engine.PluginCatalogTest do
     put_in(package.catalog.interface_fingerprint, fingerprint(package.catalog.interface))
   end
 
-  defp terrain(plugin_id) do
+  defp palette(plugin_id) do
     %{
       surface: Ref.new!(plugin_id, "grass"),
       soil: Ref.new!(plugin_id, "grass"),

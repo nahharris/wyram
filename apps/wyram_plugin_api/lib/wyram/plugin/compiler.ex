@@ -119,11 +119,6 @@ defmodule Wyram.Plugin.Compiler do
     |> Base.encode16(case: :lower)
   end
 
-  @doc "Finds and validates compiled catalogs for every explicitly required Mix dependency."
-  def discover_dependency_interfaces(metadata) when is_map(metadata) do
-    DependencyArtifacts.discover(metadata)
-  end
-
   defp plugin_metadata(entry) do
     with :ok <- ensure_plugin_entry(entry) do
       metadata = entry.__wyram_plugin__()

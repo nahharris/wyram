@@ -30,13 +30,6 @@ defmodule Wyram.Plugin.Compiler.DependencyArtifacts do
       else: {:halt, dependency_load_failure(app, :application_identity_mismatch)}
   end
 
-  def discover(metadata) when is_map(metadata) do
-    with {:ok, artifacts} <- dependency_artifacts(),
-         :ok <- unique_dependency_ids(artifacts) do
-      required_dependency_map(Map.get(metadata, :dependencies, []), artifacts)
-    end
-  end
-
   def inputs(metadata, dependencies) when is_map(dependencies) do
     required = Map.get(metadata, :dependencies, [])
 
@@ -51,12 +44,6 @@ defmodule Wyram.Plugin.Compiler.DependencyArtifacts do
           {:halt, {:error, diagnostic}}
       end
     end)
-  end
-
-  def inputs(metadata, :discover) do
-    with {:ok, dependencies} <- discover(metadata) do
-      inputs(metadata, dependencies)
-    end
   end
 
   def inputs(_metadata, _dependencies) do
@@ -101,22 +88,6 @@ defmodule Wyram.Plugin.Compiler.DependencyArtifacts do
            "dependency #{inspect(id)} interface fingerprint is invalid",
            source(nil)
          )}
-  end
-
-  defp dependency_artifacts do
-    Mix.Project.deps_paths()
-    |> Map.keys()
-    |> Enum.reduce_while({:ok, []}, fn app, {:ok, artifacts} ->
-      case load_dependency_artifact(app) do
-        :none -> {:cont, {:ok, artifacts}}
-        {:ok, artifact} -> {:cont, {:ok, [artifact | artifacts]}}
-        {:error, diagnostic} -> {:halt, {:error, diagnostic}}
-      end
-    end)
-    |> case do
-      {:ok, artifacts} -> {:ok, Enum.reverse(artifacts)}
-      error -> error
-    end
   end
 
   defp load_dependency_artifact(app) do
@@ -415,64 +386,6 @@ defmodule Wyram.Plugin.Compiler.DependencyArtifacts do
       "dependency interface has invalid declaration compile data",
       source(nil)
     )
-  end
-
-  defp unique_dependency_ids(artifacts) do
-    ids = Enum.map(artifacts, & &1.plugin.id)
-
-    case duplicates(ids) do
-      [] ->
-        :ok
-
-      [id | _] ->
-        {:error,
-         Diagnostic.new!(
-           :duplicate_dependency_plugin_id,
-           "multiple Mix dependencies provide plugin ID #{inspect(id)}",
-           source(nil)
-         )}
-    end
-  end
-
-  defp required_dependency_map(required_ids, artifacts) when is_list(required_ids) do
-    by_id = Map.new(artifacts, &{&1.plugin.id, &1})
-
-    Enum.reduce_while(required_ids, {:ok, %{}}, fn id, {:ok, acc} ->
-      case Map.fetch(by_id, id) do
-        {:ok, artifact} ->
-          {:cont,
-           {:ok,
-            Map.put(acc, id, %{
-              interface: artifact.interface,
-              interface_fingerprint: artifact.interface_fingerprint
-            })}}
-
-        :error ->
-          {:halt,
-           {:error,
-            Diagnostic.new!(
-              :missing_dependency_interface,
-              "required plugin dependency #{inspect(id)} has no compiled Mix dependency catalog",
-              source(nil)
-            )}}
-      end
-    end)
-  end
-
-  defp required_dependency_map(_required, _artifacts) do
-    {:error,
-     Diagnostic.new!(
-       :invalid_dependency_list,
-       "plugin dependencies must be a list",
-       source(nil)
-     )}
-  end
-
-  defp duplicates(values) do
-    values
-    |> Enum.frequencies()
-    |> Enum.filter(fn {_value, count} -> count > 1 end)
-    |> Enum.map(&elem(&1, 0))
   end
 
   defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
