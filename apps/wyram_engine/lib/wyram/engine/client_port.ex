@@ -5,7 +5,7 @@ defmodule Wyram.Engine.ClientPort do
 
   alias Wyram.Engine.{Characters, ChunkStream, Native, Paths, PluginManager, World}
 
-  @radius 2
+  @radius 4
   @chunk_side 16
 
   def start_link(_), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
