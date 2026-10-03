@@ -15,4 +15,17 @@ defmodule Wyram.Plugin.ModuleName do
   end
 
   def valid?(_), do: false
+
+  @doc "Validates a packaged module name without allocating an atom."
+  def valid_string?(name) when is_binary(name) do
+    case String.split(name, ".") do
+      ["Elixir" | segments] when segments != [] ->
+        Enum.all?(segments, &Regex.match?(@segment, &1))
+
+      _ ->
+        false
+    end
+  end
+
+  def valid_string?(_), do: false
 end

@@ -21,6 +21,20 @@ defmodule Wyram.Plugin.DSL.Literal do
     end
   end
 
+  defp normalize({{:., _, [module_ast, function]}, _, args}, env)
+       when function in [:pixels, :blocks] and is_list(args) do
+    with Wyram.Units <- Macro.expand(module_ast, env),
+         {:ok, values} <- reduce_list(args, env, []),
+         true <- Enum.all?(values, &is_number/1),
+         true <- {function, length(values)} in [pixels: 1, blocks: 1, blocks: 2] do
+      {:ok, apply(Wyram.Units, function, values)}
+    else
+      _ -> :error
+    end
+  rescue
+    ArgumentError -> :error
+  end
+
   defp normalize({:%, meta, [module_ast, {:%{}, _map_meta, fields}]}, env)
        when is_list(fields) do
     module = Entry.module!(module_ast, line_env(env, meta), "struct name")
@@ -47,11 +61,7 @@ defmodule Wyram.Plugin.DSL.Literal do
   end
 
   defp normalize(ast, env) when is_tuple(ast) do
-    cond do
-      Macro.quoted_literal?(ast) -> {:ok, ast}
-      ast_call?(ast) -> :error
-      true -> normalize_tuple(ast, env)
-    end
+    if ast_call?(ast), do: :error, else: normalize_tuple(ast, env)
   end
 
   defp normalize(_ast, _env), do: :error

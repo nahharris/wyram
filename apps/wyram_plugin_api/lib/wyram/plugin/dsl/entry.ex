@@ -2,34 +2,57 @@ defmodule Wyram.Plugin.DSL.Entry do
   @moduledoc false
 
   alias Wyram.Block.Ref
-
-  @keys [:id, :dependencies, :declarations, :providers, :game]
+  alias Wyram.Plugin.ModuleName
 
   def options!(options, env) do
     options = keyword_options!(options, env, "plugin")
-    reject_unknown!(options, @keys, env, "plugin")
+    reject_unknown!(options, [], env, "plugin")
 
-    id = fetch_id!(options, env)
-    dependencies = literal_list!(options, :dependencies, [], env)
+    unless plugin!(env) == env.module,
+      do: error!(env, "use Wyram.Plugin belongs in the configured Mix entrypoint")
 
-    unless Enum.all?(dependencies, &Ref.valid_plugin_id?/1) do
-      error!(env, "dependencies must be a literal list of valid plugin IDs")
+    app = Mix.Project.config()[:app]
+
+    unless is_atom(app) and app not in [nil, true, false] and
+             Ref.valid_plugin_id?(Atom.to_string(app)) do
+      error!(env, "Wyram plugins require a valid :app in mix.exs")
     end
-
-    if length(dependencies) != length(Enum.uniq(dependencies)) do
-      error!(env, "dependencies cannot contain duplicates")
-    end
-
-    if id in dependencies, do: error!(env, "a plugin cannot depend on itself")
 
     %{
-      id: id,
-      dependencies: dependencies,
-      declaration_modules:
-        [env.module | module_list!(options, :declarations, env)] |> Enum.uniq(),
-      providers: module_list!(options, :providers, env),
-      game: module_option!(options, :game, env)
+      id: Atom.to_string(app),
+      dependencies: [],
+      declaration_modules: [env.module],
+      catalogs: [],
+      providers: [],
+      game: nil
     }
+  end
+
+  def project_entry do
+    case Mix.Project.config()[:wyram_plugin] do
+      nil ->
+        :none
+
+      entry ->
+        if ModuleName.valid?(entry),
+          do: {:ok, entry},
+          else: {:error, ":wyram_plugin must be a module alias"}
+    end
+  end
+
+  def plugin!(env) do
+    case project_entry() do
+      {:ok, entry} -> entry
+      _ -> error!(env, "declare the plugin entry module with wyram_plugin: Module in mix.exs")
+    end
+  end
+
+  def local_id!(symbol, options, env) do
+    id =
+      Keyword.get_lazy(options, :id, fn -> symbol |> Atom.to_string() |> Macro.underscore() end)
+
+    unless Ref.valid_local_id?(id), do: error!(env, "id must be a valid literal local ID string")
+    id
   end
 
   def keyword_options!(options, env, label) when is_list(options) do
@@ -60,19 +83,6 @@ defmodule Wyram.Plugin.DSL.Entry do
     raise CompileError, file: env.file, line: env.line, description: message
   end
 
-  defp fetch_id!(options, env) do
-    case Keyword.fetch(options, :id) do
-      {:ok, id} when is_binary(id) ->
-        if Ref.valid_plugin_id?(id), do: id, else: error!(env, "plugin id is invalid")
-
-      {:ok, _} ->
-        error!(env, "plugin id must be a literal string")
-
-      :error ->
-        error!(env, "missing required plugin id option")
-    end
-  end
-
   defp reject_unknown!(options, allowed, env, label) do
     case Keyword.keys(options) -- allowed do
       [] ->
@@ -80,41 +90,6 @@ defmodule Wyram.Plugin.DSL.Entry do
 
       unknown ->
         error!(env, "unknown #{label} option(s): #{Enum.map_join(unknown, ", ", &inspect/1)}")
-    end
-  end
-
-  defp literal_list!(options, key, default, env) do
-    case Keyword.get(options, key, default) do
-      values when is_list(values) ->
-        if Enum.all?(values, &is_binary/1),
-          do: values,
-          else: error!(env, "#{key} must be a literal list of strings")
-
-      _ ->
-        error!(env, "#{key} must be a literal list of strings")
-    end
-  end
-
-  defp module_list!(options, key, env) do
-    case Keyword.get(options, key, []) do
-      values when is_list(values) ->
-        modules = Enum.map(values, &module!(&1, env, "#{key} entries"))
-
-        if length(modules) == length(Enum.uniq(modules)) do
-          modules
-        else
-          error!(env, "#{key} cannot contain duplicate modules")
-        end
-
-      _ ->
-        error!(env, "#{key} must be a literal list of module aliases")
-    end
-  end
-
-  defp module_option!(options, key, env) do
-    case Keyword.get(options, key) do
-      nil -> nil
-      ast -> module!(ast, env, key)
     end
   end
 end

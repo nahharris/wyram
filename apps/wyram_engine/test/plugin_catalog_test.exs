@@ -2,6 +2,7 @@ defmodule Wyram.Engine.PluginCatalogTest do
   use ExUnit.Case, async: true
 
   alias Wyram.Block.Ref
+  alias Wyram.Character.Profile
   alias Wyram.Engine.PluginCatalog
   alias Wyram.Game.Config
   alias Wyram.Plugin.{Declaration, SourceLocation}
@@ -20,7 +21,12 @@ defmodule Wyram.Engine.PluginCatalogTest do
         water: Ref.new!("unrelated", "water")
       })
 
-    game = %{game_config("test_game") | worldgen: WorldGenConfig.new!(%{biomes: [biome]})}
+    game = %{
+      game_config("test_game")
+      | palette: nil,
+        worldgen: WorldGenConfig.new!(%{biomes: [biome]})
+    }
+
     packaged = package("test_game", [block("test_game", "grass", {1, 2, 3})], [], game)
     assert {:error, :invalid_game_configuration} = PluginCatalog.build([packaged])
   end
@@ -79,7 +85,7 @@ defmodule Wyram.Engine.PluginCatalogTest do
     assert registry.blocks == %{"test_game:grass" => 1}
     assert registry.colors == %{1 => [12, 34, 56]}
     assert registry.palette == [1, 1, 1]
-    assert registry.player_profile == Config.new!(%{terrain: terrain("test_game")}).profile
+    assert registry.player_profile == Config.new!(%{palette: palette("test_game")}).profile
   end
 
   test "requires explicit game selection when multiple compiled game configs are installed" do
@@ -334,22 +340,22 @@ defmodule Wyram.Engine.PluginCatalogTest do
     assert {:error, :invalid_catalog_interface} = PluginCatalog.build([changed])
   end
 
-  test "game terrain references must resolve to registered block identities" do
+  test "game palette references must resolve to registered block identities" do
     valid = package("game", [block("game", "grass", {1, 2, 3})], [], game_config("game"))
     missing_ref = Ref.new!("game", "missing")
-    game = put_in(valid.catalog.catalog.game.terrain.surface, missing_ref)
+    game = put_in(valid.catalog.catalog.game.palette.surface, missing_ref)
     invalid_game = with_compiled_game(valid, game)
     assert {:error, :invalid_game_configuration} = PluginCatalog.build([invalid_game])
   end
 
-  test "game terrain references require a direct declared plugin dependency" do
+  test "game palette references require a direct declared plugin dependency" do
     game = package("game", [block("game", "grass", {1, 2, 3})], [], game_config("game"))
     addon = package("addon", [block("addon", "grass", {4, 5, 6})], [])
     ref = Ref.new!("addon", "grass")
     external_config = game.catalog.catalog.game
-    external_config = put_in(external_config.terrain.surface, ref)
-    external_config = put_in(external_config.terrain.soil, ref)
-    external_config = put_in(external_config.terrain.rock, ref)
+    external_config = put_in(external_config.palette.surface, ref)
+    external_config = put_in(external_config.palette.soil, ref)
+    external_config = put_in(external_config.palette.rock, ref)
     external = with_compiled_game(game, external_config)
 
     assert {:error, :invalid_game_configuration} =
@@ -365,9 +371,9 @@ defmodule Wyram.Engine.PluginCatalogTest do
 
     missing = Ref.new!("missing", "grass")
     invalid_config = invalid_other.catalog.catalog.game
-    invalid_config = put_in(invalid_config.terrain.surface, missing)
-    invalid_config = put_in(invalid_config.terrain.soil, missing)
-    invalid_config = put_in(invalid_config.terrain.rock, missing)
+    invalid_config = put_in(invalid_config.palette.surface, missing)
+    invalid_config = put_in(invalid_config.palette.soil, missing)
+    invalid_config = put_in(invalid_config.palette.rock, missing)
     invalid_other = with_compiled_game(invalid_other, invalid_config)
 
     assert {:error, :invalid_game_configuration} =
@@ -427,6 +433,74 @@ defmodule Wyram.Engine.PluginCatalogTest do
     assert {:error, :catalog_identity_mismatch} = PluginCatalog.build([changed])
   end
 
+  test "compiled content is registered by kind and validated even when unused by the game" do
+    package = package("game", [block("game", "grass", {1, 2, 3})], [], game_config("game"))
+    module = "Elixir.Forest.Profiles.Walker"
+    package = with_owned_module(package, module)
+
+    content = %{
+      id: "game:walker",
+      plugin_id: "game",
+      local_id: "walker",
+      kind: :profile,
+      module: module,
+      data: Profile.default(),
+      references: []
+    }
+
+    package = with_content(package, [content])
+    assert {:ok, registry} = PluginCatalog.build([package])
+    assert registry.content[{:profile, "game:walker"}] == content.data
+
+    invalid = %{content | data: %{content.data | radius: -1}}
+
+    assert {:error, :invalid_content_catalog} =
+             PluginCatalog.build([with_content(package, [invalid])])
+
+    assert {:error, :invalid_content_catalog} =
+             PluginCatalog.build([with_content(package, [content, content])])
+  end
+
+  test "runtime rejects changed typed bindings despite a refreshed interface fingerprint" do
+    grass = block("game", "grass", {1, 2, 3})
+    stone = block("game", "stone", {4, 5, 6})
+    package = package("game", [grass, stone], [], game_config("game"))
+    module = "Elixir.Forest.Biomes.Woodland"
+    package = with_owned_module(package, module)
+    ref = Ref.new!("game", "grass")
+
+    content = %{
+      id: "game:woodland",
+      plugin_id: "game",
+      local_id: "woodland",
+      kind: :biome,
+      module: module,
+      data: Biome.new!(%{id: "game:woodland", surface: ref, soil: ref, rock: ref}),
+      references: [%{id: grass.id, plugin_id: "game", kind: :block, module: grass.module}]
+    }
+
+    assert {:ok, _registry} = PluginCatalog.build([with_content(package, [content])])
+
+    changed_data = put_in(content.data.surface, Ref.new!("game", "stone"))
+    wrong_kind = put_in(content.references, [%{hd(content.references) | kind: :profile}])
+    wrong_owner = put_in(content.references, [%{hd(content.references) | module: stone.module}])
+
+    for invalid <- [changed_data, wrong_kind, wrong_owner, %{content | references: []}] do
+      assert {:error, :invalid_content_catalog} =
+               PluginCatalog.build([with_content(package, [invalid])])
+    end
+
+    mismatch = with_content(package, [content]) |> put_in([:catalog, :catalog, :content], [])
+    assert {:error, :invalid_catalog_interface} = PluginCatalog.build([mismatch])
+  end
+
+  defp with_content(package, content) do
+    package
+    |> put_in([:catalog, :catalog, :content], content)
+    |> put_in([:catalog, :interface, :compiled_content], content)
+    |> refresh_fingerprint()
+  end
+
   defp package(id, blocks, dependencies, game_config \\ nil) do
     entry = "Elixir.WyramMods.#{Macro.camelize(id)}"
     block_modules = Enum.map(blocks, & &1.module)
@@ -461,6 +535,7 @@ defmodule Wyram.Engine.PluginCatalogTest do
       modules: modules,
       game: game_provider,
       compiled_game: game_config,
+      compiled_content: [],
       compiled_blocks: blocks,
       module_hashes: Map.new(modules, &{&1, String.duplicate("a", 64)})
     }
@@ -475,7 +550,13 @@ defmodule Wyram.Engine.PluginCatalogTest do
         provider_modules: if(game_provider, do: [game_provider], else: []),
         game: game_provider
       },
-      catalog: %{id: id, dependencies: dependencies, blocks: blocks, game: game_config},
+      catalog: %{
+        id: id,
+        dependencies: dependencies,
+        blocks: blocks,
+        content: [],
+        game: game_config
+      },
       interface: interface,
       interface_fingerprint: fingerprint(interface),
       dependency_interfaces: %{}
@@ -516,7 +597,7 @@ defmodule Wyram.Engine.PluginCatalogTest do
 
   defp game_config(plugin_id) do
     Config.new!(%{
-      terrain: terrain(plugin_id)
+      palette: palette(plugin_id)
     })
   end
 
@@ -546,7 +627,7 @@ defmodule Wyram.Engine.PluginCatalogTest do
     put_in(package.catalog.interface_fingerprint, fingerprint(package.catalog.interface))
   end
 
-  defp terrain(plugin_id) do
+  defp palette(plugin_id) do
     %{
       surface: Ref.new!(plugin_id, "grass"),
       soil: Ref.new!(plugin_id, "grass"),

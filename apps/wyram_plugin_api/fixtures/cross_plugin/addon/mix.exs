@@ -1,4 +1,4 @@
-defmodule WyramMods.CrossPluginAddon.MixProject do
+defmodule CrossPluginAddon.MixProject do
   use Mix.Project
 
   def project do
@@ -15,7 +15,7 @@ defmodule WyramMods.CrossPluginAddon.MixProject do
         {:wyram_cross_plugin_base, path: "../base"}
       ],
       compilers: [:wyram_prepare] ++ Mix.compilers() ++ [:wyram],
-      wyram_plugin: [entry: WyramMods.CrossPluginAddon.Plugin]
+      wyram_plugin: CrossPluginAddon.Plugin
     ]
   end
 

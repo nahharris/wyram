@@ -188,7 +188,7 @@ defmodule Wyram.Engine.World do
            WorldGenerator.compile(
              config,
              saved.seed,
-             PluginManager.terrain_palette(),
+             PluginManager.palette(),
              PluginManager.blocks()
            ) do
       {:ok, Map.merge(saved, %{path: path, generation: generation})}

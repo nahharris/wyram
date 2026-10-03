@@ -127,6 +127,46 @@ defmodule Wyram.Engine.PluginManagerRuntimeSafetyTest do
     refute :code.is_loaded(module)
   end
 
+  test "rejects a module already available on the code path before loading it" do
+    module =
+      Module.concat([
+        AvailablePluginCollisionFixture,
+        "Module#{System.unique_integer([:positive])}"
+      ])
+
+    beam = compile_module(module, quote(do: def(value, do: :original)))
+    :code.delete(module)
+    :code.purge(module)
+
+    directory =
+      Path.join(
+        System.tmp_dir!(),
+        "wyram-available-collision-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(directory)
+    name = Atom.to_string(module)
+    File.write!(Path.join(directory, name <> ".beam"), beam)
+    :code.add_patha(String.to_charlist(directory))
+
+    on_exit(fn ->
+      :code.del_path(String.to_charlist(directory))
+      :code.delete(module)
+      :code.purge(module)
+      File.rm_rf(directory)
+    end)
+
+    refute :code.is_loaded(module)
+
+    package = %{
+      manifest: %{"id" => "collision", "modules" => [name]},
+      contents: [{String.to_charlist("ebin/#{name}.beam"), beam}]
+    }
+
+    assert {:error, :module_collision} = PluginManager.load_packages([package], ["collision"])
+    refute :code.is_loaded(module)
+  end
+
   defp compile_module(module, body) do
     quoted =
       quote do

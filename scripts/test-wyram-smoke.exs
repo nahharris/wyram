@@ -8,8 +8,8 @@ package = Path.join(System.fetch_env!("WYRAM_DATA_DIR"), "plugins/wyram.wyrplug"
 {:ok, files} = :zip.extract(String.to_charlist(package), [:memory])
 {_, manifest_bytes} = Enum.find(files, fn {name, _} -> name == ~c"manifest.json" end)
 manifest = Jason.decode!(manifest_bytes)
-true = "Elixir.WyramMods.Characters" in manifest["modules"]
-true = "Elixir.WyramMods.Wyram.Blocks.Grass" in manifest["modules"]
+true = "Elixir.Wyram.Characters" in manifest["modules"]
+true = "Elixir.Wyram.Blocks.Grass" in manifest["modules"]
 false = Map.has_key?(manifest, "api")
 {_, catalog_bytes} = Enum.find(files, fn {name, _} -> name == ~c"catalog.term" end)
 
@@ -22,16 +22,11 @@ true = Enum.sort(artifact.plugin.owned_modules) == manifest["modules"]
 blocks = PluginManager.blocks()
 true = PluginManager.plugin_versions() == %{"wyram" => "0.1.0"}
 
-true =
-  PluginManager.terrain_palette() ==
-    Enum.map(
-      ["wyram:grass", "wyram:dirt", "wyram:stone"],
-      &Map.fetch!(blocks, &1)
-    )
+true = is_nil(PluginManager.palette())
 
 true = World.get_block(0, -192, 0) == blocks["wyram:stone"]
 
-true = PluginManager.player_profile() == WyramMods.Characters.player_profile()
+true = PluginManager.player_profile() == artifact.catalog.game.profile
 
 models = PluginManager.character_models()
 true = length(models) == 2

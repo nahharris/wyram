@@ -2,7 +2,16 @@ defmodule Wyram.Plugin.Compiler do
   @moduledoc "Build-time linker and deterministic catalog artifact writer."
 
   alias Wyram.Plugin.Compiler.{Beam, DependencyArtifacts}
-  alias Wyram.Plugin.{Diagnostic, GameCompiler, Linker, ModuleName, SourceLocation}
+
+  alias Wyram.Plugin.{
+    CatalogCollector,
+    ContentCompiler,
+    Diagnostic,
+    GameCompiler,
+    Linker,
+    ModuleName,
+    SourceLocation
+  }
 
   @magic :wyram_plugin_catalog
   @max_catalog_bytes 16 * 1024 * 1024
@@ -21,13 +30,17 @@ defmodule Wyram.Plugin.Compiler do
     File.rm(path)
 
     with {:ok, metadata} <- plugin_metadata(entry),
-         {:ok, declarations} <- collect_declarations(entry, metadata),
+         {:ok, dependency_artifacts} <- dependency_artifacts(options),
+         metadata <- %{metadata | dependencies: dependency_artifacts |> Map.keys() |> Enum.sort()},
          {:ok, modules, module_hashes} <-
            owned_modules(Keyword.get(options, :compile_path, Mix.Project.compile_path())),
          :ok <- validate_module_namespace(modules, entry),
+         {:ok, collected} <- CatalogCollector.collect(metadata, modules),
+         declarations <- collected.blocks,
+         metadata <- %{metadata | declaration_modules: collected.modules},
          :ok <- validate_owned_modules(entry, metadata, declarations, modules),
          {:ok, dependency_interfaces} <-
-           DependencyArtifacts.inputs(metadata, Keyword.get(options, :dependencies, :discover)),
+           DependencyArtifacts.inputs(metadata, dependency_artifacts),
          plugin <-
            Map.merge(metadata, %{
              entry: entry,
@@ -42,8 +55,20 @@ defmodule Wyram.Plugin.Compiler do
              dependency_interfaces,
              Keyword.get(options, :link_options, [])
            ),
-         {:ok, game_config} <- GameCompiler.compile(plugin, linked.catalog, dependency_interfaces),
-         {:ok, artifact} <- artifact(plugin, linked, dependency_interfaces, game_config),
+         {:ok, content} <-
+           ContentCompiler.compile(
+             plugin,
+             collected.content,
+             linked.catalog,
+             dependency_interfaces
+           ),
+         {:ok, game_config} <-
+           GameCompiler.compile(
+             plugin,
+             Map.put(linked.catalog, :content, content),
+             dependency_interfaces
+           ),
+         {:ok, artifact} <- artifact(plugin, linked, dependency_interfaces, game_config, content),
          :ok <- write_artifact(path, artifact) do
       {:ok, artifact}
     else
@@ -80,15 +105,18 @@ defmodule Wyram.Plugin.Compiler do
      ]}
   end
 
+  defp dependency_artifacts(options) do
+    case Keyword.get(options, :dependencies, :discover) do
+      :discover -> DependencyArtifacts.project_dependencies()
+      dependencies when is_map(dependencies) -> {:ok, dependencies}
+      _ -> {:error, :invalid_dependency_interfaces}
+    end
+  end
+
   @doc "Computes the shared deterministic interface fingerprint."
   def fingerprint(interface) do
     :crypto.hash(:sha256, :erlang.term_to_binary(interface, [:deterministic]))
     |> Base.encode16(case: :lower)
-  end
-
-  @doc "Finds and validates compiled catalogs for every explicitly required Mix dependency."
-  def discover_dependency_interfaces(metadata) when is_map(metadata) do
-    DependencyArtifacts.discover(metadata)
   end
 
   defp plugin_metadata(entry) do
@@ -127,7 +155,8 @@ defmodule Wyram.Plugin.Compiler do
   end
 
   defp valid_plugin_metadata_keys?(metadata) do
-    Map.keys(metadata) -- [:id, :dependencies, :declaration_modules, :providers, :game] == []
+    Map.keys(metadata) -- [:id, :dependencies, :declaration_modules, :catalogs, :providers, :game] ==
+      []
   end
 
   defp valid_plugin_identity?(metadata) do
@@ -139,42 +168,6 @@ defmodule Wyram.Plugin.Compiler do
     is_list(Map.get(metadata, :declaration_modules)) and is_list(Map.get(metadata, :providers)) and
       Enum.all?(metadata.declaration_modules, &ModuleName.valid?/1) and
       Enum.all?(metadata.providers, &ModuleName.valid?/1)
-  end
-
-  defp collect_declarations(entry, metadata) do
-    Enum.reduce_while(metadata.declaration_modules, {:ok, []}, fn module, {:ok, declarations} ->
-      case declaration_values(module, entry) do
-        {:ok, values} -> {:cont, {:ok, declarations ++ values}}
-        {:error, diagnostic} -> {:halt, {:error, diagnostic}}
-      end
-    end)
-  end
-
-  defp declaration_values(module, entry) do
-    if Code.ensure_loaded?(module) and function_exported?(module, :__wyram_declarations__, 0) do
-      case module.__wyram_declarations__() do
-        values when is_list(values) -> {:ok, values}
-        _ -> {:error, invalid_contributor(entry, module)}
-      end
-    else
-      {:error, missing_contributor(entry, module)}
-    end
-  end
-
-  defp invalid_contributor(entry, module) do
-    Diagnostic.new!(
-      :invalid_declaration_contributor,
-      "#{inspect(module)} returned an invalid declaration list",
-      source(entry)
-    )
-  end
-
-  defp missing_contributor(entry, module) do
-    Diagnostic.new!(
-      :missing_declaration_contributor,
-      "#{inspect(module)} does not export __wyram_declarations__/0",
-      source(entry)
-    )
   end
 
   defp validate_owned_modules(entry, metadata, declarations, owned_modules) do
@@ -202,7 +195,7 @@ defmodule Wyram.Plugin.Compiler do
   end
 
   defp validate_module_namespace(modules, entry) do
-    invalid = Enum.reject(modules, &String.starts_with?(Atom.to_string(&1), "Elixir.WyramMods."))
+    invalid = Enum.reject(modules, &ModuleName.valid?/1)
 
     if invalid == [] do
       :ok
@@ -210,7 +203,7 @@ defmodule Wyram.Plugin.Compiler do
       {:error,
        Diagnostic.new!(
          :invalid_plugin_module_namespace,
-         "plugin-owned modules must use the WyramMods namespace: #{inspect(invalid)}",
+         "plugin-owned modules must have valid Elixir names: #{inspect(invalid)}",
          source(entry)
        )}
     end
@@ -267,7 +260,7 @@ defmodule Wyram.Plugin.Compiler do
     end
   end
 
-  defp artifact(plugin, linked, dependency_interfaces, game_config) do
+  defp artifact(plugin, linked, dependency_interfaces, game_config, content) do
     id = plugin.id
     interface = linked.interface
     catalog = linked.catalog
@@ -276,6 +269,7 @@ defmodule Wyram.Plugin.Compiler do
       id: id,
       dependencies: Enum.sort(plugin.dependencies),
       blocks: Enum.map(catalog.blocks, &serialize_block/1),
+      content: content,
       game: game_config
     }
 
@@ -295,10 +289,14 @@ defmodule Wyram.Plugin.Compiler do
 
     interface =
       interface
+      |> Map.update!(:plugins, fn [owner | rest] ->
+        [Map.put(owner, :compiled_content, content) | rest]
+      end)
       |> Map.drop([:symbols])
       |> serialize_interface()
       |> Map.put(:compiled_blocks, serialized_catalog.blocks)
       |> Map.put(:compiled_game, serialized_catalog.game)
+      |> Map.put(:compiled_content, serialized_catalog.content)
 
     with :ok <- validate_export_size(interface) do
       payload = %{

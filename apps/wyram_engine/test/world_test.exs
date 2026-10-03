@@ -20,8 +20,8 @@ defmodule Wyram.Engine.WorldTest do
 
   test "packaged manifests bind compiled catalogs to their owned modules" do
     for {id, entry, dependencies} <- [
-          {"test_terrain", "Elixir.WyramMods.TestTerrain", []},
-          {"test_addon", "Elixir.WyramMods.TestAddon", ["test_terrain"]}
+          {"test_terrain", "Elixir.TestTerrain", []},
+          {"test_addon", "Elixir.TestAddon", ["test_terrain"]}
         ] do
       package = Path.join(Paths.data_dir(), "plugins/#{id}.wyrplug")
       assert {:ok, files} = :zip.extract(String.to_charlist(package), [:memory])
@@ -64,7 +64,7 @@ defmodule Wyram.Engine.WorldTest do
   test "compiled test terrain defines the native palette without game block names" do
     blocks = PluginManager.blocks()
 
-    assert PluginManager.terrain_palette() ==
+    assert PluginManager.palette() ==
              Enum.map(
                ["test_terrain:violet", "test_terrain:ochre", "test_terrain:slate"],
                &Map.fetch!(blocks, &1)

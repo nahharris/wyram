@@ -110,7 +110,7 @@ defmodule Wyram.Plugin.CompilerTest do
     refute File.exists?(path)
   end
 
-  test "compiler rejects plugin modules outside the runtime package namespace" do
+  test "compiler accepts developer-chosen plugin module namespaces" do
     fixture =
       compile_fixture("bad_namespace", "compiler-bad-namespace", [], nil,
         prefix: "Wyram.Plugin.CompilerFixtureBadNamespace"
@@ -123,14 +123,14 @@ defmodule Wyram.Plugin.CompilerTest do
       File.rm_rf(fixture.compile_path)
     end)
 
-    assert {:error, [diagnostic]} =
+    assert {:ok, artifact} =
              Compiler.compile_entry(fixture.entry,
                catalog_path: path,
                compile_path: fixture.compile_path
              )
 
-    assert diagnostic.code == :invalid_plugin_module_namespace
-    refute File.exists?(path)
+    assert artifact.plugin.id == "compiler-bad-namespace"
+    assert File.exists?(path)
   end
 
   test "dependent compilation preserves exact interface fingerprints and expands dependency templates" do
@@ -249,7 +249,7 @@ defmodule Wyram.Plugin.CompilerTest do
   defp dependency_artifact(interface),
     do: %{interface: interface, interface_fingerprint: Compiler.fingerprint(interface)}
 
-  defp compile_fixture(suffix, plugin_id, dependencies, template_module, options \\ []) do
+  defp compile_fixture(suffix, plugin_id, _dependencies, template_module, options \\ []) do
     module_prefix =
       Keyword.get(options, :prefix, "WyramMods.CompilerFixture#{String.capitalize(suffix)}")
 
@@ -260,14 +260,12 @@ defmodule Wyram.Plugin.CompilerTest do
 
     source = """
     defmodule #{entry_name} do
-      use Wyram.Plugin,
-        id: #{inspect(plugin_id)},
-        dependencies: #{inspect(dependencies)},
-        declarations: [#{blocks_name}]
+      use Wyram.Plugin
+      catalog #{blocks_name}
     end
 
     defmodule #{blocks_name} do
-      use Wyram.Plugin.Declarations, plugin: #{entry_name}
+      use Wyram.Plugin.Catalog, kind: :block
       defblock Stone, id: "stone" do
         #{body}
         capability %Wyram.Capability.Material{color: {12, 34, 56}, mode: :opaque}#{override}
@@ -280,7 +278,14 @@ defmodule Wyram.Plugin.CompilerTest do
     file = Path.join(compile_path, "fixture.ex")
     File.write!(file, source)
 
-    compiled = Code.compile_file(file)
+    compiled =
+      Wyram.PluginTestProject.with_app(
+        String.to_atom(plugin_id),
+        Module.concat([entry_name]),
+        fn ->
+          Code.compile_file(file)
+        end
+      )
 
     Enum.each(compiled, fn {module, bytes} ->
       beam_path = Path.join(compile_path, Atom.to_string(module) <> ".beam")

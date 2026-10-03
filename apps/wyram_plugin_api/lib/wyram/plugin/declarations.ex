@@ -1,27 +1,12 @@
 defmodule Wyram.Plugin.Declarations do
-  @moduledoc "Collects block declarations for one plugin entry module."
+  @moduledoc false
 
   alias Wyram.Block.Ref
   alias Wyram.Plugin.{Declaration, SourceLocation}
   alias Wyram.Plugin.DSL.{Capability, CollectedDeclaration, Entry, Literal, StructLiteral}
 
-  defmacro __using__(options) do
-    options = Entry.keyword_options!(options, __CALLER__, "declarations")
-    unknown = Keyword.keys(options) -- [:plugin]
-
-    if unknown != [],
-      do: Entry.error!(__CALLER__, "unknown declarations option(s): #{inspect(unknown)}")
-
-    plugin = Entry.module!(Keyword.get(options, :plugin), __CALLER__, "plugin")
-    Module.register_attribute(__CALLER__.module, :wyram_collected_declarations, accumulate: true)
-    Module.put_attribute(__CALLER__.module, :wyram_plugin_module, plugin)
-
-    quote do
-      @before_compile Wyram.Plugin.Declarations
-      import Wyram.Plugin.Declarations, only: [defblock: 2, defblock: 3]
-    end
-  end
-
+  defmacro defblock(name), do: define_block(name, [], nil, __CALLER__)
+  defmacro defblock(name, do: body), do: define_block(name, [], body, __CALLER__)
   defmacro defblock(name, options), do: define_block(name, options, nil, __CALLER__)
   defmacro defblock(name, options, do: body), do: define_block(name, options, body, __CALLER__)
 
@@ -35,9 +20,11 @@ defmodule Wyram.Plugin.Declarations do
   end
 
   defp define_block(name_ast, options_ast, body, env) do
-    {template?, local_id} = block_role!(options_ast, env)
+    unless Module.get_attribute(env.module, :wyram_catalog_kind) in [nil, :block],
+      do: Entry.error!(env, "defblock requires a block catalog")
 
     symbol = symbol!(name_ast, env)
+    {template?, local_id} = block_role!(symbol, options_ast, env)
     plugin = Module.get_attribute(env.module, :wyram_plugin_module)
     module = Module.concat(plugin, "Blocks.#{symbol}")
     source = source!(env, name_ast)
@@ -178,14 +165,16 @@ defmodule Wyram.Plugin.Declarations do
     end)
   end
 
-  defp block_role!(options_ast, env) do
+  defp block_role!(symbol, options_ast, env) do
     options = Entry.keyword_options!(options_ast, env, "defblock")
     reject_unknown_block_options!(options, env)
     template? = Keyword.get(options, :template, false)
-    local_id = Keyword.get(options, :id)
-
     unless is_boolean(template?), do: Entry.error!(env, "template must be a boolean literal")
-    validate_block_identity!(template?, local_id, env)
+
+    if template? and Keyword.has_key?(options, :id),
+      do: Entry.error!(env, "template declarations cannot have an id")
+
+    local_id = if template?, do: nil, else: Entry.local_id!(symbol, options, env)
 
     {template?, local_id}
   end
@@ -196,18 +185,6 @@ defmodule Wyram.Plugin.Declarations do
       unknown -> Entry.error!(env, "unknown defblock option(s): #{inspect(unknown)}")
     end
   end
-
-  defp validate_block_identity!(true, nil, _env), do: :ok
-
-  defp validate_block_identity!(true, _local_id, env),
-    do: Entry.error!(env, "template declarations cannot have an id")
-
-  defp validate_block_identity!(false, local_id, env) when is_binary(local_id) do
-    unless Ref.valid_local_id?(local_id), do: Entry.error!(env, "block id is invalid")
-  end
-
-  defp validate_block_identity!(false, _local_id, env),
-    do: Entry.error!(env, "registered blocks require a literal id string")
 
   defp generated_name_available?(declaration) do
     case :code.is_loaded(declaration.module) do

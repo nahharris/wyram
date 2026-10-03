@@ -5,27 +5,23 @@ defmodule Wyram.PluginDslTest do
 
   test "entry metadata preserves declared contributors, providers, and default dependencies" do
     [{entry_module, _entry_binary}, {_catalog_module, _catalog_binary}] =
-      Code.compile_string("""
+      compile_string("""
       defmodule Wyram.PluginDslFixture.Entry do
-        use Wyram.Plugin,
-          id: "fixture",
-          declarations: [Wyram.PluginDslFixture.Catalog],
-          providers: [Wyram.PluginDslFixture.Provider],
-          game: Wyram.PluginDslFixture.Game
+        use Wyram.Plugin
+        catalog Wyram.PluginDslFixture.Catalog
+        provider Wyram.PluginDslFixture.Provider
+        game Wyram.PluginDslFixture.Game
       end
 
       defmodule Wyram.PluginDslFixture.Catalog do
-        use Wyram.Plugin.Declarations, plugin: Wyram.PluginDslFixture.Entry
+        use Wyram.Plugin.Catalog, kind: :block
       end
       """)
 
-    assert entry_module.__wyram_plugin__() == %{
+    assert Map.drop(entry_module.__wyram_plugin__(), [:catalogs]) == %{
              id: "fixture",
              dependencies: [],
-             declaration_modules: [
-               Wyram.PluginDslFixture.Entry,
-               Wyram.PluginDslFixture.Catalog
-             ],
+             declaration_modules: [Wyram.PluginDslFixture.Entry],
              providers: [Wyram.PluginDslFixture.Provider],
              game: Wyram.PluginDslFixture.Game
            }
@@ -35,9 +31,9 @@ defmodule Wyram.PluginDslTest do
     expected_entry = Wyram.PluginDslFixture.InlineEntry
 
     entry_module =
-      Code.compile_string("""
+      compile_string("""
       defmodule Wyram.PluginDslFixture.InlineEntry do
-        use Wyram.Plugin, id: "inline-fixture"
+        use Wyram.Plugin
 
         defblock Stone, id: "stone"
         def stone_ref, do: __MODULE__.Blocks.Stone.ref()
@@ -56,7 +52,7 @@ defmodule Wyram.PluginDslTest do
     assert declaration.local_id == "stone"
 
     reference = entry_module.stone_ref()
-    assert Map.from_struct(reference) == %{plugin_id: "inline-fixture", local_id: "stone"}
+    assert Map.from_struct(reference) == %{plugin_id: "fixture", local_id: "stone"}
   end
 
   test "recompiling a declaration accepts its existing matching generated marker" do
@@ -66,21 +62,22 @@ defmodule Wyram.PluginDslTest do
 
     source = """
     defmodule #{entry} do
-      use Wyram.Plugin, id: "recompiled-fixture", declarations: [#{catalog}]
+      use Wyram.Plugin
+      catalog #{catalog}
     end
 
     defmodule #{catalog} do
-      use Wyram.Plugin.Declarations, plugin: #{entry}
+      use Wyram.Plugin.Catalog, kind: :block
       defblock Stone, id: "stone"
     end
     """
 
-    Code.compile_string(source, "same_vm_recompile.ex")
+    compile_string(source, "same_vm_recompile.ex")
 
     block_module = Module.concat([entry, "Blocks.Stone"])
     original_marker = block_module.__wyram_generated_declaration__()
 
-    Code.compile_string(source, "same_vm_recompile.ex")
+    compile_string(source, "same_vm_recompile.ex")
 
     recompiled_marker = block_module.__wyram_generated_declaration__()
 
@@ -95,35 +92,37 @@ defmodule Wyram.PluginDslTest do
     source = fn local_id ->
       """
       defmodule #{entry} do
-        use Wyram.Plugin, id: "updated-fixture", declarations: [#{catalog}]
+        use Wyram.Plugin
+        catalog #{catalog}
       end
 
       defmodule #{catalog} do
-        use Wyram.Plugin.Declarations, plugin: #{entry}
+        use Wyram.Plugin.Catalog, kind: :block
         defblock Stone, id: "#{local_id}"
       end
       """
     end
 
-    Code.compile_string(source.("stone"), "same_owner_update.ex")
+    compile_string(source.("stone"), "same_owner_update.ex")
 
     block_module = Module.concat([entry, "Blocks.Stone"])
 
-    Code.compile_string(source.("granite"), "same_owner_update.ex")
+    compile_string(source.("granite"), "same_owner_update.ex")
     updated_marker = block_module.__wyram_generated_declaration__()
 
     assert updated_marker.local_id == "granite"
 
-    Code.compile_string("\n" <> source.("granite"), "same_owner_update.ex")
+    compile_string("\n" <> source.("granite"), "same_owner_update.ex")
     shifted_marker = block_module.__wyram_generated_declaration__()
 
     assert shifted_marker.source.line == updated_marker.source.line + 1
   end
 
   test "defblock records a registered block and its aliased template in source order" do
-    Code.compile_string("""
+    compile_string("""
     defmodule Wyram.PluginDslFixture.DeclarationEntry do
-      use Wyram.Plugin, id: "fixture", declarations: [Wyram.PluginDslFixture.DeclarationCatalog]
+      use Wyram.Plugin
+      catalog Wyram.PluginDslFixture.DeclarationCatalog
     end
 
     defmodule Wyram.PluginDslFixture.Shared do
@@ -131,7 +130,7 @@ defmodule Wyram.PluginDslTest do
 
     defmodule Wyram.PluginDslFixture.DeclarationCatalog do
       alias Wyram.PluginDslFixture.Shared, as: Base
-      use Wyram.Plugin.Declarations, plugin: Wyram.PluginDslFixture.DeclarationEntry
+      use Wyram.Plugin.Catalog, kind: :block
 
       defblock Stone, id: "stone" do
         template Base
@@ -170,13 +169,14 @@ defmodule Wyram.PluginDslTest do
   end
 
   test "template declarations have no id and do not expose placement references" do
-    Code.compile_string("""
+    compile_string("""
     defmodule Wyram.PluginDslFixture.TemplateEntry do
-      use Wyram.Plugin, id: "fixture", declarations: [Wyram.PluginDslFixture.TemplateCatalog]
+      use Wyram.Plugin
+      catalog Wyram.PluginDslFixture.TemplateCatalog
     end
 
     defmodule Wyram.PluginDslFixture.TemplateCatalog do
-      use Wyram.Plugin.Declarations, plugin: Wyram.PluginDslFixture.TemplateEntry
+      use Wyram.Plugin.Catalog, kind: :block
       defblock CubeTemplate, template: true do
       end
     end
@@ -213,7 +213,7 @@ defmodule Wyram.PluginDslTest do
         use Wyram.Plugin, id: send(self(), :executed)
       end
       """,
-      ~r/id.*literal|literal.*id/i
+      ~r/unknown.*option/i
     )
 
     refute_received :executed
@@ -223,11 +223,12 @@ defmodule Wyram.PluginDslTest do
     assert_compile_error(
       """
       defmodule Wyram.PluginDslFixture.InvalidTemplateEntry do
-        use Wyram.Plugin, id: "fixture", declarations: [Wyram.PluginDslFixture.InvalidTemplateCatalog]
+        use Wyram.Plugin
+        catalog Wyram.PluginDslFixture.InvalidTemplateCatalog
       end
 
       defmodule Wyram.PluginDslFixture.InvalidTemplateCatalog do
-        use Wyram.Plugin.Declarations, plugin: Wyram.PluginDslFixture.InvalidTemplateEntry
+        use Wyram.Plugin.Catalog, kind: :block
         defblock InvalidTemplate, id: "invalid", template: true
       end
       """,
@@ -236,7 +237,7 @@ defmodule Wyram.PluginDslTest do
   end
 
   test "capability entries preserve nested literal structs and override in source order" do
-    Code.compile_string("""
+    compile_string("""
     defmodule Wyram.PluginDslFixture.Config.Nested do
       defstruct [:value]
     end
@@ -246,14 +247,13 @@ defmodule Wyram.PluginDslTest do
     end
 
     defmodule Wyram.PluginDslFixture.CapabilityEntry do
-      use Wyram.Plugin,
-        id: "fixture",
-        declarations: [Wyram.PluginDslFixture.CapabilityCatalog]
+      use Wyram.Plugin
+      catalog Wyram.PluginDslFixture.CapabilityCatalog
     end
 
     defmodule Wyram.PluginDslFixture.CapabilityCatalog do
       alias Wyram.PluginDslFixture.Config.{Material, Nested}
-      use Wyram.Plugin.Declarations, plugin: Wyram.PluginDslFixture.CapabilityEntry
+      use Wyram.Plugin.Catalog, kind: :block
 
       defblock Gem, id: "gem" do
         template Wyram.PluginDslFixture.Config.Base
@@ -287,7 +287,8 @@ defmodule Wyram.PluginDslTest do
     assert_compile_error(
       """
       defmodule Wyram.PluginDslFixture.UnsafeEntry do
-        use Wyram.Plugin, id: "fixture", declarations: [Wyram.PluginDslFixture.UnsafeCatalog]
+        use Wyram.Plugin
+        catalog Wyram.PluginDslFixture.UnsafeCatalog
       end
 
       defmodule Wyram.PluginDslFixture.Unsafe.Config.Material do
@@ -296,7 +297,7 @@ defmodule Wyram.PluginDslTest do
 
       defmodule Wyram.PluginDslFixture.UnsafeCatalog do
         alias Wyram.PluginDslFixture.Unsafe.Config.Material
-        use Wyram.Plugin.Declarations, plugin: Wyram.PluginDslFixture.UnsafeEntry
+        use Wyram.Plugin.Catalog, kind: :block
         defblock Unsafe, id: "unsafe" do
           capability %Material{color: send(self(), :executed)}
         end
@@ -350,13 +351,12 @@ defmodule Wyram.PluginDslTest do
       end
 
       defmodule Wyram.PluginDslFixture.CollisionEntry do
-        use Wyram.Plugin,
-          id: "fixture",
-          declarations: [Wyram.PluginDslFixture.CollisionCatalog]
+        use Wyram.Plugin
+        catalog Wyram.PluginDslFixture.CollisionCatalog
       end
 
       defmodule Wyram.PluginDslFixture.CollisionCatalog do
-        use Wyram.Plugin.Declarations, plugin: Wyram.PluginDslFixture.CollisionEntry
+        use Wyram.Plugin.Catalog, kind: :block
         defblock Stone, id: "stone"
       end
       """,
@@ -386,13 +386,12 @@ defmodule Wyram.PluginDslTest do
       end
 
       defmodule Wyram.PluginDslFixture.ForeignCollisionEntry do
-        use Wyram.Plugin,
-          id: "fixture",
-          declarations: [Wyram.PluginDslFixture.ForeignCollisionCatalog]
+        use Wyram.Plugin
+        catalog Wyram.PluginDslFixture.ForeignCollisionCatalog
       end
 
       defmodule Wyram.PluginDslFixture.ForeignCollisionCatalog do
-        use Wyram.Plugin.Declarations, plugin: Wyram.PluginDslFixture.ForeignCollisionEntry
+        use Wyram.Plugin.Catalog, kind: :block
         defblock Stone, id: "stone"
       end
       """,
@@ -402,7 +401,7 @@ defmodule Wyram.PluginDslTest do
 
   defp assert_compile_error(source, message) do
     assert_raise CompileError, message, fn ->
-      Code.compile_string(source, "plugin_dsl_fixture.ex")
+      compile_string(source, "plugin_dsl_fixture.ex")
     end
   end
 
@@ -417,7 +416,8 @@ defmodule Wyram.PluginDslTest do
 
     """
     defmodule #{entry} do
-      use Wyram.Plugin, id: "fixture", declarations: [#{catalog}]
+      use Wyram.Plugin
+      catalog #{catalog}
     end
 
     defmodule #{config} do
@@ -426,7 +426,7 @@ defmodule Wyram.PluginDslTest do
 
     defmodule #{catalog} do
       alias #{config}, as: Material
-      use Wyram.Plugin.Declarations, plugin: #{entry}
+      use Wyram.Plugin.Catalog, kind: :block
       defblock Stone, id: "stone" do
         capability #{expression}#{options}
       end
@@ -441,13 +441,23 @@ defmodule Wyram.PluginDslTest do
 
     """
     defmodule #{entry} do
-      use Wyram.Plugin, id: "fixture", declarations: [#{catalog}]
+      use Wyram.Plugin
+      catalog #{catalog}
     end
 
     defmodule #{catalog} do
-      use Wyram.Plugin.Declarations, plugin: #{entry}
+      use Wyram.Plugin.Catalog, kind: :block
       #{declaration}
     end
     """
+  end
+
+  defp compile_string(source, file \\ "nofile") do
+    [_, entry_name] =
+      Regex.run(~r/defmodule\s+([A-Z][\w.]*)\s+do\s+use Wyram.Plugin(?:\s|,|$)/, source)
+
+    Wyram.PluginTestProject.with_app(:fixture, Module.concat([entry_name]), fn ->
+      Code.compile_string(source, file)
+    end)
   end
 end

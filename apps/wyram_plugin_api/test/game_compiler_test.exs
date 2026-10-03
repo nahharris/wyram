@@ -13,7 +13,7 @@ defmodule Wyram.Plugin.GameCompilerTest do
     def build,
       do:
         Config.new!(%{
-          terrain: Map.new([:surface, :soil, :rock], &{&1, Ref.new!("game", "stone")})
+          palette: Map.new([:surface, :soil, :rock], &{&1, Ref.new!("game", "stone")})
         })
   end
 
@@ -26,14 +26,13 @@ defmodule Wyram.Plugin.GameCompilerTest do
         Biome.new!(%{id: "test", surface: stone, soil: stone, rock: stone, features: [feature]})
 
       Config.new!(%{
-        terrain: Map.new([:surface, :soil, :rock], &{&1, stone}),
         worldgen: WorldGenConfig.new!(%{biomes: [biome]})
       })
     end
   end
 
   defmodule InvalidGame do
-    def build, do: %{terrain: :invalid}
+    def build, do: %{palette: :invalid}
   end
 
   defmodule CrashingGame do
@@ -44,7 +43,7 @@ defmodule Wyram.Plugin.GameCompilerTest do
     def build,
       do:
         Config.new!(%{
-          terrain: Map.new([:surface, :soil, :rock], &{&1, Ref.new!("base", "stone")})
+          palette: Map.new([:surface, :soil, :rock], &{&1, Ref.new!("base", "stone")})
         })
   end
 
@@ -65,7 +64,7 @@ defmodule Wyram.Plugin.GameCompilerTest do
     assert {:ok, nil} = GameCompiler.compile(metadata(nil), catalog(), %{})
   end
 
-  test "missing terrain references and invalid game builders fail with diagnostics" do
+  test "missing palette references and invalid game builders fail with diagnostics" do
     assert {:error, [%{code: :unresolved_game_reference}]} =
              GameCompiler.compile(metadata(Game), %{blocks: []}, %{})
 
@@ -75,7 +74,7 @@ defmodule Wyram.Plugin.GameCompilerTest do
     end
   end
 
-  test "game terrain may reference only registered blocks in an explicit dependency" do
+  test "game palette may reference only registered blocks in an explicit dependency" do
     interface = %{
       declarations: [%{plugin_id: "base", local_id: "stone", kind: :block, role: :registered}]
     }
@@ -113,7 +112,7 @@ defmodule Wyram.Plugin.GameCompilerTest do
              GameCompiler.compile(metadata(DependencyGame), catalog(), dependencies)
   end
 
-  test "own terrain catalog records must be canonical registered blocks owned by this plugin" do
+  test "own palette catalog records must be canonical registered blocks owned by this plugin" do
     malformed_blocks = [
       [%{id: "base:stone", plugin_id: "base", local_id: "stone", kind: :block}],
       [%{id: "game:stone", plugin_id: "game", local_id: "stone", kind: :item}],
@@ -130,7 +129,7 @@ defmodule Wyram.Plugin.GameCompilerTest do
              GameCompiler.compile(metadata(Game), catalog(), %{})
   end
 
-  test "terrain references cannot resolve through only a transitive dependency" do
+  test "palette references cannot resolve through only a transitive dependency" do
     addon_interface = %{
       declarations: [%{plugin_id: "base", local_id: "stone", kind: :block, role: :registered}]
     }

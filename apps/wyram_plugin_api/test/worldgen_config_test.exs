@@ -10,14 +10,14 @@ defmodule Wyram.WorldGenConfigTest do
     ref = Ref.new!("game", "stone")
 
     assert {:ok, config} =
-             Config.new(%{terrain: %{surface: ref, soil: ref, rock: ref}, worldgen: nil})
+             Config.new(%{palette: %{surface: ref, soil: ref, rock: ref}, worldgen: nil})
 
     assert Map.fetch!(config, :worldgen) == nil
   end
 
   test "surface spawning is an explicit game policy and compiled structs are complete" do
     ref = Ref.new!("game", "stone")
-    attrs = %{terrain: %{surface: ref, soil: ref, rock: ref}, spawn: :surface}
+    attrs = %{palette: %{surface: ref, soil: ref, rock: ref}, spawn: :surface}
     assert {:ok, config} = Config.new(attrs)
     assert config.spawn == :surface
     assert {:error, :invalid_spawn_policy} = Config.new(%{attrs | spawn: :guess})

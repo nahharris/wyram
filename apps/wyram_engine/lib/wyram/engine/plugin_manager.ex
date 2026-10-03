@@ -5,6 +5,7 @@ defmodule Wyram.Engine.PluginManager do
 
   alias Wyram.Character.Model
   alias Wyram.Engine.PluginCatalog
+  alias Wyram.Plugin.ModuleName
 
   @max_package_bytes 16 * 1024 * 1024
   @max_files 128
@@ -29,6 +30,9 @@ defmodule Wyram.Engine.PluginManager do
     Wyram.WorldGen.Islands,
     Wyram.WorldGen.Terrain,
     Wyram.Plugin.BlockDefaults,
+    Wyram.Plugin.Content,
+    Wyram.Plugin.ContentRef,
+    Wyram.Plugin.Kind,
     Wyram.Plugin.CapabilityContribution,
     Wyram.Plugin.Declaration,
     Wyram.Plugin.Declaration.Template,
@@ -64,8 +68,8 @@ defmodule Wyram.Engine.PluginManager do
   def noncolliding, do: GenServer.call(__MODULE__, :noncolliding)
   def placeable, do: GenServer.call(__MODULE__, :placeable)
 
-  @spec terrain_palette() :: [pos_integer()]
-  def terrain_palette, do: GenServer.call(__MODULE__, :terrain_palette)
+  @spec palette() :: [pos_integer()] | nil
+  def palette, do: GenServer.call(__MODULE__, :palette)
 
   @spec plugin_versions() :: %{String.t() => String.t()}
   def plugin_versions, do: GenServer.call(__MODULE__, :plugin_versions)
@@ -122,7 +126,7 @@ defmodule Wyram.Engine.PluginManager do
   def handle_call(:noncolliding, _from, state), do: {:reply, state.noncolliding, state}
   def handle_call(:placeable, _from, state), do: {:reply, state.placeable, state}
   def handle_call(:block_colors, _from, state), do: {:reply, state.colors, state}
-  def handle_call(:terrain_palette, _from, state), do: {:reply, state.palette, state}
+  def handle_call(:palette, _from, state), do: {:reply, state.palette, state}
   def handle_call(:plugin_versions, _from, state), do: {:reply, state.versions, state}
 
   defp scan(directory) do
@@ -475,13 +479,21 @@ defmodule Wyram.Engine.PluginManager do
   defp validate_load_collisions(packages) do
     modules = Enum.flat_map(packages, & &1.manifest["modules"])
 
-    if Enum.any?(modules, fn name -> :code.is_loaded(String.to_atom(name)) != false end),
-      do: {:error, :module_collision},
-      else: :ok
+    if Enum.any?(modules, fn name ->
+         :code.which(String.to_existing_atom(name)) != :non_existing
+       end),
+       do: {:error, :module_collision},
+       else: :ok
   end
 
   @doc false
   def load_packages(packages, order) do
+    with :ok <- validate_load_collisions(packages) do
+      load_validated_packages(packages, order)
+    end
+  end
+
+  defp load_validated_packages(packages, order) do
     by_id = Map.new(packages, &{&1.manifest["id"], &1})
 
     case load_packages_in_order(order, by_id) do
@@ -618,11 +630,7 @@ defmodule Wyram.Engine.PluginManager do
 
   defp decode_atom_length(_), do: {:error, :invalid_beam}
 
-  defp valid_module_name?(name) when is_binary(name),
-    do:
-      String.starts_with?(name, "Elixir.WyramMods.") and Regex.match?(~r/^[A-Za-z0-9_.]+$/, name)
-
-  defp valid_module_name?(_), do: false
+  defp valid_module_name?(name), do: ModuleName.valid_string?(name)
 
   defp valid_id?(id) when is_binary(id), do: Regex.match?(~r/^[a-z][a-z0-9_-]*$/, id)
   defp valid_id?(_), do: false

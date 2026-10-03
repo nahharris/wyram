@@ -1,49 +1,10 @@
-defmodule WyramMods.Characters do
-  @moduledoc "Original dwarf rigs authored in eight-pixel block units, with shared semantic roles."
-  alias Wyram.Character.{Definition, Model, Profile}
+defmodule Wyram.Models.DwarfBuilder do
+  @moduledoc false
+  alias Wyram.Character.Model
   alias Wyram.Units
 
-  def player_profile do
-    %{
-      Profile.default()
-      | fly_enabled: true,
-        radius: Units.pixels(3),
-        standing_height: Units.blocks(1, 3),
-        standing_eye: Units.blocks(1, 1),
-        crouch_height: Units.pixels(10),
-        crouch_eye: Units.pixels(7),
-        prone_height: Units.pixels(7),
-        prone_eye: Units.pixels(4)
-    }
-  end
-
-  def models,
-    do: [
-      dwarf("wyram/player", "hero", [72, 117, 79], [202, 164, 128]),
-      dwarf("wyram/companion", "friend", [153, 89, 57], [178, 135, 102])
-    ]
-
-  def definitions do
-    small = %{
-      player_profile()
-      | fly_enabled: false,
-        walk_speed: 3.2,
-        run_speed: 6.5,
-        climb_height: 2,
-        wall_slide_enabled: false,
-        roll_distance: 2.0
-    }
-
-    [
-      Definition.player(player_profile(), "wyram/player"),
-      %Definition{
-        id: "companion",
-        model: "wyram/companion",
-        profile: small,
-        position: {2.5, 71.38, -2.5}
-      }
-    ]
-  end
+  def player(id), do: dwarf(id, "hero", [72, 117, 79], [202, 164, 128])
+  def companion(id), do: dwarf(id, "friend", [153, 89, 57], [178, 135, 102])
 
   defp dwarf(id, prefix, shirt, skin) do
     bone = fn name, parent, role, pivot, boxes ->

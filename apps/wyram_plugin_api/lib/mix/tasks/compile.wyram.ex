@@ -2,12 +2,13 @@ defmodule Mix.Tasks.Compile.Wyram do
   @moduledoc "Compiles the configured Wyram plugin catalog during Mix compilation."
 
   use Mix.Task.Compiler
+  alias Wyram.Plugin.DSL.Entry
 
   @recursive true
 
   @impl true
   def run(_args) do
-    case plugin_entry(Mix.Project.config()[:wyram_plugin]) do
+    case Entry.project_entry() do
       :none ->
         {:noop, []}
 
@@ -25,7 +26,8 @@ defmodule Mix.Tasks.Compile.Wyram do
             {:error, Enum.map(diagnostics, &mix_diagnostic/1)}
         end
 
-      {:error, diagnostic} ->
+      {:error, message} ->
+        diagnostic = invalid_project_config(message)
         Mix.shell().error("mix.exs: #{diagnostic.message}")
         {:error, [mix_diagnostic(diagnostic)]}
     end
@@ -37,26 +39,6 @@ defmodule Mix.Tasks.Compile.Wyram do
     File.rm(Wyram.Plugin.Compiler.catalog_path())
     :ok
   end
-
-  defp plugin_entry(nil), do: :none
-
-  defp plugin_entry(options) when is_list(options) do
-    if Keyword.keyword?(options) and Keyword.keys(options) -- [:entry] == [] and
-         length(options) == length(Enum.uniq(Keyword.keys(options))) do
-      case Keyword.get(options, :entry) do
-        entry when is_atom(entry) -> {:ok, entry}
-        _ -> {:error, invalid_project_config(":wyram_plugin requires an :entry module")}
-      end
-    else
-      {:error, invalid_project_config(":wyram_plugin accepts only a unique :entry option")}
-    end
-  end
-
-  defp plugin_entry(%{entry: entry} = options) when map_size(options) == 1 and is_atom(entry),
-    do: {:ok, entry}
-
-  defp plugin_entry(_),
-    do: {:error, invalid_project_config(":wyram_plugin must contain only an :entry module")}
 
   defp invalid_project_config(message) do
     Wyram.Plugin.Diagnostic.new!(

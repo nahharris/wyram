@@ -13,7 +13,13 @@ end
 base = :erlang.binary_to_term(File.read!(base_path), [:safe])
 addon = :erlang.binary_to_term(File.read!(addon_path), [:safe])
 
-unless addon.dependency_interfaces["fixture-base"] == base.interface_fingerprint do
+unless base.plugin.id == "wyram_cross_plugin_base" and
+         addon.plugin.id == "wyram_cross_plugin_addon" and
+         addon.plugin.dependencies == ["wyram_cross_plugin_base"] do
+  raise "plugin identity must follow :app and only direct plugin dependencies are required"
+end
+
+unless addon.dependency_interfaces["wyram_cross_plugin_base"] == base.interface_fingerprint do
   raise "addon dependency fingerprint does not match the built base interface"
 end
 
@@ -29,12 +35,12 @@ end
 
 expected_terrain =
   Map.new([:surface, :soil, :rock], fn role ->
-    {role, Wyram.Block.Ref.new!("fixture-base", "stone")}
+    {role, Wyram.Block.Ref.new!("wyram_cross_plugin_base", "stone")}
   end)
 
 unless match?(%Wyram.Game.Config{}, addon.catalog.game) and
-         addon.catalog.game.terrain == expected_terrain do
-  raise "addon game configuration did not preserve its dependency terrain references"
+         addon.catalog.game.palette == expected_terrain do
+  raise "addon game configuration did not preserve its dependency palette references"
 end
 
 block = Enum.find(addon.catalog.blocks, &(&1.local_id == "cobble"))
@@ -50,5 +56,5 @@ unless block && base_block && block.descriptor == base_block.descriptor &&
 end
 
 IO.puts("BASE_FP=#{base.interface_fingerprint}")
-IO.puts("ADDON_DEP_FP=#{addon.dependency_interfaces["fixture-base"]}")
+IO.puts("ADDON_DEP_FP=#{addon.dependency_interfaces["wyram_cross_plugin_base"]}")
 IO.puts("ADDON_FP=#{addon.interface_fingerprint}")

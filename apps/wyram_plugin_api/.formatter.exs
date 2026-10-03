@@ -1,0 +1,41 @@
+[
+  inputs: ["{mix,.formatter}.exs", "lib/**/*.{ex,exs}"],
+  export: [
+    locals_without_parens: [
+      catalog: 1,
+      provider: 1,
+      game: 1,
+      include: 1,
+      defblock: 1,
+      defblock: 2,
+      defblock: 3,
+      defbiome: 1,
+      defbiome: 2,
+      defbiome: 3,
+      defshaping: 1,
+      defshaping: 2,
+      defshaping: 3,
+      defprofile: 1,
+      defprofile: 2,
+      defprofile: 3,
+      defmodel: 1,
+      defmodel: 2,
+      defmodel: 3,
+      defcharacter: 1,
+      defcharacter: 2,
+      defcharacter: 3,
+      defworldgen: 1,
+      defworldgen: 2,
+      defworldgen: 3,
+      capability: 1,
+      capability: 2,
+      template: 1,
+      palette: 1,
+      worldgen: 1,
+      player: 1,
+      spawn: 1,
+      spawn: 2,
+      spawn_policy: 1
+    ]
+  ]
+]
