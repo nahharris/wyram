@@ -328,8 +328,11 @@ impl Graphics {
         }
     }
 
-    fn render(&mut self, position: Vec3, direction: Vec3, characters: &[Vertex]) {
-        self.blended.prepare(&self.device, &self.queue, position);
+    fn render(&mut self, position: Vec3, direction: Vec3, characters: &[Vertex]) -> FrameSample {
+        let mut stats = FrameSample::default();
+        let blended_start = Instant::now();
+        stats.blended_write_bytes = self.blended.prepare(&self.device, &self.queue, position);
+        stats.blended_prepare_cpu_ms = blended_start.elapsed().as_secs_f64() * 1000.0;
         let characters = &characters[..characters.len().min(rig::MAX_VERTICES)];
         if !characters.is_empty() {
             self.queue
@@ -343,7 +346,10 @@ impl Graphics {
             0,
             bytemuck::cast_slice(&matrix.to_cols_array()),
         );
-        let frame = match self.surface.get_current_texture() {
+        let acquire_start = Instant::now();
+        let acquired = self.surface.get_current_texture();
+        stats.surface_acquire_ms = acquire_start.elapsed().as_secs_f64() * 1000.0;
+        let frame = match acquired {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
                 self.surface.configure(&self.device, &self.config);
@@ -351,10 +357,11 @@ impl Graphics {
             }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.config);
-                return;
+                return stats;
             }
-            _ => return,
+            _ => return stats,
         };
+        let encode_start = Instant::now();
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -397,6 +404,8 @@ impl Graphics {
             for (buffer, count) in self.meshes.values() {
                 pass.set_vertex_buffer(0, buffer.slice(..));
                 pass.draw(0..*count, 0..1);
+                stats.opaque_draws += 1;
+                stats.opaque_vertices += *count as usize;
             }
             if !characters.is_empty() {
                 pass.set_vertex_buffer(0, self.characters.slice(..));
@@ -405,8 +414,13 @@ impl Graphics {
             pass.set_pipeline(&self.blended_pipeline);
             self.blended.draw(&mut pass);
         }
-        self.queue.submit(Some(encoder.finish()));
+        let commands = encoder.finish();
+        stats.render_encode_cpu_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
+        let submit_start = Instant::now();
+        self.queue.submit(Some(commands));
         self.queue.present(frame);
+        stats.render_submit_cpu_ms = submit_start.elapsed().as_secs_f64() * 1000.0;
+        stats
     }
 }
 
@@ -787,7 +801,8 @@ impl ApplicationHandler<UserEvent> for Game {
                         .update(&mut self.world, center, |key, vertices| {
                             graphics.replace_mesh(key, vertices)
                         });
-                    graphics.render(view.position, view.direction, &character_vertices);
+                    let render_stats =
+                        graphics.render(view.position, view.direction, &character_vertices);
                     let outbound = self
                         .outbound
                         .as_ref()
@@ -810,7 +825,7 @@ impl ApplicationHandler<UserEvent> for Game {
                         outbound_coalesced_inputs: outbound.coalesced_inputs,
                         outbound_queue_max_ms: outbound.queue_max_ms,
                         outbound_write_max_ms: outbound.write_max_ms,
-                        ..FrameSample::default()
+                        ..render_stats
                     });
                 }
             }
