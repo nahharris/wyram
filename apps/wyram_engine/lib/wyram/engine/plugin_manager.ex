@@ -27,6 +27,7 @@ defmodule Wyram.Engine.PluginManager do
     Wyram.WorldGen.Carver,
     Wyram.WorldGen.Feature,
     Wyram.WorldGen.Islands,
+    Wyram.WorldGen.Terrain,
     Wyram.Plugin.BlockDefaults,
     Wyram.Plugin.CapabilityContribution,
     Wyram.Plugin.Declaration,

@@ -1,11 +1,33 @@
-use super::{Feature, Generator, noise};
+use super::{Column, Feature, Generator, noise};
 pub struct Instance<'a> {
     pub anchor: [i32; 3],
     pub feature: &'a Feature,
 }
 impl Instance<'_> {
-    pub fn block(&self, p: [i32; 3]) -> u16 {
+    pub fn block(&self, p: [i32; 3], column: &Column) -> u16 {
         let [x, y, z] = std::array::from_fn(|i| p[i] - self.anchor[i]);
+        let base = self.shape([x, 0, z]);
+        if base > 0 && self.feature.support_depth > 0 {
+            let ground = if self.feature.domain == 0 {
+                Some(column.height)
+            } else {
+                column.island.map(|(_, top)| top)
+            };
+            let Some(ground) = ground else {
+                return 0;
+            };
+            // Trim unsupported footprint columns at cliffs instead of leaving floating bases.
+            if self.anchor[1] - ground - 1 > self.feature.support_depth {
+                return 0;
+            }
+            if y < 0 && y >= -self.feature.support_depth && p[1] > ground {
+                return base;
+            }
+        }
+        self.shape([x, y, z])
+    }
+    fn shape(&self, offset: [i32; 3]) -> u16 {
+        let [x, y, z] = offset;
         let f = self.feature;
         if y < 0 || y >= f.height || x.abs() > f.radius || z.abs() > f.radius {
             return 0;
@@ -63,7 +85,7 @@ pub fn instances(g: &Generator, min: [i32; 3], max: [i32; 3]) -> Vec<Instance<'_
                         };
                         top + 1
                     };
-                    if y > max[1] || y + f.height <= min[1] {
+                    if y - f.support_depth > max[1] || y + f.height <= min[1] {
                         continue;
                     }
                     out.push(Instance {

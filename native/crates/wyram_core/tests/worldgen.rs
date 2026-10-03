@@ -84,6 +84,7 @@ fn carvers_and_features_are_configurable_and_cross_chunk_boundaries() {
             height: 32,
             salt: 109,
             domain: 0,
+            support_depth: 0,
         });
     let decorated = Generator::new(2, settings.clone()).unwrap();
     settings.biomes[0].features.clear();
@@ -180,4 +181,167 @@ fn transition_weights_and_elevation_offsets_blend_continuously() {
         mixed += usize::from(c.weights.iter().all(|w| *w > 0.1));
     }
     assert!(mixed > 0);
+}
+
+#[test]
+fn boulders_fill_sloping_ground_gaps() {
+    let mut s = Settings {
+        islands: None,
+        ..Settings::default()
+    };
+    s.carvers.clear();
+    s.biomes[0].features.push(wyram_core::worldgen::Feature {
+        kind: 1,
+        block: 5,
+        accent: 5,
+        spacing: 16,
+        density: 1.0,
+        radius: 6,
+        height: 8,
+        salt: 107,
+        domain: 0,
+        support_depth: 24,
+    });
+    let decorated = Generator::new(2026, s.clone()).unwrap();
+    s.biomes[0].features.clear();
+    let bare = Generator::new(2026, s).unwrap();
+    let [sx, _, sz] = bare.spawn();
+    let mut grounded_columns = 0;
+    for z in sz - 32..sz + 32 {
+        for x in sx - 32..sx + 32 {
+            let ground = bare.column(x, z).height;
+            let first = (ground + 1..ground + 32).find(|y| decorated.voxel([x, *y, z]) == 5);
+            if let Some(bottom) = first {
+                grounded_columns += 1;
+                assert_eq!(
+                    bottom,
+                    ground + 1,
+                    "unsupported boulder at {x},{bottom},{z}, ground {ground}"
+                );
+            }
+        }
+    }
+    assert!(grounded_columns > 100);
+}
+
+#[test]
+fn terrain_has_buildable_patches_and_visible_local_relief() {
+    let g = Generator::new(2026, Settings::default()).unwrap();
+    let mut land = 0;
+    let mut flat = 0;
+    let mut rough = 0;
+    for z in (-2048..2048).step_by(64) {
+        for x in (-2048..2048).step_by(64) {
+            if g.column(x, z).height <= 8 {
+                continue;
+            }
+            land += 1;
+            let heights: Vec<_> = (0..12)
+                .flat_map(|dz| (0..12).map(move |dx| (dx, dz)))
+                .map(|(dx, dz)| g.column(x + dx, z + dz).height)
+                .collect();
+            let range = heights.iter().max().unwrap() - heights.iter().min().unwrap();
+            flat += usize::from(range <= 2);
+            let near: Vec<_> = (0..3)
+                .flat_map(|dz| (0..3).map(move |dx| (dx, dz)))
+                .map(|(dx, dz)| g.column(x + dx, z + dz).height)
+                .collect();
+            rough += usize::from(near.iter().max().unwrap() - near.iter().min().unwrap() >= 3);
+        }
+    }
+    eprintln!("land {land}, buildable {flat}, locally rugged {rough}");
+    assert!(flat * 10 > land, "too few buildable 12x12 patches");
+    assert!(rough * 12 > land, "too little local relief");
+}
+
+#[test]
+fn support_opt_out_keeps_gaps_and_enabled_support_preserves_buried_cavities_and_seams() {
+    let mut s = Settings {
+        islands: None,
+        ..Settings::default()
+    };
+    s.biomes[0].features.push(wyram_core::worldgen::Feature {
+        kind: 1,
+        block: 5,
+        accent: 5,
+        spacing: 16,
+        density: 1.0,
+        radius: 6,
+        height: 8,
+        salt: 107,
+        domain: 0,
+        support_depth: 0,
+    });
+    let suspended = Generator::new(2026, s.clone()).unwrap();
+    s.biomes[0].features[0].support_depth = 24;
+    let supported = Generator::new(2026, s.clone()).unwrap();
+    s.biomes[0].features.clear();
+    let bare = Generator::new(2026, s).unwrap();
+    let [sx, _, sz] = bare.spawn();
+    let mut gaps = 0;
+    let mut lower_chunk_supports = 0;
+    for z in sz - 24..sz + 24 {
+        for x in sx - 24..sx + 24 {
+            let h = bare.column(x, z).height;
+            for y in [h - 4, h - 16, h - 32] {
+                assert_eq!(supported.voxel([x, y, z]), bare.voxel([x, y, z]));
+            }
+            if suspended.voxel([x, h + 1, z]) != 0 {
+                continue;
+            }
+            if (h + 2..h + 20).any(|y| suspended.voxel([x, y, z]) == 5) {
+                gaps += 1;
+                let base = (h + 2..h + 20)
+                    .find(|y| suspended.voxel([x, *y, z]) == 5)
+                    .unwrap();
+                lower_chunk_supports += usize::from(base.div_euclid(16) > (h + 1).div_euclid(16));
+                assert_eq!(supported.voxel([x, h + 1, z]), 5);
+                let key = [x.div_euclid(16), (h + 1).div_euclid(16), z.div_euclid(16)];
+                let chunk = supported.chunk(key).unwrap();
+                assert_eq!(
+                    read_block(
+                        &chunk,
+                        x.rem_euclid(16) as usize,
+                        (h + 1).rem_euclid(16) as usize,
+                        z.rem_euclid(16) as usize
+                    )
+                    .unwrap(),
+                    5
+                );
+            }
+        }
+    }
+    assert!(gaps > 10);
+    assert!(lower_chunk_supports > 0);
+}
+
+#[test]
+fn shaping_controls_can_disable_local_relief_and_reject_nonfinite_settings() {
+    let mut s = Settings::default();
+    let shaped = Generator::new(2026, s.clone()).unwrap();
+    s.terrain.roughness = 0.0;
+    s.terrain.valley_depth = 0.0;
+    s.terrain.shelf_strength = 0.0;
+    let smooth = Generator::new(2026, s.clone()).unwrap();
+    assert!(
+        (-2048..2048)
+            .step_by(64)
+            .any(|x| shaped.column(x, 512).height != smooth.column(x, 512).height)
+    );
+    s.terrain.roughness = f64::NAN;
+    assert!(Generator::new(0, s.clone()).is_err());
+    s.terrain.roughness = 0.0;
+    s.biomes[0].features.push(wyram_core::worldgen::Feature {
+        kind: 1,
+        block: 5,
+        accent: 5,
+        spacing: 16,
+        density: 1.0,
+        radius: 6,
+        height: 8,
+        salt: 107,
+        domain: 0,
+        support_depth: 65,
+    });
+    assert!(Generator::new(0, s).is_err());
 }

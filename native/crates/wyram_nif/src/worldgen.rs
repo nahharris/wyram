@@ -1,10 +1,10 @@
 use super::binary_from_bytes;
 use rustler::{Binary, Env, NifMap, ResourceArc};
-use wyram_core::worldgen::{Biome, Carver, Feature, Field, Generator, Islands, Settings};
+use wyram_core::worldgen::{Biome, Carver, Feature, Field, Generator, Islands, Settings, Terrain};
 type FieldWire = (f64, u32, u64);
 type CarverWire = (u8, FieldWire, f64, i32, i32, i32);
 type IslandsWire = (FieldWire, i32, i32, i32, f64);
-type FeatureWire = (u8, u16, u16, i32, f64, (i32, i32, u64, u8));
+type FeatureWire = (u8, u16, u16, i32, f64, (i32, i32, u64, i32, u8));
 #[derive(NifMap)]
 struct BiomeWire {
     climate: Vec<f64>,
@@ -22,6 +22,7 @@ struct SettingsWire {
     sea_level: i32,
     relief: i32,
     blend: f64,
+    terrain: (f64, f64, f64, i32, f64),
     fields: Vec<FieldWire>,
     carvers: Vec<CarverWire>,
     islands: Option<IslandsWire>,
@@ -61,7 +62,14 @@ fn compile_generator(
                 .features
                 .into_iter()
                 .map(
-                    |(kind, block, accent, spacing, density, (radius, height, salt, domain))| {
+                    |(
+                        kind,
+                        block,
+                        accent,
+                        spacing,
+                        density,
+                        (radius, height, salt, support_depth, domain),
+                    )| {
                         Feature {
                             kind,
                             block,
@@ -72,6 +80,7 @@ fn compile_generator(
                             height,
                             salt,
                             domain,
+                            support_depth,
                         }
                     },
                 )
@@ -116,6 +125,13 @@ fn compile_generator(
         sea_level: wire.sea_level,
         relief: wire.relief,
         blend: wire.blend,
+        terrain: Terrain {
+            roughness: wire.terrain.0,
+            valley_depth: wire.terrain.1,
+            plains_strength: wire.terrain.2,
+            shelf_height: wire.terrain.3,
+            shelf_strength: wire.terrain.4,
+        },
         fields,
         carvers,
         islands,

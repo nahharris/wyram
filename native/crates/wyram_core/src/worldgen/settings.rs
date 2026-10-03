@@ -29,6 +29,7 @@ pub struct Feature {
     pub height: i32,
     pub salt: u64,
     pub domain: u8,
+    pub support_depth: i32,
 }
 #[derive(Clone, Debug)]
 pub struct Biome {
@@ -57,6 +58,34 @@ pub struct Islands {
     pub relief: i32,
     pub threshold: f64,
 }
+#[derive(Clone, Copy, Debug)]
+pub struct Terrain {
+    pub roughness: f64,
+    pub valley_depth: f64,
+    pub plains_strength: f64,
+    pub shelf_height: i32,
+    pub shelf_strength: f64,
+}
+impl Default for Terrain {
+    fn default() -> Self {
+        Self {
+            roughness: 12.0,
+            valley_depth: 20.0,
+            plains_strength: 0.8,
+            shelf_height: 8,
+            shelf_strength: 0.65,
+        }
+    }
+}
+impl Terrain {
+    fn valid(self) -> bool {
+        (0.0..=32.0).contains(&self.roughness)
+            && (0.0..=64.0).contains(&self.valley_depth)
+            && (0.0..=1.0).contains(&self.plains_strength)
+            && (2..=16).contains(&self.shelf_height)
+            && (0.0..=1.0).contains(&self.shelf_strength)
+    }
+}
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub min_y: i32,
@@ -64,6 +93,7 @@ pub struct Settings {
     pub sea_level: i32,
     pub relief: i32,
     pub blend: f64,
+    pub terrain: Terrain,
     pub fields: [Field; 6],
     pub carvers: Vec<Carver>,
     pub islands: Option<Islands>,
@@ -77,6 +107,7 @@ impl Default for Settings {
             sea_level: 0,
             relief: 140,
             blend: 0.2,
+            terrain: Terrain::default(),
             fields: [
                 Field::new(1536.0, 11),
                 Field::new(256.0, 23),
@@ -125,6 +156,7 @@ impl Settings {
             && (self.min_y + 8..=self.min_y + self.height - 8).contains(&self.sea_level)
             && (0..=192).contains(&self.relief)
             && (0.01..=1.0).contains(&self.blend)
+            && self.terrain.valid()
             && self.fields.iter().all(|f| f.valid())
             && self.valid_carvers()
             && self.valid_islands()
@@ -171,6 +203,7 @@ fn valid_features(features: &[Feature]) -> bool {
     let mut salts = std::collections::HashSet::new();
     features.iter().all(|f| {
         f.kind <= 2
+            && (0..=64).contains(&f.support_depth)
             && f.domain <= 1
             && f.block > 0
             && f.accent > 0

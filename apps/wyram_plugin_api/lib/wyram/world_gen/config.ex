@@ -1,6 +1,6 @@
 defmodule Wyram.WorldGen.Config do
   @moduledoc "Versioned data-only generation pipeline. Default datum is sea level zero within a 512-block world (-192 through 319)."
-  alias Wyram.WorldGen.{Biome, Carver, Field, Islands, Schema}
+  alias Wyram.WorldGen.{Biome, Carver, Field, Islands, Schema, Terrain}
 
   @fields %{
     continentalness: %Field{scale: 1536.0, salt: 11},
@@ -17,6 +17,7 @@ defmodule Wyram.WorldGen.Config do
             sea_level: 0,
             relief: 140,
             blend: 0.2,
+            terrain: %Terrain{},
             fields: @fields,
             carvers: [%Carver{}],
             islands: %Islands{},
@@ -43,7 +44,8 @@ defmodule Wyram.WorldGen.Config do
 
   defp valid_pipeline?(value) do
     Schema.integer?(value.relief, 0, 192) and Schema.number?(value.blend, 0.01, 1) and
-      valid_fields?(value.fields) and valid_carvers?(value.carvers, bounds(value)) and
+      Terrain.validate(value.terrain) == :ok and valid_fields?(value.fields) and
+      valid_carvers?(value.carvers, bounds(value)) and
       valid_islands?(value.islands, bounds(value)) and valid_biomes?(value.biomes)
   end
 

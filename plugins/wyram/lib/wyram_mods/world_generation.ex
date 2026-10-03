@@ -20,6 +20,7 @@ defmodule WyramMods.WorldGeneration do
           density: 0.4,
           radius: 4,
           height: 14,
+          support_depth: 16,
           salt: 101
         }),
         Feature.new!(%{
@@ -30,6 +31,7 @@ defmodule WyramMods.WorldGeneration do
           density: 0.18,
           radius: 12,
           height: 48,
+          support_depth: 24,
           salt: 103
         }),
         Feature.new!(%{
@@ -40,6 +42,7 @@ defmodule WyramMods.WorldGeneration do
           density: 0.25,
           radius: 5,
           height: 7,
+          support_depth: 24,
           salt: 107
         }),
         Feature.new!(%{
@@ -50,6 +53,7 @@ defmodule WyramMods.WorldGeneration do
           density: 0.2,
           radius: 4,
           height: 6,
+          support_depth: 16,
           salt: 109,
           domain: :island
         })

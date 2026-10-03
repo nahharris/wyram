@@ -10,7 +10,8 @@ defmodule Wyram.WorldGen.Feature do
             radius: 3,
             height: 6,
             salt: 1,
-            domain: :surface
+            domain: :surface,
+            support_depth: 0
 
   def new!(attrs), do: Schema.new!(__MODULE__, attrs)
 
@@ -22,7 +23,8 @@ defmodule Wyram.WorldGen.Feature do
   end
 
   defp valid_placement?(value) do
-    value.domain in [:surface, :island] and Schema.integer?(value.spacing, 16, 128) and
+    value.domain in [:surface, :island] and Schema.integer?(value.support_depth, 0, 64) and
+      Schema.integer?(value.spacing, 16, 128) and
       Schema.number?(value.density, 0, 1) and Schema.integer?(value.radius, 1, 16) and
       Schema.integer?(value.height, 1, 64) and Schema.integer?(value.salt, 0, 4_294_967_295)
   end

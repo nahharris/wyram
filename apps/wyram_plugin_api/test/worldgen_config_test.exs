@@ -3,7 +3,7 @@ defmodule Wyram.WorldGenConfigTest do
   alias Wyram.Block.Ref
   alias Wyram.Game.Config
 
-  alias Wyram.WorldGen.{Biome, Field}
+  alias Wyram.WorldGen.{Biome, Feature, Field}
   alias Wyram.WorldGen.Config, as: WorldGenConfig
 
   test "legacy games explicitly opt out of the world generator" do
@@ -55,6 +55,30 @@ defmodule Wyram.WorldGenConfigTest do
              Biome.validate(%{biome | climate: %{humidity: 0.5}})
 
     assert length(WorldGenConfig.references(config)) == 4
+  end
+
+  test "feature ground support is optional and bounded" do
+    ref = Ref.new!("game", "stone")
+    attrs = %{block: ref, accent: ref}
+    assert Feature.new!(attrs).support_depth == 0
+    assert Feature.new!(Map.put(attrs, :support_depth, 24)).support_depth == 24
+    assert_raise ArgumentError, fn -> Feature.new!(Map.put(attrs, :support_depth, 65)) end
+  end
+
+  test "terrain shaping controls are complete and bounded public data" do
+    config = generator()
+    terrain = Map.fetch!(config, :terrain)
+    assert terrain.roughness > 0
+
+    for invalid <- [
+          %{terrain | roughness: -1},
+          %{terrain | valley_depth: 65},
+          %{terrain | plains_strength: 2},
+          %{terrain | shelf_height: 0},
+          Map.put(terrain, :callback, &Function.identity/1)
+        ] do
+      assert {:error, :invalid_worldgen} = WorldGenConfig.validate(%{config | terrain: invalid})
+    end
   end
 
   defp generator do

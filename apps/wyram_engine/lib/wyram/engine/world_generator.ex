@@ -23,7 +23,7 @@ defmodule Wyram.Engine.WorldGenerator do
     |> normalize()
     |> Map.from_struct()
     |> Map.delete(:seed)
-    |> then(&:erlang.term_to_binary({:density_v1, &1}, [:deterministic]))
+    |> then(&:erlang.term_to_binary({:density_v2, &1}, [:deterministic]))
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
   end
@@ -74,6 +74,10 @@ defmodule Wyram.Engine.WorldGenerator do
       sea_level: config.sea_level,
       relief: config.relief,
       blend: config.blend,
+      terrain:
+        {config.terrain.roughness / 1, config.terrain.valley_depth / 1,
+         config.terrain.plains_strength / 1, config.terrain.shelf_height,
+         config.terrain.shelf_strength / 1},
       fields: Enum.map(@field_order, &field(config.fields[&1])),
       carvers: Enum.map(config.carvers, &carver/1),
       islands: islands(config.islands),
@@ -110,7 +114,7 @@ defmodule Wyram.Engine.WorldGenerator do
       {Enum.find_index([:tree, :boulder, :crystal], &(&1 == value.kind)),
        handle(value.block, blocks), handle(value.accent, blocks), value.spacing,
        value.density / 1,
-       {value.radius, value.height, value.salt,
+       {value.radius, value.height, value.salt, value.support_depth,
         Enum.find_index([:surface, :island], &(&1 == value.domain))}}
 
   defp handle(nil, _), do: 0

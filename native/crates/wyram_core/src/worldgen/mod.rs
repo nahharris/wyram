@@ -2,8 +2,9 @@
 mod features;
 mod noise;
 mod settings;
+mod terrain;
 use crate::{BYTE_COUNT, CHUNK_SIDE};
-pub use settings::{Biome, Carver, Feature, Field, Islands, Settings};
+pub use settings::{Biome, Carver, Feature, Field, Islands, Settings, Terrain};
 #[derive(Debug)]
 pub struct Column {
     pub height: i32,
@@ -41,7 +42,8 @@ impl Generator {
         let relief = f64::from(self.settings.relief);
         let geology = relief * (continent * 0.72 + inland * ridge * (1.0 - f[1]) * 0.95)
             + (f[5] - 0.5) * (12.0 + inland * 20.0);
-        let h = f64::from(self.settings.sea_level) + geology;
+        let h =
+            f64::from(self.settings.sea_level) + terrain::height(self, p, geology, inland, f[1]);
         let climate = [
             (f[3] - geology.max(0.0) * 0.0015).clamp(0.0, 1.0),
             (f[4] + (1.0 - inland) * 0.08).clamp(0.0, 1.0),
@@ -166,13 +168,14 @@ impl Generator {
         if !valid_position(p) {
             return 0;
         }
-        let id = self.base(p, &self.column(p[0], p[2]));
+        let column = self.column(p[0], p[2]);
+        let id = self.base(p, &column);
         if id > 0 || p[1] < self.bounds().0 || p[1] > self.bounds().1 {
             return id;
         }
         features::instances(self, p, p)
             .iter()
-            .map(|i| i.block(p))
+            .map(|i| i.block(p, &column))
             .find(|id| *id > 0)
             .unwrap_or(0)
     }
@@ -200,7 +203,7 @@ impl Generator {
                     if id == 0 && p[1] >= self.bounds().0 && p[1] <= self.bounds().1 {
                         id = instances
                             .iter()
-                            .map(|i| i.block(p))
+                            .map(|i| i.block(p, &column))
                             .find(|id| *id > 0)
                             .unwrap_or(0);
                     }
@@ -234,7 +237,7 @@ impl Generator {
         let mut top = c.height.max(self.settings.sea_level);
         for instance in features::instances(self, [x, top + 1, z], [x, top + 64, z]) {
             for y in (top + 1..=top + 64).rev() {
-                if instance.block([x, y, z]) > 0 {
+                if instance.block([x, y, z], &c) > 0 {
                     top = top.max(y);
                     break;
                 }
