@@ -3,6 +3,21 @@ defmodule Wyram.Engine.WorldTest do
 
   alias Wyram.Engine.{Native, Paths, PluginManager, World}
 
+  test "coordinates outside the native range never create region owners" do
+    count = Registry.count(Wyram.Engine.RegionRegistry)
+    assert {:error, :out_of_world} = World.set_block(2_000_000, 0, 0, 0)
+    assert World.get_block(2_000_000, 0, 0) == 0
+    assert [{_, chunk}] = World.get_chunk_snapshots([{200_000, 0, 0}])
+    assert chunk.data == :binary.copy(<<0>>, 8192)
+    assert World.get_blocks([{2_000_000, 0, 0}]) == %{{2_000_000, 0, 0} => 0}
+    assert Registry.count(Wyram.Engine.RegionRegistry) == count
+  end
+
+  test "world edits respect the configured vertical bounds" do
+    assert {:error, :out_of_world} = World.set_block(0, 512, 0, 0)
+    assert {:error, :out_of_world} = World.set_block(0, -1, 0, 0)
+  end
+
   test "packaged manifests bind compiled catalogs to their owned modules" do
     for {id, entry, dependencies} <- [
           {"test_terrain", "Elixir.WyramMods.TestTerrain", []},

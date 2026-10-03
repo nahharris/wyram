@@ -41,14 +41,14 @@ defmodule Wyram.Plugin.GameCompiler do
   defp validate_references(config, metadata, catalog, dependencies) do
     known = registered_ids(metadata, catalog, dependencies)
 
-    if Enum.all?(Map.values(config.terrain), &(Ref.canonical_id(&1) in known)) do
+    if Enum.all?(Config.references(config), &(Ref.canonical_id(&1) in known)) do
       :ok
     else
       {:error,
        diagnostic(
          metadata,
          :unresolved_game_reference,
-         "terrain references must name registered blocks owned by this plugin or an explicit dependency"
+         "game references must name registered blocks owned by this plugin or an explicit dependency"
        )}
     end
   end

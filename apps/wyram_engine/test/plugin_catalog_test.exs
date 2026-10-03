@@ -5,6 +5,25 @@ defmodule Wyram.Engine.PluginCatalogTest do
   alias Wyram.Engine.PluginCatalog
   alias Wyram.Game.Config
   alias Wyram.Plugin.{Declaration, SourceLocation}
+  alias Wyram.WorldGen.Biome
+  alias Wyram.WorldGen.Config, as: WorldGenConfig
+
+  test "world generation references are revalidated on installed catalogs" do
+    grass = Ref.new!("test_game", "grass")
+
+    biome =
+      Biome.new!(%{
+        id: "test",
+        surface: grass,
+        soil: grass,
+        rock: grass,
+        water: Ref.new!("unrelated", "water")
+      })
+
+    game = %{game_config("test_game") | worldgen: WorldGenConfig.new!(%{biomes: [biome]})}
+    packaged = package("test_game", [block("test_game", "grass", {1, 2, 3})], [], game)
+    assert {:error, :invalid_game_configuration} = PluginCatalog.build([packaged])
+  end
 
   test "liquid variants keep logical identities across registry growth and save reload" do
     liquid = block("test_game", "water", {40, 100, 220})

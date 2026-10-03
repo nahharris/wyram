@@ -3,7 +3,7 @@ defmodule Wyram.Engine.ClientPort do
   use GenServer
   require Logger
 
-  alias Wyram.Engine.{Characters, Native, Paths, PluginManager, World}
+  alias Wyram.Engine.{Characters, ChunkStream, Native, Paths, PluginManager, World}
 
   @radius 2
   @chunk_side 16
@@ -60,8 +60,28 @@ defmodule Wyram.Engine.ClientPort do
     })
 
     Characters.connect()
-    {:noreply, stream(state, {0, 0})}
+    player = Enum.find(Characters.latest(), &(&1.id == "player"))
+    {:noreply, stream(state, center(player))}
   end
+
+  def handle_info({:stream_batch, ref}, %{stream_ref: ref, port: port} = state)
+      when not is_nil(port) do
+    {batch, pending} = Enum.split(state.pending, 16)
+
+    chunks =
+      Enum.map(World.get_chunk_snapshots(batch), fn {key, chunk} ->
+        %{key: Tuple.to_list(key), revision: chunk.revision, data: Base.encode64(chunk.data)}
+      end)
+
+    if chunks != [], do: send_packet(port, %{type: "chunks", chunks: chunks})
+
+    if pending != [], do: Process.send_after(self(), {:stream_batch, ref}, 1)
+
+    {:noreply,
+     %{state | pending: pending, sent: Enum.reduce(batch, state.sent, &MapSet.put(&2, &1))}}
+  end
+
+  def handle_info({:stream_batch, _}, state), do: {:noreply, state}
 
   def handle_info({port, {:data, bytes}}, %{port: port} = state) do
     case Jason.decode(bytes) do
@@ -153,8 +173,7 @@ defmodule Wyram.Engine.ClientPort do
     Characters.acknowledge()
     send_packet(state.port, %{type: "character_states", characters: batch})
     player = Enum.find(batch, &(&1.id == "player"))
-    {x, z} = {player.x, player.z}
-    center = {Integer.floor_div(floor(x), @chunk_side), Integer.floor_div(floor(z), @chunk_side)}
+    center = center(player)
     next = if state.center != center, do: stream(state, center), else: state
     {:noreply, %{next | player: player}}
   end
@@ -190,7 +209,10 @@ defmodule Wyram.Engine.ClientPort do
     %{
       port: port,
       sent: MapSet.new(),
-      center: {0, 0},
+      center: nil,
+      pending: [],
+      stream_ref: nil,
+      bounds: World.generation().bounds,
       player: nil,
       exit_status: nil,
       exit_waiters: [],
@@ -198,27 +220,32 @@ defmodule Wyram.Engine.ClientPort do
     }
   end
 
+  defp center(player),
+    do:
+      {Integer.floor_div(floor(player.x), @chunk_side),
+       Integer.floor_div(floor(player.y), @chunk_side),
+       Integer.floor_div(floor(player.z), @chunk_side)}
+
   defp stream(%{port: nil} = state, _), do: state
 
-  defp stream(state, {cx, cz} = center) do
-    wanted =
-      MapSet.new(
-        for x <- (cx - @radius)..(cx + @radius),
-            z <- (cz - @radius)..(cz + @radius),
-            y <- 3..5,
-            do: {x, y, z}
-      )
+  defp stream(state, center) do
+    keys = ChunkStream.keys(center, state.bounds, @radius)
+    wanted = MapSet.new(keys)
 
     Enum.each(MapSet.difference(state.sent, wanted), fn key ->
       send_packet(state.port, %{type: "forget", key: Tuple.to_list(key)})
     end)
 
-    Enum.each(MapSet.difference(wanted, state.sent), fn {x, y, z} = key ->
-      %{data: data, revision: revision} = World.get_chunk(x, y, z)
-      send_chunk(state.port, key, revision, data)
-    end)
+    ref = make_ref()
+    send(self(), {:stream_batch, ref})
 
-    %{state | sent: wanted, center: center}
+    %{
+      state
+      | center: center,
+        sent: MapSet.intersection(state.sent, wanted),
+        pending: Enum.reject(keys, &MapSet.member?(state.sent, &1)),
+        stream_ref: ref
+    }
   end
 
   defp send_chunk(port, key, revision, data) do

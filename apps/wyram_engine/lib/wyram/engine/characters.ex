@@ -2,7 +2,7 @@ defmodule Wyram.Engine.Characters do
   @moduledoc "A shared fixed-step owner of dense character state and coalesced presentation snapshots."
   use GenServer
   alias Wyram.Character.{Definition, Input, State, Step}
-  alias Wyram.Engine.{ClientPort, Collision, PluginManager}
+  alias Wyram.Engine.{ClientPort, Collision, PluginManager, World}
   @table :wyram_character_snapshots
 
   def start_link(options) do
@@ -178,7 +178,15 @@ defmodule Wyram.Engine.Characters do
   defp profile_definition(options) do
     case Keyword.fetch(options, :profile) do
       {:ok, profile} -> [Definition.player(profile)]
-      :error -> PluginManager.character_definitions()
+      :error -> game_definitions()
     end
+  end
+
+  defp game_definitions do
+    definitions = PluginManager.character_definitions()
+
+    if PluginManager.spawn_policy() == :surface,
+      do: World.surface_definitions(definitions),
+      else: definitions
   end
 end

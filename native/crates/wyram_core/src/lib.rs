@@ -1,5 +1,6 @@
 pub mod batch;
 pub mod collision;
+pub mod worldgen;
 pub use collision::PackedWorld;
 
 pub const CHUNK_SIDE: usize = 16;

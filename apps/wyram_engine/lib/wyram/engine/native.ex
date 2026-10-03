@@ -28,6 +28,12 @@ defmodule Wyram.Engine.Native do
           {:ok, binary()} | {:error, String.t()}
   def write_block(_data, _x, _y, _z, _id), do: :erlang.nif_error(:nif_not_loaded)
 
+  def compile_generator(_seed, _settings), do: :erlang.nif_error(:nif_not_loaded)
+  def generate_world_chunks(_resource, _keys), do: :erlang.nif_error(:nif_not_loaded)
+  def sample_world(_resource, _positions), do: :erlang.nif_error(:nif_not_loaded)
+  def generator_spawn(_resource), do: :erlang.nif_error(:nif_not_loaded)
+  def surface_heights(_resource, _positions), do: :erlang.nif_error(:nif_not_loaded)
+
   def read_blocks(_data, _positions), do: :erlang.nif_error(:nif_not_loaded)
   def compare_write_blocks(_data, _edits), do: :erlang.nif_error(:nif_not_loaded)
   def liquid_positions(_data, _ids), do: :erlang.nif_error(:nif_not_loaded)

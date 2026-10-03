@@ -2,58 +2,128 @@ defmodule Wyram.Engine.World do
   @moduledoc "Routes chunk operations to region actors and durably records edits."
   use GenServer
 
-  alias Wyram.Engine.{PluginManager, Region}
+  alias Wyram.Engine.{Native, PluginManager, Region, WorldGenerator}
 
   @region_side 4
   @chunk_side 16
+  @coordinate_limit 1_000_000
+  @air_chunk %{data: :binary.copy(<<0>>, 8192), revision: 0}
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options, name: __MODULE__)
 
   @spec get_chunk(integer(), integer(), integer()) ::
           %{data: binary(), revision: non_neg_integer()}
   def get_chunk(cx, cy, cz) do
-    GenServer.call(region_pid(cx, cz), {:chunk, {cx, cy, cz}})
+    if supported_key?({cx, cy, cz}),
+      do: GenServer.call(region_pid(cx, cz), {:chunk, {cx, cy, cz}}),
+      else: @air_chunk
+  end
+
+  def generation, do: GenServer.call(__MODULE__, :generation)
+
+  def surface_definitions(definitions) do
+    case generation() do
+      %{resource: nil} -> definitions
+      %{resource: resource} -> place_definitions(resource, definitions)
+    end
+  end
+
+  defp place_definitions(resource, definitions) do
+    {sx, _, sz} = Native.generator_spawn(resource)
+
+    positions =
+      Enum.map(definitions, fn definition ->
+        {x, _, z} = definition.position
+        {x + sx, z + sz}
+      end)
+
+    samples =
+      Enum.flat_map(positions, fn {x, z} ->
+        for dx <- [-0.5, 0.5], dz <- [-0.5, 0.5], do: {floor(x + dx), floor(z + dz)}
+      end)
+
+    {:ok, heights} = Native.surface_heights(resource, samples)
+
+    definitions
+    |> Enum.zip(positions)
+    |> Enum.zip(Enum.chunk_every(heights, 4))
+    |> Enum.map(fn {{definition, {x, z}}, samples} ->
+      %{definition | position: {x, Enum.max(samples) + 0.05, z}}
+    end)
   end
 
   @spec get_chunks([{integer(), integer(), integer()}]) :: [
           {{integer(), integer(), integer()}, binary()}
         ]
   def get_chunks(keys) do
-    keys
-    |> Enum.uniq()
-    |> Enum.group_by(fn {cx, _cy, cz} -> region_pid(cx, cz) end)
-    |> Enum.flat_map(fn {pid, owned} -> GenServer.call(pid, {:chunks, owned}) end)
+    Enum.map(get_chunk_snapshots(keys), fn {key, chunk} -> {key, chunk.data} end)
+  end
+
+  def get_chunk_snapshots(keys) do
+    {supported, outside} = keys |> Enum.uniq() |> Enum.split_with(&supported_key?/1)
+
+    chunks =
+      supported
+      |> Enum.group_by(fn {cx, _cy, cz} -> region_pid(cx, cz) end)
+      |> Enum.flat_map(fn {pid, owned} -> GenServer.call(pid, {:chunk_snapshots, owned}) end)
+
+    chunks ++ Enum.map(outside, &{&1, @air_chunk})
   end
 
   @spec get_block(integer(), integer(), integer()) :: non_neg_integer()
   def get_block(x, y, z) do
-    {key, local} = address({x, y, z})
-    GenServer.call(region_pid(elem(key, 0), elem(key, 2)), {:block, key, local})
+    if supported_position?({x, y, z}) do
+      {key, local} = address({x, y, z})
+      GenServer.call(region_pid(elem(key, 0), elem(key, 2)), {:block, key, local})
+    else
+      0
+    end
   end
 
   @spec set_block(integer(), integer(), integer(), non_neg_integer()) ::
           {:ok, non_neg_integer()} | {:error, atom()}
   def set_block(x, y, z, id) do
-    {key, local} = address({x, y, z})
-    GenServer.call(region_pid(elem(key, 0), elem(key, 2)), {:set, key, local, id})
+    %{bounds: {low, high}} = generation()
+
+    if supported_position?({x, y, z}) and y in low..high do
+      {key, local} = address({x, y, z})
+      GenServer.call(region_pid(elem(key, 0), elem(key, 2)), {:set, key, local, id})
+    else
+      {:error, :out_of_world}
+    end
   end
 
   def get_blocks(positions) do
-    positions
-    |> Enum.uniq()
-    |> group_positions()
-    |> Enum.flat_map(fn {pid, entries} -> GenServer.call(pid, {:read_blocks, entries}) end)
-    |> Map.new()
+    {supported, outside} = positions |> Enum.uniq() |> Enum.split_with(&supported_position?/1)
+
+    values =
+      supported
+      |> group_positions()
+      |> Enum.flat_map(fn {pid, entries} -> GenServer.call(pid, {:read_blocks, entries}) end)
+
+    Map.new(values ++ Enum.map(outside, &{&1, 0}))
   end
 
   def schedule_liquids(positions, due) do
+    %{bounds: {low, high}} = generation()
+
+    positions =
+      Enum.filter(positions, fn {_, y, _} = position ->
+        supported_position?(position) and y in low..high
+      end)
+
     Enum.each(group_positions(positions), fn {pid, entries} ->
       GenServer.cast(pid, {:schedule_liquids, entries, due})
     end)
   end
 
   def apply_liquid_edits(edits) do
+    %{bounds: {low, high}} = generation()
+
     edits
+    |> Enum.filter(fn {{_, y, _} = position, _, _} ->
+      supported_position?(position) and y in low..high
+    end)
     |> Enum.group_by(fn {{x, _, z}, _, _} ->
       region_pid(Integer.floor_div(x, 16), Integer.floor_div(z, 16))
     end)
@@ -67,6 +137,16 @@ defmodule Wyram.Engine.World do
       GenServer.call(pid, {:liquid_edits, entries})
     end)
   end
+
+  defp supported_position?(position),
+    do:
+      position |> Tuple.to_list() |> Enum.all?(&(is_integer(&1) and abs(&1) <= @coordinate_limit))
+
+  defp supported_key?(key),
+    do:
+      key
+      |> Tuple.to_list()
+      |> Enum.all?(&(is_integer(&1) and abs(&1) <= div(@coordinate_limit, @chunk_side)))
 
   defp group_positions(positions) do
     positions
@@ -99,14 +179,27 @@ defmodule Wyram.Engine.World do
     path = Path.join(directory, "world.json")
     versions = PluginManager.plugin_versions()
 
-    case load_world(path, versions) do
-      {:ok, saved} -> {:ok, Map.merge(%{path: path, edited: %{}, seed: 2026}, saved)}
-      {:error, :enoent} -> {:ok, %{path: path, edited: %{}, seed: 2026, plugins: versions}}
+    config = PluginManager.worldgen()
+    identity = WorldGenerator.identity(config)
+    default_seed = if config, do: config.seed, else: 2026
+
+    with {:ok, saved} <- load_or_create(path, versions, identity, default_seed),
+         {:ok, generation} <-
+           WorldGenerator.compile(
+             config,
+             saved.seed,
+             PluginManager.terrain_palette(),
+             PluginManager.blocks()
+           ) do
+      {:ok, Map.merge(saved, %{path: path, generation: generation})}
+    else
       {:error, reason} -> {:stop, reason}
     end
   end
 
   @impl true
+  def handle_call(:generation, _from, state), do: {:reply, state.generation, state}
+
   def handle_call({:saved_chunks, {rx, rz}}, _from, state) do
     chunks =
       Map.filter(state.edited, fn {{cx, _cy, cz}, _} ->
@@ -140,11 +233,19 @@ defmodule Wyram.Engine.World do
      {Integer.mod(x, @chunk_side), Integer.mod(y, @chunk_side), Integer.mod(z, @chunk_side)}}
   end
 
-  defp load_world(path, versions) do
+  defp load_or_create(path, versions, identity, seed) do
+    case load_world(path, versions, identity) do
+      {:error, :enoent} -> {:ok, %{edited: %{}, seed: seed, plugins: versions}}
+      result -> result
+    end
+  end
+
+  defp load_world(path, versions, identity) do
     with {:ok, bytes} <- File.read(path),
          {:ok, data} <- Jason.decode(bytes),
          true <- compatible_plugins?(data["plugins"], versions),
-         true <- data["format"] == 1,
+         true <- compatible_generator?(data, identity),
+         true <- is_integer(data["seed"]) and data["seed"] in 0..18_446_744_073_709_551_615,
          {:ok, chunks} <- decode_chunks(data["chunks"] || %{}) do
       {:ok, %{seed: data["seed"], plugins: versions, edited: chunks}}
     else
@@ -153,6 +254,10 @@ defmodule Wyram.Engine.World do
       _ -> {:error, :invalid_save}
     end
   end
+
+  defp compatible_generator?(%{"format" => 1}, "legacy-v1"), do: true
+  defp compatible_generator?(%{"format" => 2, "generator" => identity}, identity), do: true
+  defp compatible_generator?(_, _), do: false
 
   defp compatible_plugins?(saved, active) when is_map(saved) do
     Enum.all?(saved, fn {id, version} -> active[id] == version end)
@@ -177,7 +282,8 @@ defmodule Wyram.Engine.World do
 
   defp persist(state) do
     payload = %{
-      format: 1,
+      format: 2,
+      generator: state.generation.identity,
       seed: state.seed,
       plugins: state.plugins,
       blocks: PluginManager.blocks(),

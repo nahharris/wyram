@@ -4,18 +4,22 @@ defmodule Wyram.Game.Config do
   alias Wyram.Block.Ref
   alias Wyram.Character.{Catalog, Definition, Model, Profile}
 
+  alias Wyram.WorldGen.Config, as: WorldGenConfig
+
   @enforce_keys [:terrain, :profile, :models, :characters]
-  defstruct [:terrain, :profile, :models, :characters]
+  defstruct [:terrain, :profile, :models, :characters, worldgen: nil, spawn: :configured]
 
   @type terrain :: %{surface: Ref.t(), soil: Ref.t(), rock: Ref.t()}
   @type t :: %__MODULE__{
           terrain: terrain(),
           profile: Profile.t(),
           models: [Model.t()],
-          characters: [Definition.t()]
+          characters: [Definition.t()],
+          worldgen: WorldGenConfig.t() | nil,
+          spawn: :configured | :surface
         }
 
-  @fields [:terrain, :profile, :models, :characters]
+  @fields [:terrain, :profile, :models, :characters, :worldgen, :spawn]
   @bone_fields [:name, :parent, :role, :pivot, :boxes]
   @box_fields [:center, :size, :color]
 
@@ -28,11 +32,20 @@ defmodule Wyram.Game.Config do
     with :ok <- known_fields(attrs),
          :ok <- valid_terrain(terrain),
          :ok <- valid_profile(profile),
+         :ok <- valid_worldgen(Map.get(attrs, :worldgen)),
+         :ok <- valid_spawn(Map.get(attrs, :spawn, :configured)),
          characters =
            Map.get_lazy(attrs, :characters, fn -> default_characters(models, profile) end),
          :ok <- valid_catalog(models, characters) do
       {:ok,
-       %__MODULE__{terrain: terrain, profile: profile, models: models, characters: characters}}
+       %__MODULE__{
+         terrain: terrain,
+         profile: profile,
+         models: models,
+         characters: characters,
+         worldgen: Map.get(attrs, :worldgen),
+         spawn: Map.get(attrs, :spawn, :configured)
+       }}
     end
   end
 
@@ -48,10 +61,22 @@ defmodule Wyram.Game.Config do
 
   @spec validate(term()) :: :ok | {:error, atom()}
   def validate(%__MODULE__{} = config) do
-    with {:ok, _config} <- new(Map.from_struct(config)), do: :ok
+    if complete_struct?(config, __MODULE__) do
+      with {:ok, _config} <- new(Map.from_struct(config)), do: :ok
+    else
+      {:error, :invalid_game_config}
+    end
   end
 
   def validate(_), do: {:error, :invalid_game_config}
+
+  def references(config), do: Map.values(config.terrain) ++ worldgen_references(config.worldgen)
+  defp worldgen_references(nil), do: []
+  defp worldgen_references(value), do: WorldGenConfig.references(value)
+  defp valid_spawn(policy) when policy in [:configured, :surface], do: :ok
+  defp valid_spawn(_), do: {:error, :invalid_spawn_policy}
+  defp valid_worldgen(nil), do: :ok
+  defp valid_worldgen(value), do: WorldGenConfig.validate(value)
 
   defp valid_profile(profile) do
     if complete_struct?(profile, Profile),
@@ -123,15 +148,4 @@ defmodule Wyram.Game.Config do
     do: [Definition.player(profile, id)]
 
   defp default_characters(_, _), do: []
-end
-
-defmodule Wyram.Game.Provider do
-  @moduledoc """
-  Public build contract for game setup.
-
-  The plugin compiler invokes explicitly declared providers and validates their
-  output. The engine consumes compiled configuration data instead of callbacks.
-  """
-
-  @callback build() :: Wyram.Game.Config.t()
 end

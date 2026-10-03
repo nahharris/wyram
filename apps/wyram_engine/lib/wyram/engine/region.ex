@@ -2,7 +2,7 @@ defmodule Wyram.Engine.Region do
   @moduledoc "Owns dense chunk binaries for one 4 by 4 chunk-column region."
   use GenServer
 
-  alias Wyram.Engine.{ClientPort, LiquidSimulation, Native, PluginManager, World}
+  alias Wyram.Engine.{ClientPort, LiquidSimulation, Native, PluginManager, World, WorldGenerator}
 
   def start_link(region) do
     GenServer.start_link(__MODULE__, region,
@@ -18,7 +18,7 @@ defmodule Wyram.Engine.Region do
       pending: %{},
       liquids: PluginManager.liquids(),
       placeable: Map.values(PluginManager.placeable()),
-      palette: PluginManager.terrain_palette()
+      generation: World.generation()
     }
 
     seed_liquids(state)
@@ -32,13 +32,13 @@ defmodule Wyram.Engine.Region do
   end
 
   def handle_call({:chunks, keys}, _from, state) do
-    {chunks, state} =
-      Enum.map_reduce(keys, state, fn key, acc ->
-        {chunk, next} = ensure_chunk(acc, key)
-        {{key, chunk.data}, next}
-      end)
+    state = ensure_chunks(state, keys)
+    {:reply, Enum.map(keys, &{&1, state.chunks[&1].data}), state}
+  end
 
-    {:reply, chunks, state}
+  def handle_call({:chunk_snapshots, keys}, _from, state) do
+    state = ensure_chunks(state, keys)
+    {:reply, Enum.map(keys, &{&1, state.chunks[&1]}), state}
   end
 
   def handle_call({:block, key, local}, _from, state) do
@@ -188,23 +188,18 @@ defmodule Wyram.Engine.Region do
   end
 
   defp ensure_chunk(state, key) do
-    case state.chunks do
-      %{^key => chunk} ->
-        {chunk, state}
+    state = ensure_chunks(state, [key])
+    {state.chunks[key], state}
+  end
 
-      _ ->
-        [cx, cy, cz] = Tuple.to_list(key)
+  defp ensure_chunks(state, keys) do
+    missing = keys |> Enum.uniq() |> Enum.reject(&Map.has_key?(state.chunks, &1))
+    generated = WorldGenerator.chunks(state.generation, missing)
 
-        data =
-          apply(
-            Native,
-            :generate_chunk,
-            [2026, cx, cy, cz] ++ state.palette
-          )
-
-        chunk = %{data: data, revision: 0}
-        seed_chunk(key, data, state.liquids)
-        {chunk, put_in(state.chunks[key], chunk)}
-    end
+    Enum.reduce(generated, state, fn {key, data}, acc ->
+      # Worldgen liquids are stable sources. Edits wake adjacent liquid cells; do not queue entire oceans.
+      if is_nil(state.generation.resource), do: seed_chunk(key, data, state.liquids)
+      put_in(acc.chunks[key], %{data: data, revision: 0})
+    end)
   end
 end
