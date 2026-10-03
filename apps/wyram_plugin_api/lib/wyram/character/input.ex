@@ -8,6 +8,7 @@ defmodule Wyram.Character.Input do
             pitch: 0.0,
             running: false,
             jump: false,
+            flight_request: 0,
             sneaking: false,
             crawling: false,
             climbing: false,
@@ -23,6 +24,7 @@ defmodule Wyram.Character.Input do
           pitch: number(),
           running: boolean(),
           jump: boolean(),
+          flight_request: non_neg_integer(),
           sneaking: boolean(),
           crawling: boolean(),
           climbing: boolean(),
@@ -41,6 +43,7 @@ defmodule Wyram.Character.Input do
         epoch: input.epoch,
         yaw: input.yaw,
         pitch: input.pitch,
+        flight_request: input.flight_request,
         cancel_actions: true
     }
 
@@ -60,7 +63,8 @@ defmodule Wyram.Character.Input do
       when is_boolean(running) and is_boolean(jump) do
     values = [{forward, -1, 1}, {right, -1, 1}, {yaw, -1000, 1000}, {pitch, -1.55, 1.55}]
 
-    if valid_sequence?(sequence) and valid_sequence?(epoch) and Enum.all?(values, &bounded?/1) and
+    if valid_sequence?(sequence) and valid_sequence?(epoch) and
+         valid_sequence?(Map.get(packet, "flight_request", 0)) and Enum.all?(values, &bounded?/1) and
          valid_flags?(packet) do
       {:ok,
        %__MODULE__{
@@ -72,6 +76,7 @@ defmodule Wyram.Character.Input do
          pitch: pitch,
          running: running,
          jump: jump,
+         flight_request: Map.get(packet, "flight_request", 0),
          sneaking: Map.get(packet, "sneaking", false),
          crawling: Map.get(packet, "crawling", false),
          climbing: Map.get(packet, "climbing", false),

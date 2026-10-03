@@ -2,6 +2,7 @@ mod animation;
 mod camera;
 mod characters;
 mod chunk_mesh;
+mod flight_input;
 mod meshing;
 mod outbound;
 mod replica;
@@ -79,6 +80,7 @@ struct Intent {
     pitch: f32,
     running: bool,
     jump: bool,
+    flight_request: u64,
     sneaking: bool,
     crawling: bool,
     climbing: bool,
@@ -422,6 +424,7 @@ struct Game {
     input_sequence: u64,
     last_input: Instant,
     cancel_actions: bool,
+    flight_input: flight_input::FlightInput,
     pressed: HashSet<KeyCode>,
     cursor_locked: bool,
     selected: u16,
@@ -450,6 +453,7 @@ impl Game {
             input_sequence: 0,
             last_input: Instant::now() - Duration::from_secs(1),
             pressed: HashSet::new(),
+            flight_input: flight_input::FlightInput::default(),
             cancel_actions: false,
             cursor_locked: false,
             selected: 1,
@@ -480,6 +484,7 @@ impl Game {
     }
 
     fn apply_teleport(&mut self, x: f32, y: f32, z: f32, yaw: f32, pitch: f32) {
+        self.flight_input.reset_epoch();
         self.position = Vec3::new(x, y, z);
         self.yaw = yaw;
         self.pitch = pitch;
@@ -487,6 +492,7 @@ impl Game {
     }
 
     fn release_input(&mut self) {
+        self.flight_input.release_controls();
         self.pressed.clear();
         self.cancel_actions = true;
         self.update_input(true);
@@ -504,6 +510,7 @@ impl Game {
             pitch: self.pitch,
             running: self.pressed.contains(&KeyCode::ControlLeft),
             jump: self.pressed.contains(&KeyCode::Space),
+            flight_request: self.flight_input.request,
             sneaking: self.pressed.contains(&KeyCode::ShiftLeft),
             crawling: self.pressed.contains(&KeyCode::KeyC),
             climbing: false,
@@ -682,6 +689,12 @@ impl ApplicationHandler<UserEvent> for Game {
                                     self.camera.cycle();
                                 }
                                 return;
+                            }
+                            if code == KeyCode::Space {
+                                self.flight_input.press_space(
+                                    Instant::now(),
+                                    event.repeat || self.pressed.contains(&code),
+                                );
                             }
                             self.cancel_actions = false;
                             self.pressed.insert(code);
@@ -961,5 +974,29 @@ mod tests {
             assert_eq!(targets[0], targets[2]);
             assert_eq!(targets[0]["z"], if place { 5 } else { 4 });
         }
+    }
+    #[test]
+    fn flight_gestures_survive_snapshots_until_the_teleport_epoch_changes() {
+        let snapshot = |sequence, epoch| {
+            serde_json::from_value(serde_json::json!({"id":"player","x":0.5,"y":1.62,"z":0.5,"feet":[0.5,0.0,0.5],"velocity":[0.0,0.0,0.0],"radius":0.28,"height":1.8,"eye_height":1.62,"yaw":0.0,"pitch":0.0,"sequence":sequence,"epoch":epoch,"unavailable":false})).unwrap()
+        };
+        let mut game = Game::new();
+        let now = Instant::now();
+        game.flight_input.press_space(now, false);
+        game.accept_characters(vec![snapshot(1, 0)]);
+        game.flight_input
+            .press_space(now + Duration::from_millis(100), false);
+        assert_eq!(game.flight_input.request, 1);
+        game.accept_characters(vec![snapshot(2, 0)]);
+        assert_eq!(game.flight_input.request, 1);
+        game.accept_characters(vec![snapshot(1, 1)]);
+        assert_eq!(game.flight_input.request, 0);
+    }
+    #[test]
+    fn idle_intent_carries_a_flight_request_counter() {
+        let mut game = Game::new();
+        game.update_input(true);
+        let packet = serde_json::to_value(game.last_intent.unwrap()).unwrap();
+        assert_eq!(packet["flight_request"].as_u64(), Some(0));
     }
 }

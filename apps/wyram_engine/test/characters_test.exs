@@ -120,4 +120,35 @@ defmodule Wyram.Engine.CharactersTest do
     assert elem(bodies["player"].position, 2) < 0.5
     assert elem(bodies["other"].position, 2) == 0.5
   end
+
+  test "coalesced flight requests survive a released jump and teleport invalidates them" do
+    collision = fn queries ->
+      {:ok,
+       Enum.map(queries, fn {{x, y, z}, {dx, dy, dz}, _, _} ->
+         {{x + dx, y + dy, z + dz}, {false, false, false}, false}
+       end)}
+    end
+
+    profile = Map.put(Profile.default(), :fly_enabled, true)
+
+    pid =
+      start_supervised!(
+        {Characters,
+         name: nil, tick: false, profile: profile, collision: collision, publish: fn _ -> :ok end}
+      )
+
+    Characters.connect(pid)
+    Characters.input(intent(1, 0) |> Map.put("flight_request", 1) |> Map.put("jump", true), pid)
+    Characters.input(intent(2, 0) |> Map.put("flight_request", 1), pid)
+    send(pid, :tick)
+    snapshot = Characters.snapshot(pid)
+    assert snapshot.mode == :fly
+    assert snapshot.input_sequence == 2
+    assert :ok = Characters.teleport(10.0, 80.0, 10.0, 0.0, 0.0, pid)
+    Characters.input(intent(3, 0) |> Map.put("flight_request", 2), pid)
+    send(pid, :tick)
+    snapshot = Characters.snapshot(pid)
+    assert snapshot.mode == :walk
+    assert snapshot.input_sequence == 0
+  end
 end

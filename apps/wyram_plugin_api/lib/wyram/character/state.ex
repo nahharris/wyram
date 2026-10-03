@@ -1,6 +1,6 @@
 defmodule Wyram.Character.State do
   @moduledoc "Pure fixed-step character authority, independent of actor ownership and presentation."
-  alias Wyram.Character.{Input, Motion, Profile}
+  alias Wyram.Character.{Flight, Input, Motion, Profile}
   @tick_ms 20
   defstruct position: {0.5, 71.38, 0.5},
             velocity: {0.0, 0.0, 0.0},
@@ -8,6 +8,7 @@ defmodule Wyram.Character.State do
             model: "default",
             grounded: false,
             jump_held: false,
+            flight_request: 0,
             jump_pending: nil,
             jump_origin: nil,
             transition: :idle,
@@ -37,6 +38,7 @@ defmodule Wyram.Character.State do
           model: String.t(),
           grounded: boolean(),
           jump_held: boolean(),
+          flight_request: non_neg_integer(),
           jump_pending: number() | nil,
           jump_origin: vector() | nil,
           transition: atom(),
@@ -76,6 +78,11 @@ defmodule Wyram.Character.State do
 
   @spec prepare(t(), Input.t()) :: {t(), query()}
   def prepare(state, input) do
+    state = Flight.begin(state, input)
+    if state.mode == :fly, do: Flight.prepare(state, input), else: prepare_ground(state, input)
+  end
+
+  defp prepare_ground(state, input) do
     motion = Profile.motion(state.profile, input.running)
 
     motion = posture_motion(state, motion)
@@ -95,12 +102,12 @@ defmodule Wyram.Character.State do
            if(hit_z, do: 0.0, else: vz)}
 
     grounded = not unavailable and hit_y and vy < 0
-    state = Motion.landed(state, grounded)
+    state = %{state | velocity: velocity} |> Flight.landed(grounded) |> Motion.landed(grounded)
 
     %{
       state
       | position: position,
-        velocity: velocity,
+        velocity: state.velocity,
         grounded: grounded,
         unavailable: unavailable,
         sequence: state.sequence + 1

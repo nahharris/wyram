@@ -37,6 +37,7 @@ defmodule Wyram.Character.Posture do
     {original.position, {true, true, true}, unavailable}
   end
 
+  defp requested(%{mode: :fly}, _), do: :stand
   defp requested(%{action: %{kind: :roll}}, _), do: :prone
   defp requested(_, %{crawling: true}), do: :prone
   defp requested(_, %{sneaking: true}), do: :crouch
