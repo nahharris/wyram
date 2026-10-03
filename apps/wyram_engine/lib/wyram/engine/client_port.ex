@@ -3,9 +3,18 @@ defmodule Wyram.Engine.ClientPort do
   use GenServer
   require Logger
 
-  alias Wyram.Engine.{Characters, ChunkStream, Native, Paths, PluginManager, World}
+  alias Wyram.Engine.{
+    Characters,
+    ChunkLoader,
+    ChunkStream,
+    ChunkWire,
+    Native,
+    Paths,
+    PluginManager,
+    World
+  }
 
-  @radius 2
+  @radius 4
   @chunk_side 16
 
   def start_link(_), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
@@ -66,22 +75,24 @@ defmodule Wyram.Engine.ClientPort do
 
   def handle_info({:stream_batch, ref}, %{stream_ref: ref, port: port} = state)
       when not is_nil(port) do
-    {batch, pending} = Enum.split(state.pending, 16)
-
-    chunks =
-      Enum.map(World.get_chunk_snapshots(batch), fn {key, chunk} ->
-        %{key: Tuple.to_list(key), revision: chunk.revision, data: Base.encode64(chunk.data)}
-      end)
-
-    if chunks != [], do: send_packet(port, %{type: "chunks", chunks: chunks})
-
-    if pending != [], do: Process.send_after(self(), {:stream_batch, ref}, 1)
-
-    {:noreply,
-     %{state | pending: pending, sent: Enum.reduce(batch, state.sent, &MapSet.put(&2, &1))}}
+    {:noreply, %{state | loader: ChunkLoader.dispatch(state.loader)}}
   end
 
   def handle_info({:stream_batch, _}, state), do: {:noreply, state}
+
+  def handle_info({ref, chunks}, state) when is_reference(ref) and is_list(chunks) do
+    {loader, accepted} = ChunkLoader.complete(state.loader, ref, chunks)
+
+    send_chunks(state, accepted)
+    sent = Enum.reduce(accepted, state.sent, fn {key, _}, acc -> MapSet.put(acc, key) end)
+    {:noreply, %{state | sent: sent, loader: ChunkLoader.dispatch(loader)}}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    if Map.has_key?(state.loader.tasks, ref),
+      do: {:stop, {:chunk_request_failed, reason}, state},
+      else: {:noreply, state}
+  end
 
   def handle_info({port, {:data, bytes}}, %{port: port} = state) do
     case Jason.decode(bytes) do
@@ -94,9 +105,18 @@ defmodule Wyram.Engine.ClientPort do
     if status != 0, do: Logger.warning("Native client exited with status #{status}")
     Characters.disconnect()
     Enum.each(state.exit_waiters, &GenServer.reply(&1, {:ok, status}))
+    if loader = Map.get(state, :loader), do: ChunkLoader.cancel(loader)
 
     {:noreply,
-     %{state | port: nil, sent: MapSet.new(), player: nil, exit_status: status, exit_waiters: []}}
+     state
+     |> Map.merge(%{
+       port: nil,
+       sent: MapSet.new(),
+       player: nil,
+       exit_status: status,
+       exit_waiters: []
+     })
+     |> Map.put(:loader, ChunkLoader.new())}
   end
 
   def handle_info(:poll_client, %{port: nil} = state), do: {:noreply, state}
@@ -156,11 +176,14 @@ defmodule Wyram.Engine.ClientPort do
 
   @impl true
   def handle_cast({:publish_chunk, key, revision, data}, state) do
-    if MapSet.member?(state.sent, key) do
+    {loader, accepted} = ChunkLoader.publish(state.loader, key, revision)
+
+    if accepted do
       send_chunk(state.port, key, revision, data)
     end
 
-    {:noreply, state}
+    sent = if accepted, do: MapSet.put(state.sent, key), else: state.sent
+    {:noreply, %{state | loader: loader, sent: sent}}
   end
 
   def handle_cast(:characters_restarted, state) do
@@ -182,6 +205,9 @@ defmodule Wyram.Engine.ClientPort do
     Characters.input(packet)
     state
   end
+
+  defp handle_packet(%{"type" => "capabilities", "chunk_protocol" => 1}, state),
+    do: %{state | chunk_protocol: 1}
 
   defp handle_packet(%{"type" => "edit", "x" => x, "y" => y, "z" => z, "id" => id}, state)
        when is_integer(x) and is_integer(y) and is_integer(z) and is_integer(id) do
@@ -210,13 +236,14 @@ defmodule Wyram.Engine.ClientPort do
       port: port,
       sent: MapSet.new(),
       center: nil,
-      pending: [],
+      loader: ChunkLoader.new(),
       stream_ref: nil,
       bounds: World.generation().bounds,
       player: nil,
       exit_status: nil,
       exit_waiters: [],
-      process_watch: watch
+      process_watch: watch,
+      chunk_protocol: 0
     }
   end
 
@@ -243,7 +270,7 @@ defmodule Wyram.Engine.ClientPort do
       state
       | center: center,
         sent: MapSet.intersection(state.sent, wanted),
-        pending: Enum.reject(keys, &MapSet.member?(state.sent, &1)),
+        loader: ChunkLoader.reset(state.loader, keys),
         stream_ref: ref
     }
   end
@@ -257,10 +284,36 @@ defmodule Wyram.Engine.ClientPort do
     })
   end
 
+  defp send_chunks(_state, []), do: :ok
+
+  defp send_chunks(%{chunk_protocol: 1} = state, chunks),
+    do: send_payload(state.port, ChunkWire.encode(chunks))
+
+  defp send_chunks(state, chunks) do
+    chunks =
+      Enum.map(chunks, fn {key, chunk} ->
+        %{key: Tuple.to_list(key), revision: chunk.revision, data: Base.encode64(chunk.data)}
+      end)
+
+    send_packet(state.port, %{type: "chunks", chunks: chunks})
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    if loader = Map.get(state, :loader), do: ChunkLoader.cancel(loader)
+    :ok
+  end
+
   defp send_packet(nil, _packet), do: :ok
 
   defp send_packet(port, packet) do
-    Port.command(port, Jason.encode!(packet))
+    send_payload(port, Jason.encode!(packet))
+  end
+
+  defp send_payload(nil, _), do: :ok
+
+  defp send_payload(port, bytes) do
+    Port.command(port, bytes)
   rescue
     ArgumentError -> {:error, :client_closed}
   end

@@ -30,6 +30,7 @@ struct Pending {
 struct State {
     pending: VecDeque<Pending>,
     edits: usize,
+    capabilities_announced: bool,
     closing: bool,
     failed: bool,
     stats: Snapshot,
@@ -52,8 +53,9 @@ impl Outbound {
     {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
-                pending: VecDeque::with_capacity(EDIT_CAPACITY + 1),
+                pending: VecDeque::with_capacity(EDIT_CAPACITY + 2),
                 edits: 0,
+                capabilities_announced: false,
                 closing: false,
                 failed: false,
                 stats: Snapshot::default(),
@@ -113,6 +115,12 @@ impl Outbound {
             return Err(SendError::Closed);
         }
         match packet {
+            ClientPacket::Capabilities { .. } => {
+                if state.capabilities_announced {
+                    return Ok(());
+                }
+                state.capabilities_announced = true;
+            }
             ClientPacket::Input { .. } => {
                 if let Some(index) = state
                     .pending
@@ -280,6 +288,34 @@ mod tests {
             EDIT_CAPACITY as u64 - 1
         );
         assert_eq!(packets.last().unwrap()["running"], false);
+    }
+
+    #[test]
+    fn repeated_capabilities_cannot_grow_a_blocked_outbound_queue() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (outbound, worker) = Outbound::start(
+            GateWriter {
+                entered: entered_tx,
+                release: release_rx,
+                bytes: Vec::new(),
+            },
+            |_| panic!("unexpected connection failure"),
+        );
+        outbound.send(edit(-1)).unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        for _ in 0..1000 {
+            outbound
+                .send(ClientPacket::Capabilities { chunk_protocol: 1 })
+                .unwrap();
+        }
+        assert_eq!(outbound.snapshot().queued, 1);
+        release_tx.send(()).unwrap();
+        drop(outbound);
+        let packets = decode(&worker.join().unwrap().unwrap().bytes);
+        assert_eq!(packets.len(), 2);
+        assert_eq!(packets[1]["type"], "capabilities");
+        assert_eq!(packets[1]["chunk_protocol"], 1);
     }
 
     #[test]
