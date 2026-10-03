@@ -35,6 +35,11 @@ defmodule WyramMods.Wyram.BlockCatalog do
     capability(%Material{color: {135, 94, 54}}, override: true)
   end
 
+  defblock Leaves, id: "leaves" do
+    template(WyramMods.Wyram.Blocks.Solid)
+    capability(%Material{color: {65, 116, 67}}, override: true)
+  end
+
   defblock Fluid, template: true do
     capability(%Collision{shape: :none})
   end
@@ -62,6 +67,8 @@ defmodule WyramMods.Wyram.Game do
   def build do
     Config.new!(%{
       terrain: %{surface: Blocks.Grass.ref(), soil: Blocks.Dirt.ref(), rock: Blocks.Stone.ref()},
+      worldgen: WyramMods.WorldGeneration.build(),
+      spawn: :surface,
       profile: WyramMods.Characters.player_profile(),
       models: WyramMods.Characters.models(),
       characters: WyramMods.Characters.definitions()

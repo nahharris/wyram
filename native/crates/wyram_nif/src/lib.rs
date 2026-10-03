@@ -1,4 +1,5 @@
 mod process_watch;
+mod worldgen;
 
 use rustler::{Binary, Env, OwnedBinary};
 

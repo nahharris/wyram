@@ -4,6 +4,8 @@ defmodule Wyram.Plugin.GameCompilerTest do
   alias Wyram.Block.Ref
   alias Wyram.Game.Config
   alias Wyram.Plugin.GameCompiler
+  alias Wyram.WorldGen.{Biome, Feature}
+  alias Wyram.WorldGen.Config, as: WorldGenConfig
 
   defmodule Game do
     @behaviour Wyram.Game.Provider
@@ -13,6 +15,21 @@ defmodule Wyram.Plugin.GameCompilerTest do
         Config.new!(%{
           terrain: Map.new([:surface, :soil, :rock], &{&1, Ref.new!("game", "stone")})
         })
+  end
+
+  defmodule WorldGenGame do
+    def build do
+      stone = Ref.new!("game", "stone")
+      feature = Feature.new!(%{block: Ref.new!("foreign", "stone"), accent: stone})
+
+      biome =
+        Biome.new!(%{id: "test", surface: stone, soil: stone, rock: stone, features: [feature]})
+
+      Config.new!(%{
+        terrain: Map.new([:surface, :soil, :rock], &{&1, stone}),
+        worldgen: WorldGenConfig.new!(%{biomes: [biome]})
+      })
+    end
   end
 
   defmodule InvalidGame do
@@ -37,6 +54,11 @@ defmodule Wyram.Plugin.GameCompilerTest do
 
   defp catalog(id \\ "game"),
     do: %{blocks: [%{id: id <> ":stone", plugin_id: id, local_id: "stone", kind: :block}]}
+
+  test "world generation features cannot reference undeclared plugin blocks" do
+    assert {:error, [%{code: :unresolved_game_reference}]} =
+             GameCompiler.compile(metadata(WorldGenGame), catalog(), %{})
+  end
 
   test "compiles explicit game builder output and allows content-only plugins" do
     assert {:ok, %Config{}} = GameCompiler.compile(metadata(Game), catalog(), %{})

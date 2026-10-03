@@ -3,6 +3,11 @@ defmodule Wyram.Engine.WorldTest do
 
   alias Wyram.Engine.{Native, Paths, PluginManager, World}
 
+  test "world edits respect the configured vertical bounds" do
+    assert {:error, :out_of_world} = World.set_block(0, 512, 0, 0)
+    assert {:error, :out_of_world} = World.set_block(0, -1, 0, 0)
+  end
+
   test "packaged manifests bind compiled catalogs to their owned modules" do
     for {id, entry, dependencies} <- [
           {"test_terrain", "Elixir.WyramMods.TestTerrain", []},

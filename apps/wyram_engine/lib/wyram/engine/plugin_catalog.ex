@@ -36,6 +36,8 @@ defmodule Wyram.Engine.PluginCatalog do
            Enum.map([game.terrain.surface, game.terrain.soil, game.terrain.rock], fn ref ->
              Map.fetch!(block_ids, Ref.canonical_id(ref))
            end),
+         worldgen: game.worldgen,
+         spawn_policy: game.spawn,
          player_profile: game.profile,
          character_definitions: game.characters,
          character_models: game.models,
@@ -500,7 +502,7 @@ defmodule Wyram.Engine.PluginCatalog do
   defp valid_game_refs?(game, allowed_plugins, blocks) do
     Config.validate(game) == :ok and
       Enum.all?(
-        [game.terrain.surface, game.terrain.soil, game.terrain.rock],
+        Config.references(game),
         &valid_game_ref?(&1, allowed_plugins, blocks)
       )
   end

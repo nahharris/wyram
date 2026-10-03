@@ -19,3 +19,7 @@ Outbound IPC tests gate a writer to prove queue admission completes while I/O is
 ## Liquid coverage
 
 `mise run test` also runs `scripts/test-liquids.exs` inside the packaged Wyram smoke game. It checks source placement, falling, flow across the x=64 region boundary, noncollision, owner restart, persistence, and drainage after source removal in a sealed channel. Unit tests cover invalid declarations, registry growth and rejected state mappings, horizontal attenuation, material height/opacity, liquid seam culling, conditional native batch writes, and transparent face sorting.
+
+## World generation coverage
+
+`mise run test` also runs the packaged world generation smoke check: 512-block bounds with sea level zero, sampled ocean/mountain/island fields, safe surface spawning, rejected out-of-range edits and liquid writes, save fingerprints and restored seed authority. Native tests compare chunk data against independent world-space voxel sampling at seams, exercise carvers and cross-boundary features, and check biome blend normalization and invalid parameter rejection. Public API tests cover `defbiome`, bounded data validation and reference ownership at compilation and installation. Client tests decode batched chunk packets with negative and high vertical coordinates. The atlas exporter described in [world-generation.md](world-generation.md) provides field inspection without a GPU.

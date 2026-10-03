@@ -56,9 +56,19 @@ enum ServerPacket {
         revision: u64,
         data: String,
     },
+    Chunks {
+        chunks: Vec<ChunkPacket>,
+    },
     Forget {
         key: [i32; 3],
     },
+}
+
+#[derive(Debug, Deserialize)]
+struct ChunkPacket {
+    key: [i32; 3],
+    revision: u64,
+    data: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Serialize)]
@@ -630,6 +640,16 @@ impl ApplicationHandler<UserEvent> for Game {
                 self.world.receive_chunk(key, revision, &data);
                 self.decode_ms += start.elapsed().as_secs_f64() * 1000.0;
             }
+            UserEvent::Packet(ServerPacket::Chunks { chunks }) => {
+                if chunks.len() <= 16 {
+                    let start = Instant::now();
+                    for chunk in chunks {
+                        self.world
+                            .receive_chunk(chunk.key, chunk.revision, &chunk.data);
+                    }
+                    self.decode_ms += start.elapsed().as_secs_f64() * 1000.0;
+                }
+            }
             UserEvent::Packet(ServerPacket::Forget { key }) => {
                 self.world.forget(key);
                 if let Some(graphics) = self.graphics.as_mut() {
@@ -849,6 +869,11 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn decodes_chunk_batches_at_negative_and_high_world_layers() {
+        let packet = serde_json::json!({"type":"chunks","chunks":[{"key":[-1,-12,0],"revision":0,"data":""},{"key":[0,19,0],"revision":2,"data":""}]});
+        assert!(serde_json::from_value::<super::ServerPacket>(packet).is_ok());
+    }
     use super::*;
     #[test]
     fn releasing_input_sends_idle_intent_with_current_epoch() {

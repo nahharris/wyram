@@ -1,6 +1,7 @@
 alias Wyram.Engine.{PluginManager, World}
 
 Code.require_file("test-liquids.exs", __DIR__)
+Code.require_file("test-worldgen.exs", __DIR__)
 
 package = Path.join(System.fetch_env!("WYRAM_DATA_DIR"), "plugins/wyram.wyrplug")
 {:ok, files} = :zip.extract(String.to_charlist(package), [:memory])
@@ -27,7 +28,7 @@ true =
       &Map.fetch!(blocks, &1)
     )
 
-true = World.get_block(0, 0, 0) == blocks["wyram:stone"]
+true = World.get_block(0, -192, 0) == blocks["wyram:stone"]
 
 true = PluginManager.player_profile() == WyramMods.Characters.player_profile()
 
