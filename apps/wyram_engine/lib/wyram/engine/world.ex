@@ -6,13 +6,17 @@ defmodule Wyram.Engine.World do
 
   @region_side 4
   @chunk_side 16
+  @coordinate_limit 1_000_000
+  @air_chunk %{data: :binary.copy(<<0>>, 8192), revision: 0}
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options, name: __MODULE__)
 
   @spec get_chunk(integer(), integer(), integer()) ::
           %{data: binary(), revision: non_neg_integer()}
   def get_chunk(cx, cy, cz) do
-    GenServer.call(region_pid(cx, cz), {:chunk, {cx, cy, cz}})
+    if supported_key?({cx, cy, cz}),
+      do: GenServer.call(region_pid(cx, cz), {:chunk, {cx, cy, cz}}),
+      else: @air_chunk
   end
 
   def generation, do: GenServer.call(__MODULE__, :generation)
@@ -56,16 +60,24 @@ defmodule Wyram.Engine.World do
   end
 
   def get_chunk_snapshots(keys) do
-    keys
-    |> Enum.uniq()
-    |> Enum.group_by(fn {cx, _cy, cz} -> region_pid(cx, cz) end)
-    |> Enum.flat_map(fn {pid, owned} -> GenServer.call(pid, {:chunk_snapshots, owned}) end)
+    {supported, outside} = keys |> Enum.uniq() |> Enum.split_with(&supported_key?/1)
+
+    chunks =
+      supported
+      |> Enum.group_by(fn {cx, _cy, cz} -> region_pid(cx, cz) end)
+      |> Enum.flat_map(fn {pid, owned} -> GenServer.call(pid, {:chunk_snapshots, owned}) end)
+
+    chunks ++ Enum.map(outside, &{&1, @air_chunk})
   end
 
   @spec get_block(integer(), integer(), integer()) :: non_neg_integer()
   def get_block(x, y, z) do
-    {key, local} = address({x, y, z})
-    GenServer.call(region_pid(elem(key, 0), elem(key, 2)), {:block, key, local})
+    if supported_position?({x, y, z}) do
+      {key, local} = address({x, y, z})
+      GenServer.call(region_pid(elem(key, 0), elem(key, 2)), {:block, key, local})
+    else
+      0
+    end
   end
 
   @spec set_block(integer(), integer(), integer(), non_neg_integer()) ::
@@ -73,7 +85,7 @@ defmodule Wyram.Engine.World do
   def set_block(x, y, z, id) do
     %{bounds: {low, high}} = generation()
 
-    if y in low..high do
+    if supported_position?({x, y, z}) and y in low..high do
       {key, local} = address({x, y, z})
       GenServer.call(region_pid(elem(key, 0), elem(key, 2)), {:set, key, local, id})
     else
@@ -82,16 +94,23 @@ defmodule Wyram.Engine.World do
   end
 
   def get_blocks(positions) do
-    positions
-    |> Enum.uniq()
-    |> group_positions()
-    |> Enum.flat_map(fn {pid, entries} -> GenServer.call(pid, {:read_blocks, entries}) end)
-    |> Map.new()
+    {supported, outside} = positions |> Enum.uniq() |> Enum.split_with(&supported_position?/1)
+
+    values =
+      supported
+      |> group_positions()
+      |> Enum.flat_map(fn {pid, entries} -> GenServer.call(pid, {:read_blocks, entries}) end)
+
+    Map.new(values ++ Enum.map(outside, &{&1, 0}))
   end
 
   def schedule_liquids(positions, due) do
     %{bounds: {low, high}} = generation()
-    positions = Enum.filter(positions, fn {_, y, _} -> y in low..high end)
+
+    positions =
+      Enum.filter(positions, fn {_, y, _} = position ->
+        supported_position?(position) and y in low..high
+      end)
 
     Enum.each(group_positions(positions), fn {pid, entries} ->
       GenServer.cast(pid, {:schedule_liquids, entries, due})
@@ -102,7 +121,9 @@ defmodule Wyram.Engine.World do
     %{bounds: {low, high}} = generation()
 
     edits
-    |> Enum.filter(fn {{_, y, _}, _, _} -> y in low..high end)
+    |> Enum.filter(fn {{_, y, _} = position, _, _} ->
+      supported_position?(position) and y in low..high
+    end)
     |> Enum.group_by(fn {{x, _, z}, _, _} ->
       region_pid(Integer.floor_div(x, 16), Integer.floor_div(z, 16))
     end)
@@ -116,6 +137,16 @@ defmodule Wyram.Engine.World do
       GenServer.call(pid, {:liquid_edits, entries})
     end)
   end
+
+  defp supported_position?(position),
+    do:
+      position |> Tuple.to_list() |> Enum.all?(&(is_integer(&1) and abs(&1) <= @coordinate_limit))
+
+  defp supported_key?(key),
+    do:
+      key
+      |> Tuple.to_list()
+      |> Enum.all?(&(is_integer(&1) and abs(&1) <= div(@coordinate_limit, @chunk_side)))
 
   defp group_positions(positions) do
     positions
