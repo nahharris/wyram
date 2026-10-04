@@ -25,12 +25,15 @@ defmodule Wyram.Engine.Scenery.ServiceTest do
 
     service =
       start_supervised!(
-        {Scenery,
-         name: nil,
-         world: world,
-         supervisor: supervisor,
-         config: Config.new!(%{distance: 128, max_level: 1}),
-         fetch: fetch}
+        Supervisor.child_spec(
+          {Scenery,
+           name: nil,
+           world: world,
+           supervisor: supervisor,
+           config: Config.new!(%{distance: 128, max_level: 1}),
+           fetch: fetch},
+          restart: :temporary
+        )
       )
 
     {:ok, service: service, model: model}
@@ -119,6 +122,25 @@ defmodule Wyram.Engine.Scenery.ServiceTest do
     assert_receive {:scenery_plan, next, 1, _, _}
     assert next > epoch
     refute_receive {:scenery_tiles, ^epoch, _, _}, 10
+  end
+
+  test "an unavailable world read model stops delivery before the owner death notification", %{
+    service: service,
+    model: model
+  } do
+    Scenery.view(service, self(), {0, 0, 0})
+    assert_receive {:scenery_plan, _, _, _, _}
+    assert_receive {:started, worker, 0, _}
+    assert_receive {:started, _, 0, _}
+    monitor = Process.monitor(service)
+    :ets.delete(model.edits)
+    send(worker, :finish)
+
+    assert_receive {:DOWN, ^monitor, :process, ^service,
+                    {:shutdown, :world_read_model_unavailable}},
+                   1000
+
+    refute_receive {:scenery_tiles, _, _, _}, 10
   end
 
   defp eventually(assertion, attempts \\ 50)

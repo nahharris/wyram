@@ -53,7 +53,7 @@ impl Outbound {
     {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
-                pending: VecDeque::with_capacity(EDIT_CAPACITY + 2),
+                pending: VecDeque::with_capacity(EDIT_CAPACITY + 3),
                 edits: 0,
                 capabilities_announced: false,
                 closing: false,
@@ -136,6 +136,23 @@ impl Outbound {
                     return Err(SendError::Full);
                 }
                 state.edits += 1;
+            }
+            ClientPacket::SceneryReady { epoch, delivery } => {
+                if let Some(index) = state
+                    .pending
+                    .iter()
+                    .position(|p| matches!(p.packet, ClientPacket::SceneryReady { .. }))
+                {
+                    if let ClientPacket::SceneryReady {
+                        epoch: old_epoch,
+                        delivery: old_delivery,
+                    } = state.pending[index].packet
+                        && (epoch, delivery) <= (old_epoch, old_delivery)
+                    {
+                        return Ok(());
+                    }
+                    state.pending.remove(index);
+                }
             }
         }
         state.pending.push_back(Pending {
@@ -306,7 +323,10 @@ mod tests {
         entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         for _ in 0..1000 {
             outbound
-                .send(ClientPacket::Capabilities { chunk_protocol: 1 })
+                .send(ClientPacket::Capabilities {
+                    chunk_protocol: 1,
+                    scenery_protocol: 1,
+                })
                 .unwrap();
         }
         assert_eq!(outbound.snapshot().queued, 1);
@@ -350,6 +370,51 @@ mod tests {
         assert_eq!(packets[1]["sequence"], 2);
         assert_eq!(packets[1]["flight_request"], 1);
         assert_eq!(packets[1]["jump"], false);
+    }
+
+    #[test]
+    fn scenery_credits_coalesce_without_displacing_edits_or_input() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (outbound, worker) = Outbound::start(
+            GateWriter {
+                entered: entered_tx,
+                release: release_rx,
+                bytes: Vec::new(),
+            },
+            |_| panic!("unexpected connection failure"),
+        );
+        outbound.send(edit(1)).unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        outbound.send(edit(2)).unwrap();
+        outbound.send(input(1, false)).unwrap();
+        for delivery in 1..=1000 {
+            outbound
+                .send(ClientPacket::SceneryReady { epoch: 3, delivery })
+                .unwrap();
+        }
+        outbound
+            .send(ClientPacket::SceneryReady {
+                epoch: 2,
+                delivery: 1001,
+            })
+            .unwrap();
+        outbound
+            .send(ClientPacket::SceneryReady {
+                epoch: 3,
+                delivery: 1,
+            })
+            .unwrap();
+        assert_eq!(outbound.snapshot().queued, 3);
+        release_tx.send(()).unwrap();
+        drop(outbound);
+        let packets = decode(&worker.join().unwrap().unwrap().bytes);
+        assert_eq!(packets.len(), 4);
+        assert_eq!(packets[1]["x"], 2);
+        assert_eq!(packets[2]["type"], "input");
+        assert_eq!(packets[3]["type"], "scenery_ready");
+        assert_eq!(packets[3]["epoch"], 3);
+        assert_eq!(packets[3]["delivery"], 1000);
     }
 
     struct ClosedWriter;

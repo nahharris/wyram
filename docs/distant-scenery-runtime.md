@@ -47,8 +47,8 @@ Native output headers and storage lengths must match the requested keys before
 the batch enters the cache. Cell validation belongs to the native generator and
 decoder. Failures do not trigger an unbounded retry loop. These helpers are
 tested independently and connected to the supervised visual service. The
-service is inactive for games without a scenery policy. Client view requests
-and packed native delivery are not connected yet.
+service is inactive for games without a scenery policy. Client capability
+negotiation now connects view requests and packed native delivery.
 
 ## Edits and delivery
 
@@ -73,6 +73,24 @@ Camera changes retain running jobs against the worker limit. Content changes
 invalidate the encoded cache and outstanding delivery. Viewer termination
 releases wanted tiles. Individual generation failures do not retry indefinitely.
 
+The client advertises scenery protocol one. `WSP1` carries the epoch, content
+identity, edit stamp, view distance, payload budgets and a parent-first indexed
+forest. `WST1` carries at most two length-prefixed `WSL1` tiles and a numeric
+delivery credit. The coordinator maps that credit to the service's private task
+token. Older epochs cannot release current work. Client close releases its view.
+
+The native reader validates complete sibling groups, unique keys, root coverage
+of every declared node, supported coordinate extents, byte limits and tile cells
+before sending packets to the UI thread. The view cache accepts only current,
+wanted tiles and preserves immutable data across camera-only changes. A new
+content identity clears it, including after a service or world restart. Credits
+coalesce in one outbound slot without displacing gameplay edits or input.
+
+The repository test script exercises real Windows pipe framing and a matched
+Elixir-to-native fixture containing known edits at negative coordinates,
+complete refinement, camera reuse and content invalidation. It verifies data
+transport and cache behavior; it does not render terrain.
+
 ## Remaining runtime gates
 
 Distant queries must not activate gameplay regions or obtain authority over
@@ -80,7 +98,7 @@ collision, liquids, or characters. The read model and native sample path now
 cover durable known edits, including restored saves. Persistent cache identity,
 storage budgets, and incremental tile invalidation remain to be implemented.
 
-Live view requests, packed IPC, bounded native decode/meshing, renderer residency,
+Bounded native meshing, renderer residency,
 parent replacement, near-geometry clipping, and depth handling still need
 implementation. A parent must stay visible until all replacement children are
 ready. Empty children count as ready. Memory pressure must retain usable coarse

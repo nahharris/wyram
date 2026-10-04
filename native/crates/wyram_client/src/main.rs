@@ -10,6 +10,7 @@ mod meshing;
 mod outbound;
 mod replica;
 mod rig;
+mod scenery;
 mod telemetry;
 mod transparency;
 mod world;
@@ -67,6 +68,10 @@ enum ServerPacket {
     PackedChunks {
         chunks: Vec<chunk_wire::PackedChunk>,
     },
+    #[serde(skip)]
+    SceneryPlan(scenery::wire::Plan),
+    #[serde(skip)]
+    SceneryTiles(scenery::wire::Batch),
     Forget {
         key: [i32; 3],
     },
@@ -100,6 +105,11 @@ struct Intent {
 enum ClientPacket {
     Capabilities {
         chunk_protocol: u8,
+        scenery_protocol: u8,
+    },
+    SceneryReady {
+        epoch: u64,
+        delivery: u64,
     },
     Input {
         sequence: u64,
@@ -169,6 +179,16 @@ fn start_reader(proxy: EventLoopProxy<UserEvent>) -> std::sync::mpsc::Receiver<R
 
 fn decode_packet(bytes: &[u8]) -> Option<ServerPacket> {
     use base64::Engine;
+    if bytes.starts_with(b"WSP1") {
+        return scenery::wire::plan(bytes)
+            .ok()
+            .map(ServerPacket::SceneryPlan);
+    }
+    if bytes.starts_with(b"WST1") {
+        return scenery::wire::batch(bytes)
+            .ok()
+            .map(ServerPacket::SceneryTiles);
+    }
     if bytes.starts_with(b"WYC1") {
         return chunk_wire::decode(bytes)
             .ok()
@@ -549,6 +569,7 @@ struct Game {
     inbound_wire_bytes: usize,
     inbound_queue_max_ms: f64,
     world: VoxelWorld,
+    scenery: scenery::view::View,
     position: Vec3,
     yaw: f32,
     pitch: f32,
@@ -582,6 +603,7 @@ impl Game {
             inbound_wire_bytes: 0,
             inbound_queue_max_ms: 0.0,
             world: VoxelWorld::default(),
+            scenery: scenery::view::View::default(),
             position: Vec3::new(0.5, 73.0, 0.5),
             yaw: 0.0,
             pitch: -0.15,
@@ -766,6 +788,15 @@ impl ApplicationHandler<UserEvent> for Game {
                         .receive_packed(chunk.key, chunk.revision, chunk.data);
                 }
                 self.decode_ms += start.elapsed().as_secs_f64() * 1000.0;
+            }
+            UserEvent::Packet(ServerPacket::SceneryPlan(plan)) => {
+                self.scenery.replace(plan);
+            }
+            UserEvent::Packet(ServerPacket::SceneryTiles(batch)) => {
+                let (epoch, delivery) = (batch.epoch, batch.delivery);
+                if self.scenery.accept(batch) {
+                    self.send_packet(ClientPacket::SceneryReady { epoch, delivery });
+                }
             }
             UserEvent::Packet(ServerPacket::Teleport {
                 x,
@@ -1033,7 +1064,10 @@ fn main() {
     });
     game.outbound = Some(outbound);
     if std::env::var("WYRAM_CHUNK_PROTOCOL").as_deref() != Ok("0") {
-        game.send_packet(ClientPacket::Capabilities { chunk_protocol: 1 });
+        game.send_packet(ClientPacket::Capabilities {
+            chunk_protocol: 1,
+            scenery_protocol: 1,
+        });
     }
     event_loop
         .run_app(&mut game)
@@ -1047,6 +1081,44 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn background_decode_validates_scenery_packets_before_ui_delivery() {
+        let mut bytes = b"WSP1".to_vec();
+        for value in [3u64, 7, 5] {
+            bytes.extend(value.to_be_bytes());
+        }
+        bytes.extend(1024u16.to_be_bytes());
+        for _ in 0..2 {
+            bytes.extend(67_108_864u32.to_be_bytes());
+        }
+        for value in [1u16, 1, 0] {
+            bytes.extend(value.to_be_bytes());
+        }
+        for value in [-1i32, 0, 2] {
+            bytes.extend(value.to_be_bytes());
+        }
+        bytes.extend([1, 0]);
+        assert!(matches!(
+            super::decode_packet(&bytes),
+            Some(super::ServerPacket::SceneryPlan(_))
+        ));
+        bytes.push(0);
+        assert!(super::decode_packet(&bytes).is_none());
+        let key = wyram_core::scenery::TileKey::new([-1, 0, 2], 1).unwrap();
+        let tile = wyram_core::scenery::LodTile::uniform(key, 0).encode();
+        let mut bytes = b"WST1".to_vec();
+        bytes.extend(3u64.to_be_bytes());
+        bytes.extend(11u64.to_be_bytes());
+        bytes.extend(1u16.to_be_bytes());
+        bytes.extend((tile.len() as u32).to_be_bytes());
+        bytes.extend(tile);
+        assert!(matches!(
+            super::decode_packet(&bytes),
+            Some(super::ServerPacket::SceneryTiles(_))
+        ));
+        bytes.push(0);
+        assert!(super::decode_packet(&bytes).is_none());
+    }
     #[test]
     fn background_decode_preserves_json_packed_parity_and_skips_bad_entries() {
         use base64::Engine;

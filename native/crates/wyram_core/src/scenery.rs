@@ -95,7 +95,7 @@ impl LodCell {
 }
 
 /// Coordinates index tiles at this level, rather than exact chunks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TileKey {
     position: [i32; 3],
     level: u8,

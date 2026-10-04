@@ -12,6 +12,7 @@ defmodule Wyram.Engine.Scenery do
   end
 
   def view(service, client, observer), do: GenServer.cast(service, {:view, client, observer})
+  def disconnect(service, client), do: GenServer.cast(service, {:disconnect, client})
 
   def acknowledge(service, epoch, token),
     do: GenServer.cast(service, {:acknowledge, epoch, token})
@@ -29,6 +30,9 @@ defmodule Wyram.Engine.Scenery do
       world = Keyword.get(options, :world, World)
       model = GenServer.call(world, {:watch_scenery, self()})
 
+      if Keyword.get(options, :name, __MODULE__) == __MODULE__,
+        do: send_if_started(Wyram.Engine.ClientPort, :scenery_ready)
+
       {:ok,
        %{
          config: config,
@@ -42,6 +46,7 @@ defmodule Wyram.Engine.Scenery do
          observer: nil,
          plan: nil,
          epoch: 0,
+         content_id: System.unique_integer([:positive, :monotonic]),
          sent: MapSet.new(),
          waiting: nil
        }}
@@ -88,6 +93,13 @@ defmodule Wyram.Engine.Scenery do
     {:noreply, work(state)}
   end
 
+  def handle_cast({:disconnect, client}, %{client: client} = state) do
+    if state.client_ref, do: Process.demonitor(state.client_ref, [:flush])
+    {:noreply, release_view(state)}
+  end
+
+  def handle_cast({:disconnect, _}, state), do: {:noreply, state}
+
   @impl true
   def handle_info({ref, result}, state) when is_reference(ref) do
     state = refresh_if_changed(state)
@@ -112,20 +124,7 @@ defmodule Wyram.Engine.Scenery do
     do: {:stop, {:world_unavailable, reason}, state}
 
   def handle_info({:DOWN, ref, :process, _, _}, %{client_ref: ref} = state) do
-    empty = %{nodes: %{}, order: [], roots: []}
-    loader = Loader.reset(state.loader, empty, content(state))
-
-    {:noreply,
-     %{
-       state
-       | client: nil,
-         client_ref: nil,
-         observer: nil,
-         plan: nil,
-         loader: loader,
-         waiting: nil,
-         sent: MapSet.new()
-     }}
+    {:noreply, release_view(state)}
   end
 
   def handle_info({:DOWN, ref, :process, _, reason}, state) do
@@ -133,18 +132,47 @@ defmodule Wyram.Engine.Scenery do
     {:noreply, work(%{state | loader: loader})}
   end
 
+  defp release_view(state) do
+    empty = %{nodes: %{}, order: [], roots: []}
+    loader = Loader.reset(state.loader, empty, content(state))
+
+    %{
+      state
+      | client: nil,
+        client_ref: nil,
+        observer: nil,
+        plan: nil,
+        loader: loader,
+        waiting: nil,
+        sent: MapSet.new()
+    }
+  end
+
+  defp send_if_started(name, message) do
+    if pid = Process.whereis(name), do: send(pid, message)
+  end
+
   defp refresh_if_changed(state) do
     case EditView.stamp(state.model.edits) do
       {:ok, stamp} when stamp != state.model.stamp ->
-        state = %{state | model: %{state.model | stamp: stamp}}
+        state = %{
+          state
+          | model: %{state.model | stamp: stamp},
+            content_id: System.unique_integer([:positive, :monotonic])
+        }
+
         if state.plan, do: replace(state, state.plan), else: state
 
-      _ ->
+      {:ok, _} ->
         state
+
+      {:error, :unavailable} ->
+        exit({:shutdown, :world_read_model_unavailable})
     end
   end
 
   defp replace(state, plan) do
+    plan = Map.put(plan, :content, state.content_id)
     epoch = System.unique_integer([:positive, :monotonic])
     send(state.client, {:scenery_plan, epoch, state.model.stamp, plan, state.config})
 

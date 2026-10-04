@@ -11,8 +11,11 @@ defmodule Wyram.Engine.ClientPort do
     Native,
     Paths,
     PluginManager,
+    Scenery,
     World
   }
+
+  alias Wyram.Engine.Scenery.Transport
 
   @radius 4
   @chunk_side 16
@@ -80,6 +83,36 @@ defmodule Wyram.Engine.ClientPort do
 
   def handle_info({:stream_batch, _}, state), do: {:noreply, state}
 
+  def handle_info(:scenery_ready, state), do: {:noreply, request_scenery(state)}
+
+  def handle_info(
+        {:scenery_plan, epoch, stamp, plan, config},
+        %{scenery_protocol: 1, port: port} = state
+      )
+      when not is_nil(port) do
+    {link, bytes} = Transport.plan(state.scenery, epoch, stamp, plan, config)
+    if bytes, do: send_payload(port, bytes)
+    {:noreply, %{state | scenery: link}}
+  end
+
+  def handle_info(
+        {:scenery_tiles, epoch, token, tiles},
+        %{scenery_protocol: 1, port: port} = state
+      )
+      when not is_nil(port) do
+    {link, bytes} = Transport.offer(state.scenery, epoch, token, tiles)
+    if bytes, do: send_payload(port, bytes)
+    {:noreply, %{state | scenery: link}}
+  end
+
+  def handle_info({:scenery_plan, _, _, _, _}, state), do: {:noreply, state}
+  def handle_info({:scenery_tiles, _, _, _}, state), do: {:noreply, state}
+
+  def handle_info({:scenery_error, reason}, state) do
+    Logger.warning("Scenery view rejected: #{inspect(reason)}")
+    {:noreply, state}
+  end
+
   def handle_info({ref, chunks}, state) when is_reference(ref) and is_list(chunks) do
     {loader, accepted} = ChunkLoader.complete(state.loader, ref, chunks)
 
@@ -104,6 +137,7 @@ defmodule Wyram.Engine.ClientPort do
   def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
     if status != 0, do: Logger.warning("Native client exited with status #{status}")
     Characters.disconnect()
+    Scenery.disconnect(Scenery, self())
     Enum.each(state.exit_waiters, &GenServer.reply(&1, {:ok, status}))
     if loader = Map.get(state, :loader), do: ChunkLoader.cancel(loader)
 
@@ -116,7 +150,8 @@ defmodule Wyram.Engine.ClientPort do
        exit_status: status,
        exit_waiters: []
      })
-     |> Map.put(:loader, ChunkLoader.new())}
+     |> Map.put(:loader, ChunkLoader.new())
+     |> Map.put(:scenery, %Transport{})}
   end
 
   def handle_info(:poll_client, %{port: nil} = state), do: {:noreply, state}
@@ -206,8 +241,24 @@ defmodule Wyram.Engine.ClientPort do
     state
   end
 
-  defp handle_packet(%{"type" => "capabilities", "chunk_protocol" => 1}, state),
-    do: %{state | chunk_protocol: 1}
+  defp handle_packet(%{"type" => "capabilities", "chunk_protocol" => 1} = packet, state) do
+    protocol = if packet["scenery_protocol"] == 1, do: 1, else: 0
+    request_scenery(%{state | chunk_protocol: 1, scenery_protocol: protocol})
+  end
+
+  defp handle_packet(
+         %{"type" => "scenery_ready", "epoch" => epoch, "delivery" => delivery},
+         state
+       ) do
+    {link, acknowledged} = Transport.credit(state.scenery, epoch, delivery)
+
+    if acknowledged do
+      {epoch, token} = acknowledged
+      Scenery.acknowledge(Scenery, epoch, token)
+    end
+
+    %{state | scenery: link}
+  end
 
   defp handle_packet(%{"type" => "edit", "x" => x, "y" => y, "z" => z, "id" => id}, state)
        when is_integer(x) and is_integer(y) and is_integer(z) and is_integer(id) do
@@ -243,7 +294,9 @@ defmodule Wyram.Engine.ClientPort do
       exit_status: nil,
       exit_waiters: [],
       process_watch: watch,
-      chunk_protocol: 0
+      chunk_protocol: 0,
+      scenery_protocol: 0,
+      scenery: %Transport{}
     }
   end
 
@@ -266,14 +319,24 @@ defmodule Wyram.Engine.ClientPort do
     ref = make_ref()
     send(self(), {:stream_batch, ref})
 
-    %{
+    next = %{
       state
       | center: center,
         sent: MapSet.intersection(state.sent, wanted),
         loader: ChunkLoader.reset(state.loader, keys),
         stream_ref: ref
     }
+
+    request_scenery(next)
   end
+
+  defp request_scenery(%{port: port, scenery_protocol: 1, center: {x, y, z}} = state)
+       when not is_nil(port) do
+    Scenery.view(Scenery, self(), {x * 16 + 8, y * 16 + 8, z * 16 + 8})
+    state
+  end
+
+  defp request_scenery(state), do: state
 
   defp send_chunk(port, key, revision, data) do
     send_packet(port, %{
