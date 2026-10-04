@@ -94,3 +94,71 @@ fn sparse_reduced_cells_roundtrip_with_occupancy_and_refinement_hints() {
         parent
     );
 }
+
+#[test]
+fn surface_metadata_roundtrips_with_strict_lengths_and_legacy_fallback() {
+    let inputs: [LodTile; 8] = std::array::from_fn(|i| {
+        LodTile::uniform(
+            key([(i & 1) as i32, ((i >> 1) & 1) as i32, (i >> 2) as i32], 0),
+            if i & 2 == 0 { 9 } else { 4 },
+        )
+    });
+    let tile = LodTile::reduce(std::array::from_fn(|i| &inputs[i])).unwrap();
+    let bytes = tile.encode();
+    // Pure children still retain the legacy encoding until a reduction mixes
+    // volume and surface materials in the same cell.
+    let mut extended = b"WSL2".to_vec();
+    extended.extend_from_slice(&[1, 1, 0, 0]);
+    extended.extend_from_slice(&[0; 12]);
+    extended.extend_from_slice(&[9, 0, 8, 0, 0, 0, 255, 1, 4, 0]);
+    let decoded = LodTile::decode(&extended).unwrap();
+    assert_eq!(decoded.cell([0; 3]).unwrap().material(), 9);
+    assert_eq!(decoded.top_material([0; 3]).unwrap(), 4);
+    assert_eq!(decoded.resident_cell_bytes(), 10);
+    assert_eq!(decoded.encode(), extended);
+    for length in 0..extended.len() {
+        assert!(LodTile::decode(&extended[..length]).is_err());
+    }
+    let mut bad = extended.clone();
+    bad[28] = 0;
+    assert!(LodTile::decode(&bad).is_err());
+    let mut leaf = extended.clone();
+    leaf[4] = 0;
+    leaf[22] = 1;
+    leaf[26] = 0;
+    leaf[27] = 0;
+    assert!(LodTile::decode(&leaf).is_err());
+    let mut legacy = extended[..28].to_vec();
+    legacy[3] = b'1';
+    let legacy = LodTile::decode(&legacy).unwrap();
+    assert_eq!(legacy.top_material([0; 3]).unwrap(), 9);
+    assert_eq!(LodTile::decode(&bytes).unwrap(), tile);
+    let packed: Vec<_> = (0..BLOCK_COUNT)
+        .flat_map(|i| (if i / 256 % 2 == 0 { 3u16 } else { 9u16 }).to_le_bytes())
+        .collect();
+    let dense: [LodTile; 8] = std::array::from_fn(|i| {
+        if i == 0 {
+            LodTile::from_chunk(key([0; 3], 0), &packed).unwrap()
+        } else {
+            LodTile::uniform(
+                key([(i & 1) as i32, ((i >> 1) & 1) as i32, (i >> 2) as i32], 0),
+                0,
+            )
+        }
+    });
+    let dense = LodTile::reduce(std::array::from_fn(|i| &dense[i])).unwrap();
+    let bytes = dense.encode();
+    assert_eq!(&bytes[..4], b"WSL2");
+    assert_eq!(bytes.len(), wyram_core::scenery::MAX_ENCODED_TILE_BYTES);
+    assert_eq!(dense.top_material([0; 3]).unwrap(), 9);
+    assert_eq!(LodTile::decode(&bytes).unwrap(), dense);
+    for change in [true, false] {
+        let mut bad = bytes.clone();
+        if change {
+            bad.push(0);
+        } else {
+            bad.pop();
+        }
+        assert!(LodTile::decode(&bad).is_err());
+    }
+}

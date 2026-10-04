@@ -78,8 +78,9 @@ pub fn build_with_neighbors(
     Err("scenery mesh exceeds its byte budget")
 }
 
-fn grid(tile: &LodTile, side: usize) -> Vec<u16> {
+fn grid(tile: &LodTile, side: usize) -> (Vec<u16>, Vec<u16>) {
     let mut cells = vec![0; side.pow(3)];
+    let mut top = vec![0; side.pow(3)];
     for y in 0..side {
         for z in 0..side {
             for x in 0..side {
@@ -92,6 +93,8 @@ fn grid(tile: &LodTile, side: usize) -> Vec<u16> {
                     } else {
                         0
                     }
+                } else if side == 16 {
+                    tile.cell(p).unwrap().material()
                 } else {
                     let span = 16 / side;
                     let mut weights = HashMap::<u16, u64>::new();
@@ -111,22 +114,51 @@ fn grid(tile: &LodTile, side: usize) -> Vec<u16> {
                         .max_by(|(a, wa), (b, wb)| wa.cmp(wb).then(b.cmp(a)))
                         .map_or(0, |(id, _)| id)
                 };
-                cells[(y * side + z) * side + x] = material;
+                let at = (y * side + z) * side + x;
+                cells[at] = material;
+                top[at] = if material == 0 {
+                    0
+                } else if side == 32 {
+                    tile.top_material(p.map(|v| v / 2)).unwrap()
+                } else if side == 16 {
+                    tile.top_material(p).unwrap()
+                } else {
+                    let span = 16 / side;
+                    let mut weights = HashMap::<u16, usize>::new();
+                    for cz in z * span..(z + 1) * span {
+                        for cx in x * span..(x + 1) * span {
+                            if let Some(cy) = (y * span..(y + 1) * span)
+                                .rev()
+                                .find(|&cy| tile.cell([cx, cy, cz]).unwrap().occupied() > 0)
+                            {
+                                *weights
+                                    .entry(tile.top_material([cx, cy, cz]).unwrap())
+                                    .or_default() += 1;
+                            }
+                        }
+                    }
+                    weights
+                        .into_iter()
+                        .max_by(|(a, wa), (b, wb)| wa.cmp(wb).then(b.cmp(a)))
+                        .map_or(material, |(id, _)| id)
+                };
             }
         }
     }
-    cells
+    (cells, top)
 }
 
 #[derive(Clone, Copy, PartialEq)]
 struct Surface {
     material: u16,
+    color_material: u16,
     lower: f32,
     top: f32,
 }
 
 struct Grid<'a> {
     cells: Vec<u16>,
+    top: Vec<u16>,
     side: usize,
     step: f32,
     origin: [f32; 3],
@@ -220,8 +252,25 @@ impl Grid<'_> {
         {
             return None;
         }
+        let color_material = if offset[1] == 1 {
+            let id =
+                self.top[(p[1] as usize * self.side + p[2] as usize) * self.side + p[0] as usize];
+            let top = self.descriptor(id);
+            if id != 0
+                && top.liquid == d.liquid
+                && top.opacity == d.opacity
+                && top.emissive == d.emissive
+            {
+                id
+            } else {
+                material
+            }
+        } else {
+            material
+        };
         Some(Surface {
             material,
+            color_material,
             lower,
             top,
         })
@@ -237,8 +286,10 @@ fn build_grid(
     budget: usize,
     neighbors: &[Arc<LodTile>],
 ) -> Option<Mesh> {
+    let (cells, top) = grid(tile, side);
     let grid = Grid {
-        cells: grid(tile, side),
+        cells,
+        top,
         side,
         step: f32::from(tile.key().scale()) * 16.0 / side as f32,
         origin: tile.key().origin().map(|v| v as f32),
@@ -305,7 +356,7 @@ fn build_grid(
                     extent[u] *= width as f32;
                     extent[v] *= height as f32;
                     let color = colors
-                        .get(&face.material)
+                        .get(&face.color_material)
                         .copied()
                         .unwrap_or([255, 0, 255])
                         .map(|c| f32::from(c) / 255.0 * if d.emissive { 1.0 } else { shade });
@@ -351,6 +402,82 @@ mod tests {
     use wyram_core::scenery::TileKey;
     fn colors() -> HashMap<u16, [u8; 3]> {
         HashMap::from([(42, [40, 180, 30]), (17, [20, 80, 180])])
+    }
+
+    #[test]
+    fn exposed_top_faces_keep_surface_color_when_the_cell_contains_rock() {
+        let mut chunk = vec![0; wyram_core::BYTE_COUNT];
+        for y in 0..8 {
+            for z in 0..16 {
+                for x in 0..16 {
+                    let material: u16 = if y == 7 { 42 } else { 41 };
+                    let at = ((y * 16 + z) * 16 + x) * 2;
+                    chunk[at..at + 2].copy_from_slice(&material.to_le_bytes());
+                }
+            }
+        }
+        let air = vec![0; wyram_core::BYTE_COUNT];
+        let leaves: Vec<_> = (0..8)
+            .map(|i| {
+                LodTile::from_chunk(
+                    TileKey::new([i & 1, (i >> 1) & 1, i >> 2], 0).unwrap(),
+                    if i & 2 == 0 { &chunk } else { &air },
+                )
+                .unwrap()
+            })
+            .collect();
+        let tile = LodTile::reduce(std::array::from_fn(|i| &leaves[i])).unwrap();
+        let colors = HashMap::from([(41, [100, 100, 100]), (42, [40, 180, 30])]);
+        let mesh = build(&tile, &colors, &HashMap::new(), &HashMap::new(), 2 << 20).unwrap();
+        let top: Vec<_> = mesh
+            .vertices
+            .iter()
+            .filter(|v| v.normal[1] == 127)
+            .collect();
+        assert!(!top.is_empty());
+        assert!(top.iter().all(|v| v.base.position[1] == 8.0));
+        assert!(
+            top.iter()
+                .all(|v| v.base.color == [40.0 / 255.0, 180.0 / 255.0, 30.0 / 255.0]),
+            "the exposed surface must keep its color independently of volume material"
+        );
+    }
+
+    #[test]
+    fn surface_colors_cannot_change_liquid_height_opacity_or_family() {
+        let mut bytes = b"WSL2".to_vec();
+        bytes.extend_from_slice(&[1, 1, 0, 0]);
+        for position in [-1i32; 3] {
+            bytes.extend_from_slice(&position.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[17, 0, 8, 0, 0, 0, 255, 1, 42, 0]);
+        let tile = LodTile::decode(&bytes).unwrap();
+        let descriptors = HashMap::from([(
+            17,
+            RenderDescriptor {
+                opacity: 160,
+                emissive: false,
+                height: 0.75,
+                liquid: 1,
+            },
+        )]);
+        let mesh = build(
+            &tile,
+            &colors(),
+            &descriptors,
+            &HashMap::from([(17, 0.75)]),
+            2 << 20,
+        )
+        .unwrap();
+        let top: Vec<_> = mesh
+            .vertices
+            .iter()
+            .filter(|v| v.normal[1] == 127)
+            .collect();
+        assert!(!top.is_empty());
+        assert!(top.iter().all(|v| v.base.position[1] == 0.75
+            && v.base.opacity == 160.0 / 255.0
+            && v.base.color == [20.0 / 255.0, 80.0 / 255.0, 180.0 / 255.0]));
     }
 
     #[test]

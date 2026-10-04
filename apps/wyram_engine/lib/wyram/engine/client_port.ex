@@ -93,7 +93,7 @@ defmodule Wyram.Engine.ClientPort do
 
   def handle_info(
         {:scenery_plan, epoch, stamp, plan, config},
-        %{scenery_protocol: 1, port: port} = state
+        %{scenery_protocol: 2, port: port} = state
       )
       when not is_nil(port) do
     {link, bytes} = Transport.plan(state.scenery, epoch, stamp, plan, config)
@@ -103,7 +103,7 @@ defmodule Wyram.Engine.ClientPort do
 
   def handle_info(
         {:scenery_tiles, epoch, token, tiles},
-        %{scenery_protocol: 1, port: port} = state
+        %{scenery_protocol: 2, port: port} = state
       )
       when not is_nil(port) do
     {link, bytes} = Transport.offer(state.scenery, epoch, token, tiles)
@@ -248,7 +248,7 @@ defmodule Wyram.Engine.ClientPort do
   end
 
   defp handle_packet(%{"type" => "capabilities", "chunk_protocol" => 1} = packet, state) do
-    protocol = if packet["scenery_protocol"] == 1, do: 1, else: 0
+    protocol = if packet["scenery_protocol"] == 2, do: 2, else: 0
     request_scenery(%{state | chunk_protocol: 1, scenery_protocol: protocol})
   end
 
@@ -336,7 +336,7 @@ defmodule Wyram.Engine.ClientPort do
     request_scenery(next)
   end
 
-  defp request_scenery(%{port: port, scenery_protocol: 1, center: {x, y, z}} = state)
+  defp request_scenery(%{port: port, scenery_protocol: 2, center: {x, y, z}} = state)
        when not is_nil(port) do
     Scenery.view(Scenery, self(), {x * 16 + 8, y * 16 + 8, z * 16 + 8})
     state

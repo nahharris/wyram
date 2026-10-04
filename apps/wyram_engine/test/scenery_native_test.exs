@@ -5,6 +5,26 @@ defmodule Wyram.Engine.SceneryNativeTest do
 
   @air :binary.copy(<<0>>, 8192)
 
+  test "the loaded NIF retains top colors independently of volume material" do
+    data =
+      for y <- 0..15, into: <<>> do
+        material = if rem(y, 2) == 0, do: 3, else: 9
+        :binary.copy(<<material::little-16>>, 256)
+      end
+
+    chunks =
+      for octant <- 0..7 do
+        {{rem(octant, 2), rem(div(octant, 2), 2), div(octant, 4)}, data}
+      end
+
+    assert {:ok, leaves} = Native.import_visual_chunks(chunks)
+    assert {:ok, [parent]} = Native.reduce_visual_tiles([leaves])
+
+    assert parent ==
+             <<"WSL2", 1, 1, 0, 0, 0::little-signed-32, 0::little-signed-32, 0::little-signed-32,
+               3::little-16, 8::little-32, 255, 1, 9::little-16>>
+  end
+
   test "batched chunk imports and parent reduction agree with public tile coordinates" do
     chunks =
       for octant <- 0..7 do

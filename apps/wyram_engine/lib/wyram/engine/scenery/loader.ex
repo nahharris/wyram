@@ -1,7 +1,7 @@
 defmodule Wyram.Engine.Scenery.Loader do
   @moduledoc "Bounded scenery work with immutable cache data and revision rejection."
   defstruct [:config, stamp: 0, pending: [], wanted: MapSet.new(), cache: %{}, tasks: %{}]
-  alias Wyram.Scenery.Key
+  alias Wyram.Engine.Scenery.Wire
   def new(config), do: %__MODULE__{config: config}
 
   def reset(loader, plan, stamp) do
@@ -56,7 +56,7 @@ defmodule Wyram.Engine.Scenery.Loader do
 
   defp accept(loader, job, {:ok, binaries}) when is_list(binaries) do
     if length(binaries) == length(job.keys) and
-         Enum.zip(job.keys, binaries) |> Enum.all?(&valid_output?/1) do
+         Enum.zip(job.keys, binaries) |> Enum.all?(&Wire.valid_tile?/1) do
       accepted =
         Enum.zip(job.keys, binaries)
         |> Enum.filter(fn {key, _} -> MapSet.member?(loader.wanted, key) end)
@@ -71,24 +71,4 @@ defmodule Wyram.Engine.Scenery.Loader do
 
   defp accept(loader, _, {:error, reason}), do: {loader, {:error, reason}}
   defp accept(loader, _, _), do: {loader, {:error, :invalid_scenery_batch}}
-
-  # Native generation validates cells. This boundary checks batch identity and
-  # storage length before accepting the immutable native outputs into a cache.
-  defp valid_output?(
-         {%Key{position: position, level: level},
-          <<"WSL1", level, mode, 0, 0, x::little-signed-32, y::little-signed-32,
-            z::little-signed-32, payload::binary>>}
-       ) do
-    expected =
-      case mode do
-        0 -> 0
-        1 -> 8
-        2 -> 32_768
-        _ -> -1
-      end
-
-    {x, y, z} == position and byte_size(payload) == expected
-  end
-
-  defp valid_output?(_), do: false
 end

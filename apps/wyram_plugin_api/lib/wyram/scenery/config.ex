@@ -62,7 +62,7 @@ defmodule Wyram.Scenery.Config do
     valid =
       Enum.sort(Map.keys(config)) == Enum.sort([:__struct__ | @fields]) and
         Enum.all?(@limits, fn {field, range} -> integer_in?(Map.fetch!(config, field), range) end) and
-        rem(config.distance, 16) == 0 and config.max_tiles * 32_788 <= config.cache_bytes
+        rem(config.distance, 16) == 0 and config.max_tiles * 40_980 <= config.cache_bytes
 
     if valid, do: :ok, else: {:error, :invalid_scenery_config}
   end

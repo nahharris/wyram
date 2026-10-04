@@ -1193,7 +1193,7 @@ fn main() {
             scenery_protocol: if std::env::var("WYRAM_SCENERY_PROTOCOL").as_deref() == Ok("0") {
                 0
             } else {
-                1
+                2
             },
         });
     }

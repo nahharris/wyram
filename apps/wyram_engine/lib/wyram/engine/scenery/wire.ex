@@ -49,20 +49,30 @@ defmodule Wyram.Engine.Scenery.Wire do
 
   defp node(_, _, _), do: raise(ArgumentError, "invalid scenery node")
 
-  defp tile(
-         {%Key{position: {x, y, z}, level: level},
-          <<"WSL1", level, mode, 0, 0, x::little-signed-32, y::little-signed-32,
-            z::little-signed-32, payload::binary>> = bytes}
-       ) do
+  @doc false
+  def valid_tile?(
+        {%Key{position: {x, y, z}, level: level},
+         <<"WSL", version, level, mode, 0, 0, x::little-signed-32, y::little-signed-32,
+           z::little-signed-32, payload::binary>>}
+      )
+      when version in [?1, ?2] do
+    cell = if version == ?2, do: 10, else: 8
+
     expected =
       case mode do
         0 -> 0
-        1 -> 8
-        2 -> 32_768
+        1 -> cell
+        2 -> cell * 4096
         _ -> -1
       end
 
-    if byte_size(payload) != expected, do: raise(ArgumentError, "invalid scenery tile")
+    byte_size(payload) == expected
+  end
+
+  def valid_tile?(_), do: false
+
+  defp tile({_, bytes} = entry) do
+    if not valid_tile?(entry), do: raise(ArgumentError, "invalid scenery tile")
     [<<byte_size(bytes)::32>>, bytes]
   end
 

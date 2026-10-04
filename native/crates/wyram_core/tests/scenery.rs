@@ -190,6 +190,33 @@ fn complete_parent_grid_matches_an_independent_world_space_reduction() {
                 let cell = parent.cell([x, y, z]).expect("inside parent");
                 assert_eq!(cell.occupied(), occupied);
                 assert_eq!(cell.child_mask(), mask);
+                let mut top_counts = [0u32; 13];
+                for dx in 0..2 {
+                    for dz in 0..2 {
+                        let mut id = sample([
+                            origin[0] + x as i64 * 2 + dx,
+                            origin[1] + y as i64 * 2 + 1,
+                            origin[2] + z as i64 * 2 + dz,
+                        ]);
+                        if id == 0 {
+                            id = sample([
+                                origin[0] + x as i64 * 2 + dx,
+                                origin[1] + y as i64 * 2,
+                                origin[2] + z as i64 * 2 + dz,
+                            ]);
+                        }
+                        if id != 0 {
+                            top_counts[id as usize] += 1;
+                        }
+                    }
+                }
+                let top = (1..13)
+                    .max_by_key(|&id| (top_counts[id], std::cmp::Reverse(id)))
+                    .unwrap();
+                assert_eq!(
+                    parent.top_material([x, y, z]).unwrap(),
+                    if occupied == 0 { 0 } else { top as u16 }
+                );
                 assert_eq!(
                     cell.material(),
                     if occupied == 0 { 0 } else { material as u16 }

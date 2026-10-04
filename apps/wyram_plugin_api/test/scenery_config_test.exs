@@ -11,6 +11,11 @@ defmodule Wyram.Scenery.ConfigTest do
     assert explicit.distance == 2048
     assert explicit.max_level == 6
     assert explicit.workers == 1
+
+    assert Config.new(%{max_tiles: 1024, cache_bytes: 32_788 * 1024}) ==
+             {:error, :invalid_scenery_config}
+
+    assert {:ok, _} = Config.new(%{max_tiles: 1024, cache_bytes: 40_980 * 1024})
   end
 
   test "invalid, forged and unknown policy data cannot enter a game catalog" do

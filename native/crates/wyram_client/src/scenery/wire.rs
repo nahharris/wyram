@@ -1,4 +1,4 @@
-use wyram_core::scenery::{LodTile, TileKey};
+use wyram_core::scenery::{LodTile, MAX_ENCODED_TILE_BYTES, TileKey};
 
 #[derive(Debug)]
 pub struct Node {
@@ -103,7 +103,7 @@ fn forest(plan: &Plan) -> Result<(), &'static str> {
         || !plan.distance.is_multiple_of(16)
         || !(1_048_576..=268_435_456).contains(&plan.cache_bytes)
         || !(4_194_304..=268_435_456).contains(&plan.mesh_bytes)
-        || plan.nodes.len() * 32788 > plan.cache_bytes
+        || plan.nodes.len() * MAX_ENCODED_TILE_BYTES > plan.cache_bytes
     {
         return Err("invalid scenery plan bounds");
     }
@@ -155,7 +155,7 @@ pub fn batch(mut bytes: &[u8]) -> Result<Batch, &'static str> {
     let mut tiles = Vec::with_capacity(count);
     for _ in 0..count {
         let size = u32::from_be_bytes(take(&mut bytes)?) as usize;
-        if ![20, 28, 32788].contains(&size) {
+        if ![20, 28, 30, 32788, MAX_ENCODED_TILE_BYTES].contains(&size) {
             return Err("invalid scenery tile size");
         }
         let payload = bytes.get(..size).ok_or("truncated scenery tile")?;
@@ -305,6 +305,12 @@ mod tests {
         let decoded = batch(&b).expect("tile batch");
         assert_eq!((decoded.epoch, decoded.delivery), (3, 11));
         assert_eq!(decoded.tiles[0].key(), key);
+        let mut surface = tile.clone();
+        surface[3] = b'2';
+        surface[5] = 1;
+        surface.extend_from_slice(&[3, 0, 8, 0, 0, 0, 255, 1, 9, 0]);
+        let decoded = batch(&delivery(&[surface])).unwrap();
+        assert_eq!(decoded.tiles[0].top_material([0; 3]).unwrap(), 9);
         for end in 0..b.len() {
             assert!(batch(&b[..end]).is_err());
         }

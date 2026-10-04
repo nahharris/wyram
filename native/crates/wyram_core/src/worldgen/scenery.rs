@@ -1,11 +1,12 @@
 use super::{Generator, features};
-use crate::scenery::{LodCell, LodTile, TileKey};
+use crate::scenery::{LodCell, LodTile, TileKey, reduce_top};
 use crate::{BLOCK_COUNT, CHUNK_SIDE};
 
 impl Generator {
     /// Eight stratified world-rule samples per cell. Level one is exact;
     /// higher levels estimate occupancy and can omit unsampled small details.
-    /// At most 32³ samples and 32² terrain columns are evaluated per tile.
+    /// At most 32³ volume samples and 32² terrain columns are evaluated per tile,
+    /// plus at most two geological surface evaluations per column.
     pub fn scenic_tile(&self, key: TileKey) -> Result<LodTile, &'static str> {
         self.scenic_tile_with_samples(key, &[])
     }
@@ -44,6 +45,7 @@ impl Generator {
         let sample_origin = origin.map(|v| v + step / 2);
         let side = CHUNK_SIDE * 2;
         let mut samples = vec![0u16; side.pow(3)];
+        let mut top_samples = vec![0u16; side.pow(3)];
         for z in 0..side {
             for x in 0..side {
                 let px = sample_origin[0] + x as i32 * step;
@@ -73,14 +75,34 @@ impl Generator {
                             .find(|&id| id != 0)
                             .unwrap_or(0);
                     }
-                    samples[(y * side + z) * side + x] = material;
+                    let at = (y * side + z) * side + x;
+                    samples[at] = material;
+                    let biome = &self.settings.biomes[column.biome];
+                    let surface = [Some(column.height), column.island.map(|(_, top)| top)]
+                        .into_iter()
+                        .flatten()
+                        // The last occupied sample can lie below the cell
+                        // containing the thin surface; its next sample is air.
+                        .filter(|&top| top >= py && top < py + step)
+                        .max();
+                    top_samples[at] = if material != 0
+                        && [biome.rock, biome.soil, biome.surface].contains(&material)
+                    {
+                        surface.map_or(material, |top| {
+                            let id = self.base([px, top, pz], &column);
+                            if id == 0 { material } else { id }
+                        })
+                    } else {
+                        material
+                    };
                 }
             }
         }
         for &(index, material) in overrides {
             samples[index] = material;
+            top_samples[index] = material;
         }
-        let cells = (0..BLOCK_COUNT)
+        let (cells, top): (Vec<_>, Vec<_>) = (0..BLOCK_COUNT)
             .map(|at| {
                 let p = [at % 16 * 2, at / 256 * 2, at / 16 % 16 * 2];
                 let children = std::array::from_fn(|octant| {
@@ -89,9 +111,18 @@ impl Generator {
                     let z = p[2] + ((octant >> 2) & 1);
                     LodCell::uniform(samples[(y * side + z) * side + x], half)
                 });
-                LodCell::reduce(children)
+                let top = reduce_top(std::array::from_fn(|octant| {
+                    let x = p[0] + (octant & 1);
+                    let y = p[1] + ((octant >> 1) & 1);
+                    let z = p[2] + ((octant >> 2) & 1);
+                    (
+                        children[octant].occupied(),
+                        top_samples[(y * side + z) * side + x],
+                    )
+                }));
+                (LodCell::reduce(children), top)
             })
-            .collect();
-        Ok(LodTile::from_cells(key, cells))
+            .unzip();
+        Ok(LodTile::from_cells_with_top(key, cells, top))
     }
 }

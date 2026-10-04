@@ -44,7 +44,11 @@ defmodule Wyram.Engine.ClientSceneryTest do
       center: {-2, 3, 0}
     }
 
-    capabilities = Jason.encode!(%{type: "capabilities", chunk_protocol: 1, scenery_protocol: 1})
+    legacy = Jason.encode!(%{type: "capabilities", chunk_protocol: 1, scenery_protocol: 1})
+    assert {:noreply, legacy_state} = ClientPort.handle_info({port, {:data, legacy}}, state)
+    assert legacy_state.scenery_protocol == 0
+    refute_receive {:service, {:view, _, _}}, 10
+    capabilities = Jason.encode!(%{type: "capabilities", chunk_protocol: 1, scenery_protocol: 2})
     assert {:noreply, active} = ClientPort.handle_info({port, {:data, capabilities}}, state)
     assert_receive {:service, {:view, client, {-24, 56, 8}}}
     assert client == self()

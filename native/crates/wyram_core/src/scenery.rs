@@ -9,6 +9,38 @@ mod wire;
 
 /// Keeps each cell's exact sample count within `u32` (1024³ at the last level).
 pub const MAX_LEVEL: u8 = 10;
+pub const MAX_ENCODED_TILE_BYTES: usize = 20 + BLOCK_COUNT * 10;
+
+/// One vote per horizontal column, taking its highest occupied child.
+pub(crate) fn reduce_top(children: [(u32, u16); 8]) -> u16 {
+    let mut weights = [(0u16, 0u8); 4];
+    let mut used = 0;
+    for lower in [0, 1, 4, 5] {
+        let upper = lower | 2;
+        let (occupied, material) = if children[upper].0 > 0 {
+            children[upper]
+        } else {
+            children[lower]
+        };
+        if occupied == 0 {
+            continue;
+        }
+        let slot = weights[..used]
+            .iter()
+            .position(|&(id, _)| id == material)
+            .unwrap_or_else(|| {
+                let slot = used;
+                used += 1;
+                slot
+            });
+        weights[slot].0 = material;
+        weights[slot].1 += 1;
+    }
+    weights[..used]
+        .iter()
+        .max_by_key(|&&(id, weight)| (weight, std::cmp::Reverse(id)))
+        .map_or(0, |&(id, _)| id)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LodError {
@@ -143,12 +175,19 @@ enum Cells {
     Dense(Box<[LodCell]>),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TopMaterials {
+    Uniform(u16),
+    Dense(Box<[u16]>),
+}
+
 /// Immutable scenery data. Authoritative edits and revision ownership stay outside it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LodTile {
     key: TileKey,
     cells: Cells,
     occupied: u64,
+    top: Option<TopMaterials>,
 }
 
 impl LodTile {
@@ -158,6 +197,7 @@ impl LodTile {
             key,
             cells: Cells::Uniform(cell),
             occupied: u64::from(cell.occupied) * BLOCK_COUNT as u64,
+            top: None,
         }
     }
 
@@ -203,7 +243,7 @@ impl LodTile {
         if ordered.iter().all(|child| child.occupied == 0) {
             return Ok(Self::uniform(parent, 0));
         }
-        let cells = (0..BLOCK_COUNT)
+        let (cells, top): (Vec<_>, Vec<_>) = (0..BLOCK_COUNT)
             .map(|at| {
                 let position = [
                     at % CHUNK_SIDE,
@@ -222,10 +262,35 @@ impl LodTile {
                         + ((sample >> 2) & 1) * CHUNK_SIDE;
                     ordered[octant].cell_at(first + offset)
                 });
-                LodCell::reduce(samples)
+                let top = reduce_top(std::array::from_fn(|sample| {
+                    let offset = (sample & 1)
+                        + ((sample >> 1) & 1) * CHUNK_SIDE * CHUNK_SIDE
+                        + ((sample >> 2) & 1) * CHUNK_SIDE;
+                    (
+                        samples[sample].occupied,
+                        ordered[octant].top_at(first + offset),
+                    )
+                }));
+                (LodCell::reduce(samples), top)
             })
-            .collect();
-        Ok(Self::from_cells(parent, cells))
+            .unzip();
+        Ok(Self::from_cells_with_top(parent, cells, top))
+    }
+
+    pub(crate) fn from_cells_with_top(key: TileKey, cells: Vec<LodCell>, top: Vec<u16>) -> Self {
+        let mut tile = Self::from_cells(key, cells);
+        if top
+            .iter()
+            .enumerate()
+            .any(|(i, &material)| material != tile.cell_at(i).material)
+        {
+            tile.top = Some(if top.iter().all(|&id| id == top[0]) {
+                TopMaterials::Uniform(top[0])
+            } else {
+                TopMaterials::Dense(top.into_boxed_slice())
+            });
+        }
+        tile
     }
 
     pub(crate) fn from_cells(key: TileKey, cells: Vec<LodCell>) -> Self {
@@ -240,6 +305,7 @@ impl LodTile {
             key,
             cells,
             occupied,
+            top: None,
         }
     }
 
@@ -251,10 +317,29 @@ impl LodTile {
     }
     /// Cell payload bytes, excluding the tile object's fixed metadata and allocator overhead.
     pub fn resident_cell_bytes(&self) -> usize {
-        match &self.cells {
+        let cells = match &self.cells {
             Cells::Uniform(cell) if cell.occupied == 0 => 0,
             Cells::Uniform(_) => size_of::<LodCell>(),
             Cells::Dense(cells) => size_of_val(&**cells),
+        };
+        cells
+            + match &self.top {
+                None => 0,
+                Some(TopMaterials::Uniform(_)) => size_of::<u16>(),
+                Some(TopMaterials::Dense(top)) => size_of_val(&**top),
+            }
+    }
+    /// Approximate exposed top-face color, independent of volume material.
+    pub fn top_material(&self, position: [usize; 3]) -> Result<u16, LodError> {
+        let at = crate::index(position[0], position[1], position[2])
+            .map_err(|_| LodError::OutOfBounds)?;
+        Ok(self.top_at(at))
+    }
+    fn top_at(&self, at: usize) -> u16 {
+        match &self.top {
+            None => self.cell_at(at).material,
+            Some(TopMaterials::Uniform(id)) => *id,
+            Some(TopMaterials::Dense(top)) => top[at],
         }
     }
     pub fn cell(&self, position: [usize; 3]) -> Result<LodCell, LodError> {

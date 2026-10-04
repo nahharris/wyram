@@ -76,9 +76,9 @@ Camera changes retain running jobs against the worker limit. Content changes
 invalidate the encoded cache and outstanding delivery. Viewer termination
 releases wanted tiles. Individual generation failures do not retry indefinitely.
 
-The client advertises scenery protocol one. `WSP1` carries the epoch, content
+The client advertises scenery capability two. `WSP1` carries the epoch, content
 identity, edit stamp, view distance, payload budgets and a parent-first indexed
-forest. `WST1` carries at most two length-prefixed `WSL1` tiles and a numeric
+forest. `WST1` carries at most two length-prefixed `WSL1` or `WSL2` tiles and a numeric
 delivery credit. The coordinator maps that credit to the service's private task
 token. Older epochs cannot release current work. Client close releases its view.
 
@@ -125,6 +125,14 @@ meshes retain their distant fallback. Near and distant translucent faces share
 one camera-sorted index stream. Ocean cap heights come from generator metadata
 and public material descriptors. Reverse infinite depth handles distant bounds;
 horizontal fog and a hard cutoff limit the configured view range.
+
+Cells can carry a separate top-surface color material. Reduction votes over the
+highest occupied child of each horizontal column; direct generation preserves
+the thin geological surface above the final occupied sample. The renderer uses
+this metadata only for positive-Y faces whose material has the same liquid,
+opacity and emission properties as the volume material. Geometry, liquid height,
+and other face colors continue to use the volume descriptor. Fallback meshes
+reduce surface votes separately, within the same mesh allowance.
 
 ## Reproducible game diagnostics
 

@@ -18,6 +18,41 @@ fn finest_scenic_generation_matches_exact_chunks() {
 }
 
 #[test]
+fn coarse_terrain_keeps_thin_surface_materials_that_volume_samples_miss() {
+    let mut settings = Settings {
+        relief: 0,
+        islands: None,
+        carvers: vec![],
+        terrain: wyram_core::worldgen::Terrain {
+            roughness: 0.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    settings.biomes[0].elevation_offset = 32;
+    let generator = Generator::new(2026, settings).unwrap();
+    for level in [2, 3, 4, 5] {
+        let tile = generator.scenic_tile(key([-1, 0, -1], level)).unwrap();
+        let mut missed_surfaces = 0;
+        for x in 0..16 {
+            for z in 0..16 {
+                let y = (0..16)
+                    .rev()
+                    .find(|&y| tile.cell([x, y, z]).unwrap().occupied() > 0)
+                    .unwrap();
+                let p = [x, y, z];
+                missed_surfaces += usize::from(tile.cell(p).unwrap().material() != 1);
+                assert_eq!(tile.top_material(p).unwrap(), 1, "level={level} cell={p:?}");
+            }
+        }
+        assert!(
+            missed_surfaces > 0,
+            "fixture must include volume samples that miss the surface"
+        );
+    }
+}
+
+#[test]
 fn level_one_matches_full_sibling_reduction_including_features() {
     let mut settings = Settings::default();
     settings.biomes[0].features.push(Feature {

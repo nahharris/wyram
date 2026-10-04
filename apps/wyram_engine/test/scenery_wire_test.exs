@@ -44,6 +44,27 @@ defmodule Wyram.Engine.Scenery.WireTest do
     |> then(&assert(&1 == <<>>))
   end
 
+  test "surface metadata has explicit cell sizes and remains bounded" do
+    {:ok, key} = Key.new({-1, 0, 2}, 1)
+    cell = <<3::little-16, 8::little-32, 255, 1, 9::little-16>>
+
+    for {mode, payload} <- [{1, cell}, {2, :binary.copy(cell, 4096)}] do
+      tile =
+        <<"WSL2", 1, mode, 0, 0, -1::little-signed-32, 0::little-signed-32, 2::little-signed-32,
+          payload::binary>>
+
+      assert Wire.valid_tile?({key, tile})
+      assert byte_size(tile) <= 40_980
+
+      assert <<"WST1", _::64, _::64, 1::16, size::32, ^tile::binary>> =
+               IO.iodata_to_binary(Wire.tiles(3, 11, [{key, tile}]))
+
+      assert size == byte_size(tile)
+      refute Wire.valid_tile?({key, tile <> <<0>>})
+      refute Wire.valid_tile?({key, binary_part(tile, 0, byte_size(tile) - 1)})
+    end
+  end
+
   test "two-tile delivery has bounded explicit lengths and a numeric credit identity" do
     {:ok, key} = Key.new({-1, 0, 2}, 1)
     tile = <<"WSL1", 1, 0, 0, 0, -1::little-signed-32, 0::little-signed-32, 2::little-signed-32>>
