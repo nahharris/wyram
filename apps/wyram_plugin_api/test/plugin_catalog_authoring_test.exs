@@ -3,6 +3,7 @@ defmodule Wyram.Plugin.CatalogAuthoringTest do
 
   alias Wyram.Block.Ref
   alias Wyram.Plugin.Compiler
+  alias Wyram.Scenery.Config, as: SceneryConfig
 
   defmodule Project do
     def project, do: Process.get(:catalog_test_project)
@@ -66,6 +67,30 @@ defmodule Wyram.Plugin.CatalogAuthoringTest do
     artifact = compile_plugin!(content_source())
     assert is_nil(artifact.catalog.game.palette)
     assert hd(artifact.catalog.game.worldgen.biomes).surface == Ref.new!("forest", "moss")
+  end
+
+  test "game composition compiles public scenery policy into immutable catalog data" do
+    source =
+      String.replace(content_source(), "  spawn_policy :surface", """
+        scenery distance: 2048, max_level: 6, workers: 1
+        spawn_policy :surface
+      """)
+
+    artifact = compile_plugin!(source)
+
+    assert artifact.catalog.game.scenery ==
+             SceneryConfig.new!(%{distance: 2048, max_level: 6, workers: 1})
+  end
+
+  test "scenery composition rejects bad values and duplicate declarations or options" do
+    source = String.replace(content_source(), "  spawn_policy :surface", "  scenery workers: 3")
+    assert {:error, diagnostics} = compile_plugin(source)
+    assert Enum.any?(diagnostics, &(&1.code == :invalid_game_config))
+
+    for declaration <- ["scenery workers: 1, workers: 2", "scenery []\nscenery []"] do
+      source = String.replace(content_source(), "  spawn_policy :surface", declaration)
+      assert_raise CompileError, fn -> compile_plugin(source) end
+    end
   end
 
   test "catalog and game ownership comes only from the configured application entry" do

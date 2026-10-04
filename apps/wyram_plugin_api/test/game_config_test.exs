@@ -7,6 +7,28 @@ defmodule Wyram.GameConfigTest do
   alias Wyram.WorldGen.Biome
   alias Wyram.WorldGen.Config, as: WorldGenConfig
 
+  test "scenery is optional public policy and requires a shared world generator" do
+    ref = Ref.new!("game", "grass")
+
+    worldgen =
+      WorldGenConfig.new!(%{
+        biomes: [Biome.new!(%{id: "test", surface: ref, soil: ref, rock: ref})]
+      })
+
+    scenery = %Wyram.Scenery.Config{}
+    assert {:ok, config} = Config.new(%{worldgen: worldgen, scenery: scenery})
+    assert config.scenery == scenery
+    assert :ok = Config.validate(config)
+    assert {:ok, plain} = Config.new(%{worldgen: worldgen})
+    assert plain.scenery == nil
+
+    assert Config.new(%{palette: palette(), scenery: scenery}) ==
+             {:error, :scenery_requires_worldgen}
+
+    assert Config.new(%{worldgen: worldgen, scenery: %{scenery | workers: 3}}) ==
+             {:error, :invalid_scenery_config}
+  end
+
   test "generation has one source of truth and a worldgen game needs no fallback palette" do
     ref = Ref.new!("game", "grass")
     biome = Biome.new!(%{id: "game:woodland", surface: ref, soil: ref, rock: ref})

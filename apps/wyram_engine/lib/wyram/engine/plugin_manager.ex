@@ -22,6 +22,7 @@ defmodule Wyram.Engine.PluginManager do
     Wyram.Character.Profile,
     Wyram.Engine.PluginCatalog,
     Wyram.Game.Config,
+    Wyram.Scenery.Config,
     Wyram.WorldGen.Config,
     Wyram.WorldGen.Biome,
     Wyram.WorldGen.Field,
@@ -63,6 +64,7 @@ defmodule Wyram.Engine.PluginManager do
 
   def spawn_policy, do: GenServer.call(__MODULE__, :spawn_policy)
   def worldgen, do: GenServer.call(__MODULE__, :worldgen)
+  def scenery, do: GenServer.call(__MODULE__, :scenery)
   def liquids, do: GenServer.call(__MODULE__, :liquids)
   def render_descriptors, do: GenServer.call(__MODULE__, :render)
   def noncolliding, do: GenServer.call(__MODULE__, :noncolliding)
@@ -120,6 +122,7 @@ defmodule Wyram.Engine.PluginManager do
 
   def handle_call(:spawn_policy, _from, state), do: {:reply, state.spawn_policy, state}
   def handle_call(:worldgen, _from, state), do: {:reply, state.worldgen, state}
+  def handle_call(:scenery, _from, state), do: {:reply, state.scenery, state}
   def handle_call(:blocks, _from, state), do: {:reply, state.blocks, state}
   def handle_call(:liquids, _from, state), do: {:reply, state.liquids, state}
   def handle_call(:render, _from, state), do: {:reply, state.render, state}

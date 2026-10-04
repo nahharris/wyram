@@ -40,6 +40,7 @@ defmodule Wyram.Plugin.GameComposition do
        models: models,
        characters: characters,
        worldgen: worldgen,
+       scenery: scenery(entries),
        spawn: Map.get(entries, :spawn_policy, %{value: :configured}).value
      })}
   rescue
@@ -52,6 +53,13 @@ defmodule Wyram.Plugin.GameComposition do
   defp selected(entries, key, kind, plugin, index) do
     entry = Map.fetch!(entries, key)
     ContentCompiler.select(entry.value, kind, plugin, index, entry.source)
+  end
+
+  defp scenery(entries) do
+    case Map.get(entries, :scenery) do
+      nil -> nil
+      %{value: options} -> Wyram.Scenery.Config.new!(Map.new(options))
+    end
   end
 
   defp palette(entry, plugin, index) do

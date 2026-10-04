@@ -35,6 +35,7 @@ defmodule Wyram.Engine.PluginCatalog do
            end),
          palette: generation_palette(game.palette, block_ids),
          worldgen: game.worldgen,
+         scenery: game.scenery,
          spawn_policy: game.spawn,
          player_profile: game.profile,
          character_definitions: game.characters,
