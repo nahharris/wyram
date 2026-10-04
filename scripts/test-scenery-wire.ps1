@@ -34,6 +34,20 @@ end)
 coarse = %{plan | order: [parent], nodes: %{parent => []}}
 packets = [frame.(Wire.plan(3,0,plan,config)),batches,
   frame.(Wire.plan(4,0,coarse,config)),frame.(Wire.plan(5,0,%{coarse | content: 8},config))]
+stamp = EditView.put(model.edits,{-4,-12,-4},:binary.copy(<<42::little-16>>,4096))
+model = %{model | stamp: stamp}
+revisioned = Map.merge(plan,%{lineage: 20, revisions: Map.new(order,&{&1,stamp})})
+initial = order |> Enum.chunk_every(2) |> Enum.with_index(6) |> Enum.map(fn {keys,delivery} ->
+  {:ok, tiles} = Fetch.run(model,keys)
+  frame.(Wire.tiles(6,delivery,Enum.zip(keys,tiles)))
+end)
+stamp = EditView.put(model.edits,{-4,-12,-4},:binary.copy(<<0>>,8192))
+model = %{model | stamp: stamp}
+changed = [parent,hd(children)]
+revisioned = %{revisioned | revisions: Enum.reduce(changed,revisioned.revisions,&Map.put(&2,&1,stamp))}
+{:ok, tiles} = Fetch.run(model,changed)
+packets = [packets,frame.(Wire.plan(6,1,Map.put(revisioned,:revisions,Map.new(order,&{&1,1})),config,3)),
+  initial,frame.(Wire.plan(7,stamp,revisioned,config,3)),frame.(Wire.tiles(7,11,Enum.zip(changed,tiles)))]
 File.write!(System.fetch_env!("WYRAM_SCENERY_FIXTURE"),packets)
 '@ | Set-Content -LiteralPath $source -Encoding ASCII
 $previous = $env:WYRAM_SCENERY_FIXTURE

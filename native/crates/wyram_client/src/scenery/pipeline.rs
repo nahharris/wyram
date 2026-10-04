@@ -15,6 +15,21 @@ const MAX_JOB_BYTES: usize = 2 * 1024 * 1024;
 // Six faces, six vertices per face, with worst-case blended allocation slack.
 const MIN_TILE_BYTES: usize = 6 * 6 * 72;
 
+type Dependencies = Vec<(TileKey, (u64, u64))>;
+
+fn dependencies(view: &View, key: TileKey, neighbors: &[(TileKey, bool)]) -> Option<Dependencies> {
+    std::iter::once(key)
+        .chain(neighbors.iter().map(|&(key, _)| key))
+        .map(|key| view.revision(key).map(|revision| (key, revision)))
+        .collect()
+}
+
+fn current_dependencies(view: &View, dependencies: &Dependencies) -> bool {
+    dependencies
+        .iter()
+        .all(|&(key, revision)| view.revision(key) == Some(revision))
+}
+
 #[derive(Default)]
 struct Forest {
     roots: Vec<usize>,
@@ -140,6 +155,7 @@ struct Job {
     water: Arc<HashMap<u16, f32>>,
     budget: usize,
     neighbors: Vec<mesh::Neighbor>,
+    dependencies: Dependencies,
 }
 struct ResultMesh {
     key: TileKey,
@@ -148,6 +164,7 @@ struct ResultMesh {
     mesh_ms: f64,
     neighbors: Vec<(TileKey, bool)>,
     budget: usize,
+    dependencies: Dependencies,
 }
 
 #[derive(Default)]
@@ -171,6 +188,7 @@ pub struct Pipeline {
     deferred: VecDeque<ResultMesh>,
     ready: HashMap<TileKey, usize>,
     ready_neighbors: HashMap<TileKey, Vec<(TileKey, bool)>>,
+    ready_dependencies: HashMap<TileKey, Dependencies>,
     degraded: HashMap<TileKey, usize>,
     dirty: HashSet<TileKey>,
     planned: HashSet<TileKey>,
@@ -224,6 +242,7 @@ impl Pipeline {
                                     })
                                     .collect(),
                                 budget: job.budget,
+                                dependencies: job.dependencies,
                             })
                             .is_err()
                         {
@@ -242,6 +261,7 @@ impl Pipeline {
             deferred: VecDeque::new(),
             ready: HashMap::new(),
             ready_neighbors: HashMap::new(),
+            ready_dependencies: HashMap::new(),
             degraded: HashMap::new(),
             dirty: HashSet::new(),
             planned: HashSet::new(),
@@ -285,6 +305,7 @@ impl Pipeline {
             self.generation += 1;
             self.ready.clear();
             self.ready_neighbors.clear();
+            self.ready_dependencies.clear();
             self.degraded.clear();
             self.dirty.clear();
             self.failed.clear();
@@ -320,9 +341,23 @@ impl Pipeline {
                 .collect();
             if self.content != content || palette_changed {
                 self.generation += 1;
-                self.ready.clear();
-                self.ready_neighbors.clear();
-                self.degraded.clear();
+                if plan.revisions.is_some()
+                    && self
+                        .content
+                        .is_some_and(|(lineage, _)| lineage == plan.content)
+                    && !palette_changed
+                {
+                    self.ready.retain(|key, _| {
+                        self.ready_dependencies
+                            .get(key)
+                            .is_some_and(|dependencies| current_dependencies(view, dependencies))
+                    });
+                } else {
+                    self.ready.clear();
+                }
+                self.ready_neighbors
+                    .retain(|key, _| self.ready.contains_key(key));
+                self.degraded.retain(|key, _| self.ready.contains_key(key));
                 self.dirty.clear();
                 self.failed.clear();
             }
@@ -356,6 +391,8 @@ impl Pipeline {
             self.dirty.retain(|key| self.ready.contains_key(key));
         }
         self.degraded.retain(|key, _| self.ready.contains_key(key));
+        self.ready_dependencies
+            .retain(|key, _| self.ready.contains_key(key));
         let all_known = self
             .forest
             .wanted
@@ -386,6 +423,7 @@ impl Pipeline {
             if result.generation != self.generation
                 || !self.forest.wanted.contains(&result.key)
                 || result.neighbors != neighbor_keys(result.key, &self.planned, &self.refined)
+                || !current_dependencies(view, &result.dependencies)
             {
                 self.in_flight.remove(&result.key);
                 self.stats.stale += 1;
@@ -410,6 +448,8 @@ impl Pipeline {
                         self.degraded.remove(&result.key);
                     }
                     self.ready_neighbors.insert(result.key, result.neighbors);
+                    self.ready_dependencies
+                        .insert(result.key, result.dependencies);
                     self.dirty.remove(&result.key);
                     self.stats.worker_ms += result.mesh_ms;
                     self.stats.degraded += usize::from(mesh.side < 32);
@@ -439,10 +479,14 @@ impl Pipeline {
             let Some(tile) = view.tiles.get(&key) else {
                 continue;
             };
+            let Some(revision) = view.revision(key) else {
+                continue;
+            };
             if tile.occupied() == 0 {
                 // Empty immutable data needs no neighbor read or mesh job.
                 // Clear old GPU geometry while retaining any retired job slot.
                 self.ready.insert(key, 0);
+                self.ready_dependencies.insert(key, vec![(key, revision)]);
                 self.ready_neighbors
                     .insert(key, neighbor_keys(key, &self.planned, &self.refined));
                 self.degraded.remove(&key);
@@ -461,7 +505,11 @@ impl Pipeline {
             if self.in_flight.len() >= WORKERS || self.in_flight.contains_key(&key) {
                 continue;
             }
-            let neighbors = neighbor_keys(key, &self.planned, &self.refined)
+            let neighbor_keys = neighbor_keys(key, &self.planned, &self.refined);
+            let Some(dependencies) = dependencies(view, key, &neighbor_keys) else {
+                continue;
+            };
+            let neighbors = neighbor_keys
                 .iter()
                 .map(|(key, opaque_occlusion)| {
                     view.tiles.get(key).map(|tile| mesh::Neighbor {
@@ -481,6 +529,7 @@ impl Pipeline {
                 water: Arc::clone(&self.water),
                 budget: self.forest.budget,
                 neighbors,
+                dependencies,
             };
             self.sender
                 .as_ref()
@@ -524,11 +573,16 @@ impl Drop for Pipeline {
 mod quality_tests;
 
 #[cfg(test)]
+#[path = "pipeline_edit_tests.rs"]
+mod edit_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     fn plan(budget: usize) -> Plan {
         let parent = TileKey::new([-1, 0, -1], 2).unwrap();
         Plan {
+            revisions: None,
             epoch: 1,
             content: 7,
             stamp: 0,
@@ -763,6 +817,7 @@ mod tests {
         }
         assert!(full_resolution);
         let mut smaller = Plan {
+            revisions: None,
             epoch: 2,
             content: 7,
             stamp: 0,

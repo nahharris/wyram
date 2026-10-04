@@ -394,11 +394,79 @@ restored rounds share
 `ccd33c30260cbbe6d0f7225a2ca5a52f88be3e720827a020cd6ffd57ee61cdc5`.
 
 This verifies selective server reuse and snapshot correctness, not game FPS or
-renderer edit latency. The current wire protocol still replaces the whole
-client view, so localized renderer invalidation remains open. Full reset remains
-the correct fallback if the service misses more than 1,024 durable publications.
+renderer edit latency. At this server-only checkpoint, the wire replaced the
+whole client view. Localized renderer reuse is measured separately below.
+Full server reset remains the correct fallback if the service misses more than
+1,024 durable publications.
 
 Raw reports are `.tools/distant-scenery/edit-baseline-before.json`,
 `edit-candidate-repeat.json`, `edit-candidate-confirm.json` and
 `edit-baseline-confirm.json`. An earlier three-round candidate pilot is
 `edit-candidate-first.json` and is excluded from the table and combined medians.
+
+## Localized client mesh invalidation
+
+Capability three adds `WSP2` node revisions and a stable service/world lineage.
+Decoded tiles retain their allocation only when both match. Resident meshes
+record their own tile and sampled neighbor revisions, so edits invalidate
+neighbor occlusion conservatively. Palette/plane changes and world/service
+restarts still invalidate presentation; old-generation jobs remain rejected and
+retired work retains the same worker slots. The native reader shares revision
+validation with the UI and cannot release work for stale or regressed plans.
+Capability two keeps its global-reset `WSP1` path. Complete two-tile deliveries
+remain unchanged, including unchanged summaries.
+
+Four optimized stationary games compare capability two, three, three, then two.
+They use the official seed 2026, the 1,024-unit policy, fixed viewpoint
+`[672.5,300,672.5]`, the same client binary, RTX 4050 Laptop Vulkan adapter,
+2,240×1,260 FIFO presentation and the same actual perf/opt-3 generation DLL:
+`38ea2bc8e1635f522f6a5609cd53fbfd63dfac8824a0ec8d635d62fabb654e38`.
+No local tests or builds run during capture. Each isolated save starts fresh.
+The authenticated control API removes stone voxel `[513,211,513]` about ten
+seconds after positioning, then restores material nine about ten seconds later.
+Both writes are durable and change a represented coarse sample. Each game exits
+normally after 35 seconds and captures its restored view at 30 seconds.
+
+| Protocol and sequence | Clear / restore settled after observed plan, ms | Nonempty uploads per edit | Meshes ready on first edit frame |
+| --- | --- | --- | --- |
+| Legacy before | 2,784.121 / 2,800.429 | 167 / 168 | 0 / 12 |
+| Revisioned first | 366.843 / 366.435 | 21 / 21 | 997 / 997 |
+| Revisioned repeat | 366.532 / 366.559 | 21 / 21 | 997 / 997 |
+| Legacy after | 2,816.838 / 2,801.806 | 169 / 167 | 0 / 0 |
+
+First all-ready and final recorded geometry settling coincide for these edits.
+Time starts at the first frame observing the new plan, so these are frame-resolution
+replacement intervals, not save-call latency or FPS. Combined medians are
+2,801.118 ms and 366.546 ms, about 87% less replacement time on this route.
+The fixed one-nonempty-upload limit remains in effect: the revisioned path
+replaces 21 meshes while retaining 997, rather than rebuilding the full view.
+Completed mesh worker CPU totals fall from 482–496 ms to 60–63 ms per edit.
+
+All eight edited epochs settle with matching recorded geometry totals between
+protocols. Cleared terrain has 240,312 visible opaque vertices and 22,535,040
+reserved mesh bytes; restored terrain has 240,276 vertices and 22,533,120 bytes.
+The extra 36 vertices confirm that the edit changed represented geometry.
+Every restored BMP has SHA-256
+`ec4a9745261cc4f4067a9439cf0327d844921bea05f0e44b1712dfedc8e113ae`.
+The candidate image was visually inspected. This proves restored-image parity
+and matching edited/restored geometry totals; edited-state screenshots and full
+off-screen GPU buffer byte parity were not captured.
+
+Every game finishes with 1,018 received and ready tiles, 897 selected tiles,
+2,592 near chunks, zero degraded/failed tiles and dropped samples, no queued mesh
+work, at most two scenery jobs and one nonempty upload per redraw, and mesh
+reservation below 64 MiB. This fixture establishes localized edit replacement
+within those bounds, not broader terrain/material/range acceptance or an FPS gain.
+
+Native regressions compare the changed neighbor's mesh vertex bytes with a
+fresh pipeline, verify unrelated geometry has no replacement upload, reject
+retired occupied results after removal, and preserve invalidations across
+multiple plans processed before one redraw. View/reader validation covers
+regressed/missing revisions, world lineage replacement and immutable duplicate
+delivery. A matched Elixir/native fixture exercises negative edited tiles with
+legacy and revisioned plans, retaining seven unaffected decoded children.
+
+Raw captures and `validation.json` are under
+`.tools/scenery-flight/edit-66130d1cd9a242b6af07440c0bafd01f`.
+The earlier `edit-99ab4ec526de44faae4d936de34789a6` controller attempt used an
+unsupported inspection radius, performed no edits and is excluded.

@@ -107,17 +107,34 @@ Camera changes retain running jobs against the worker limit. Content changes
 invalidate affected encoded tiles and outstanding delivery. Viewer termination
 releases wanted tiles. Individual generation failures do not retry indefinitely.
 
-The client advertises scenery capability two. `WSP1` carries the epoch, content
-identity, edit stamp, view distance, payload budgets and a parent-first indexed
-forest. `WST1` carries at most two length-prefixed `WSL1` or `WSL2` tiles and a numeric
+The client advertises scenery capability three. `WSP2` carries the epoch, stable
+service/world lineage, global edit stamp, view distance, payload budgets and a
+parent-first indexed forest. Every node includes its immutable tile revision,
+bounded by the global stamp. The loader retains the build stamp of unchanged
+cached tiles; invalidated or missing tiles use the current edit stamp. Revision
+metadata is bounded by the same 4,096-node plan limit and holds no tile payloads.
+Capability-two clients still receive `WSP1` with global content invalidation.
+`WST1` carries at most two length-prefixed `WSL1` or `WSL2` tiles and a numeric
 delivery credit. The coordinator maps that credit to the service's private task
 token. Older epochs cannot release current work. Client close releases its view.
 
 The native reader validates complete sibling groups, unique keys, root coverage
 of every declared node, supported coordinate extents, byte limits and tile cells
 before sending packets to the UI thread. The view cache accepts only current,
-wanted tiles and preserves immutable data across camera-only changes. A new
-content identity clears it, including after a service or world restart.
+wanted tiles. Capability three retains decoded tiles only when their lineage
+and per-key revision match. New lineages clear the view, including after a
+service or world restart. Future revisions, missing metadata, regressed stamps
+and regressed overlapping revisions are rejected. Conflicting bytes under an
+unchanged revision cannot partially replace a decoded view. Duplicate valid
+delivery retains its existing immutable tile allocation.
+
+Each resident mesh records the revisions of its own tile and sampled neighbors.
+An edit retains geometry only while every dependency still matches. Changed
+neighbor data invalidates occlusion even if the meshed tile itself is unchanged.
+Revision metadata persists across multiple plans processed before a redraw.
+All old-generation mesh jobs remain rejected; retired work keeps its slot until
+drained. Palette and water-plane changes still clear affected presentation state.
+The existing parent/neighbor replacement and mesh/upload limits remain intact.
 
 The reader releases delivery credit after a decoded batch passes current-epoch,
 wanted-key and increasing-delivery validation, enters the existing 32-packet
@@ -261,11 +278,14 @@ tile bytes. Changes coalesced before the service wakes are all included; gaps or
 races fall back to a complete cache reset. Old generation results remain rejected
 by the global stamp, and retired work retains its worker slot until completion.
 
-Renderer invalidation remains global: a content change still clears its tiles
-and meshes, and the server sends the complete view under a new epoch. Selective
-server reuse reduces fetch work; it does not yet localize mesh rebuilding or
-delivery. A future protocol must preserve stale-epoch rejection and conservative
-neighbor replacement before retaining geometry across edits.
+Renderer invalidation is localized for capability three: unchanged decoded tiles
+and meshes survive durable edits when their tile and neighbor revisions remain
+valid. Actual clear/restore captures of the reference route verify retained
+geometry, bounded replacement and matching final results. Capability two retains
+its global reset behavior. The server still sends the complete view under each
+new epoch; reducing redundant delivery remains a possible later optimization.
+Set `WYRAM_SCENERY_PROTOCOL=2` to force the legacy path for controlled comparison;
+adapter diagnostics record the actual advertised protocol version.
 
 Run `mise run bench:generation -- -Edits` to measure the two-worker scenery
 service after actual durable World writes in an isolated benchmark save. It

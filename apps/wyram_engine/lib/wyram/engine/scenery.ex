@@ -36,6 +36,8 @@ defmodule Wyram.Engine.Scenery do
       if Keyword.get(options, :name, __MODULE__) == __MODULE__,
         do: send_if_started(Wyram.Engine.ClientPort, :scenery_ready)
 
+      content_id = System.unique_integer([:positive, :monotonic])
+
       {:ok,
        %{
          config: config,
@@ -49,7 +51,8 @@ defmodule Wyram.Engine.Scenery do
          observer: nil,
          plan: nil,
          epoch: 0,
-         content_id: System.unique_integer([:positive, :monotonic]),
+         content_id: content_id,
+         lineage: content_id,
          sent: MapSet.new(),
          waiting: nil,
          retry: nil
@@ -195,7 +198,17 @@ defmodule Wyram.Engine.Scenery do
   end
 
   defp replace(state, plan, invalidated \\ :all) do
-    plan = Map.put(plan, :content, state.content_id)
+    loader = Loader.reset(state.loader, plan, content(state), invalidated)
+
+    revisions =
+      Map.new(plan.order, fn key ->
+        {_, stamp} = Map.get(loader.revisions, key, content(state))
+        {key, stamp}
+      end)
+
+    plan =
+      Map.merge(plan, %{content: state.content_id, lineage: state.lineage, revisions: revisions})
+
     epoch = System.unique_integer([:positive, :monotonic])
     send(state.client, {:scenery_plan, epoch, state.model.stamp, plan, state.config})
 
@@ -205,7 +218,7 @@ defmodule Wyram.Engine.Scenery do
         epoch: epoch,
         waiting: nil,
         sent: MapSet.new(),
-        loader: Loader.reset(state.loader, plan, content(state), invalidated)
+        loader: loader
     }
   end
 

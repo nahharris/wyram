@@ -164,7 +164,7 @@ fn start_reader(
 
 fn decode_packet(bytes: &[u8]) -> Option<ServerPacket> {
     use base64::Engine;
-    if bytes.starts_with(b"WSP1") {
+    if bytes.starts_with(b"WSP1") || bytes.starts_with(b"WSP2") {
         return scenery::wire::plan(bytes)
             .ok()
             .map(ServerPacket::SceneryPlan);
@@ -289,6 +289,7 @@ impl Graphics {
                 "present_mode": format!("{:?}", config.present_mode), "timestamp_queries": timing,
                 "culling": culling, "mesh_upload_limit": meshing::upload_limit(),
                 "scenery_protocol": std::env::var("WYRAM_SCENERY_PROTOCOL").as_deref()!=Ok("0"),
+                "scenery_protocol_version": scenery_protocol(),
                 "flight_benchmark":std::env::var("WYRAM_FLIGHT_BENCHMARK").as_deref()==Ok("1"),
                 "stationary_benchmark":std::env::var("WYRAM_BENCHMARK_STATIONARY").as_deref()==Ok("1"),
                 "chunk_protocol": std::env::var("WYRAM_CHUNK_PROTOCOL").as_deref() != Ok("0") });
@@ -1141,6 +1142,14 @@ impl ApplicationHandler<UserEvent> for Game {
     }
 }
 
+fn scenery_protocol() -> u8 {
+    match std::env::var("WYRAM_SCENERY_PROTOCOL").as_deref() {
+        Ok("0") => 0,
+        Ok("2") => 2,
+        _ => 3,
+    }
+}
+
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     if args.get(1).is_some_and(|arg| arg == "--validate-models") {
@@ -1174,11 +1183,7 @@ fn main() {
     if std::env::var("WYRAM_CHUNK_PROTOCOL").as_deref() != Ok("0") {
         game.send_packet(ClientPacket::Capabilities {
             chunk_protocol: 1,
-            scenery_protocol: if std::env::var("WYRAM_SCENERY_PROTOCOL").as_deref() == Ok("0") {
-                0
-            } else {
-                2
-            },
+            scenery_protocol: scenery_protocol(),
         });
     }
     event_loop

@@ -31,6 +31,7 @@ fn fixture(occupied: usize) -> (View, TileKey, Vec<TileKey>) {
     assert_eq!(root, keys[0]);
     let mut view = View::default();
     view.replace(Plan {
+        revisions: None,
         epoch: 1,
         content: 7,
         stamp: 0,
@@ -53,7 +54,7 @@ fn fixture(occupied: usize) -> (View, TileKey, Vec<TileKey>) {
     (view, root, keys[occupied..].to_vec())
 }
 
-fn settle(
+pub(super) fn settle(
     pipeline: &mut Pipeline,
     view: &View,
     world: &VoxelWorld,

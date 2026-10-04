@@ -15,6 +15,7 @@ pub struct Plan {
     pub mesh_bytes: usize,
     pub roots: Vec<usize>,
     pub nodes: Vec<Node>,
+    pub revisions: Option<std::collections::HashMap<TileKey, u64>>,
 }
 #[derive(Debug)]
 pub struct Batch {
@@ -43,9 +44,11 @@ fn supported(key: TileKey) -> bool {
 }
 
 pub fn plan(mut bytes: &[u8]) -> Result<Plan, &'static str> {
-    if take::<4>(&mut bytes)? != *b"WSP1" {
-        return Err("unknown scenery plan protocol");
-    }
+    let revisioned = match take::<4>(&mut bytes)? {
+        value if value == *b"WSP1" => false,
+        value if value == *b"WSP2" => true,
+        _ => return Err("unknown scenery plan protocol"),
+    };
     let epoch = u64::from_be_bytes(take(&mut bytes)?);
     let content = u64::from_be_bytes(take(&mut bytes)?);
     let stamp = u64::from_be_bytes(take(&mut bytes)?);
@@ -62,6 +65,7 @@ pub fn plan(mut bytes: &[u8]) -> Result<Plan, &'static str> {
         .collect::<Result<Vec<_>, _>>()?;
     let mut nodes = Vec::with_capacity(count);
     let mut seen = std::collections::HashSet::with_capacity(count);
+    let mut revisions = revisioned.then(|| std::collections::HashMap::with_capacity(count));
     for _ in 0..count {
         let position = [
             i32::from_be_bytes(take(&mut bytes)?),
@@ -77,6 +81,13 @@ pub fn plan(mut bytes: &[u8]) -> Result<Plan, &'static str> {
         let children = (0..child_count)
             .map(|_| take(&mut bytes).map(|v| u16::from_be_bytes(v) as usize))
             .collect::<Result<Vec<_>, _>>()?;
+        if let Some(revisions) = &mut revisions {
+            let revision = u64::from_be_bytes(take(&mut bytes)?);
+            if revision > stamp {
+                return Err("scenery revision exceeds snapshot");
+            }
+            revisions.insert(key, revision);
+        }
         nodes.push(Node { key, children });
     }
     if !bytes.is_empty() {
@@ -91,6 +102,7 @@ pub fn plan(mut bytes: &[u8]) -> Result<Plan, &'static str> {
         mesh_bytes,
         roots,
         nodes,
+        revisions,
     };
     forest(&plan)?;
     Ok(plan)
@@ -295,6 +307,23 @@ mod tests {
         node(&mut mixed_roots, [0; 3], 2, &[]);
         node(&mut mixed_roots, [4, 0, 0], 1, &[]);
         assert!(plan(&mixed_roots).is_err());
+    }
+
+    #[test]
+    fn revisioned_plans_keep_bounded_node_revisions_and_reject_future_values() {
+        let mut bytes = header(2, &[0, 1]);
+        bytes[..4].copy_from_slice(b"WSP2");
+        node(&mut bytes, [-1, 0, 0], 1, &[]);
+        bytes.extend(0u64.to_be_bytes());
+        node(&mut bytes, [0, 0, 0], 1, &[]);
+        bytes.extend(4u64.to_be_bytes());
+        assert!(plan(&bytes).is_ok(), "valid per-node revisions must decode");
+        for end in 0..bytes.len() {
+            assert!(plan(&bytes[..end]).is_err());
+        }
+        let end = bytes.len();
+        bytes[end - 8..].copy_from_slice(&6u64.to_be_bytes());
+        assert!(plan(&bytes).is_err(), "revision exceeds snapshot stamp");
     }
 
     #[test]

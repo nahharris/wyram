@@ -76,6 +76,21 @@ defmodule Wyram.Engine.ClientSceneryTest do
     assert_receive {:service, {:acknowledge, 3, ^token}}
     assert {:noreply, ^released} = ClientPort.handle_info({port, {:data, credit}}, released)
     refute_receive {:service, {:acknowledge, _, _}}, 10
+    capabilities = Jason.encode!(%{type: "capabilities", chunk_protocol: 1, scenery_protocol: 3})
+
+    assert {:noreply, revisioned} =
+             ClientPort.handle_info({port, {:data, capabilities}}, released)
+
+    assert revisioned.scenery_protocol == 3
+    assert_receive {:service, {:view, ^client, {-24, 56, 8}}}
+    updated = Map.merge(plan, %{content: 8, lineage: 7, revisions: %{key => 0}})
+
+    assert {:noreply, _} =
+             ClientPort.handle_info({:scenery_plan, 4, 1, updated, config}, revisioned)
+
+    packet = Wire.plan(4, 1, updated, config, 3) |> IO.iodata_to_binary()
+    assert_receive {^port, {:data, ^packet}}, 5000
+    assert <<"WSP2", 4::64, 7::64, 1::64, _::binary>> = packet
     Scenery.disconnect(Scenery, self())
     assert_receive {:service, {:disconnect, ^client}}
   end

@@ -3,10 +3,12 @@ defmodule Wyram.Engine.Scenery.Transport do
   defstruct epoch: 0, waiting: nil
   alias Wyram.Engine.Scenery.Wire
 
-  def plan(link, epoch, stamp, plan, config) when epoch > link.epoch,
-    do: {%__MODULE__{epoch: epoch}, Wire.plan(epoch, stamp, plan, config)}
+  def plan(link, epoch, stamp, plan, config, protocol \\ 2)
 
-  def plan(link, _, _, _, _), do: {link, nil}
+  def plan(link, epoch, stamp, plan, config, protocol) when epoch > link.epoch,
+    do: {%__MODULE__{epoch: epoch}, Wire.plan(epoch, stamp, plan, config, protocol)}
+
+  def plan(link, _, _, _, _, _), do: {link, nil}
 
   def offer(%{epoch: epoch, waiting: nil} = link, epoch, token, tiles) do
     delivery = System.unique_integer([:positive, :monotonic])

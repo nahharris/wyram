@@ -178,7 +178,7 @@ defmodule Wyram.Engine.Scenery.ServiceTest do
     model: model
   } do
     Scenery.view(service, self(), {0, 0, 0})
-    assert_receive {:scenery_plan, epoch, 0, _, _}
+    assert_receive {:scenery_plan, epoch, 0, initial_plan, _}
     assert_receive {:started, one, 0, _}
     assert_receive {:started, two, 0, _}
     send(one, :finish)
@@ -197,9 +197,13 @@ defmodule Wyram.Engine.Scenery.ServiceTest do
     end
 
     Scenery.acknowledge(service, epoch, token)
-    assert_receive {:scenery_plan, next, 2, _, _}
+    assert_receive {:scenery_plan, next, 2, next_plan, _}
     assert next > epoch
     expected = Map.drop(cached, edited)
+    assert next_plan.lineage == initial_plan.lineage
+    refute next_plan.content == initial_plan.content
+    assert Enum.all?(edited, &(next_plan.revisions[&1] == 2))
+    assert Enum.all?(Map.keys(expected), &(next_plan.revisions[&1] == 0))
     assert :sys.get_state(service).loader.cache == expected
     assert map_size(:sys.get_state(service).loader.tasks) == 2
     refute_receive {:scenery_tiles, ^epoch, _, _}, 10

@@ -1,6 +1,15 @@
 defmodule Wyram.Engine.Scenery.Loader do
   @moduledoc "Bounded scenery work with immutable cache data and revision rejection."
-  defstruct [:config, stamp: 0, pending: [], wanted: MapSet.new(), cache: %{}, tasks: %{}]
+  defstruct [
+    :config,
+    stamp: 0,
+    pending: [],
+    wanted: MapSet.new(),
+    cache: %{},
+    revisions: %{},
+    tasks: %{}
+  ]
+
   alias Wyram.Engine.Scenery.Wire
   def new(config), do: %__MODULE__{config: config}
 
@@ -17,6 +26,7 @@ defmodule Wyram.Engine.Scenery.Loader do
       | stamp: stamp,
         wanted: MapSet.new(Map.keys(plan.nodes)),
         cache: cache,
+        revisions: Map.take(loader.revisions, Map.keys(cache)),
         pending: Enum.reject(plan.order, &Map.has_key?(cache, &1))
     }
   end
@@ -67,8 +77,12 @@ defmodule Wyram.Engine.Scenery.Loader do
         |> Enum.filter(fn {key, _} -> MapSet.member?(loader.wanted, key) end)
 
       cache = Map.merge(loader.cache, Map.new(accepted))
+
+      revisions =
+        Map.merge(loader.revisions, Map.new(accepted, fn {key, _} -> {key, job.stamp} end))
+
       pending = Enum.reject(loader.pending, &Map.has_key?(cache, &1))
-      {%{loader | cache: cache, pending: pending}, accepted}
+      {%{loader | cache: cache, revisions: revisions, pending: pending}, accepted}
     else
       {loader, {:error, :invalid_scenery_batch}}
     end

@@ -44,6 +44,32 @@ defmodule Wyram.Engine.Scenery.WireTest do
     |> then(&assert(&1 == <<>>))
   end
 
+  test "revisioned plans carry stable lineage and a bounded stamp for every node" do
+    config = Config.new!(%{})
+    {:ok, key} = Key.new({-1, 0, 2}, 1)
+
+    plan = %{
+      roots: [key],
+      order: [key],
+      nodes: %{key => []},
+      content: 9,
+      lineage: 7,
+      revisions: %{key => 2}
+    }
+
+    assert IO.iodata_to_binary(Wire.plan(3, 5, plan, config, 3)) ==
+             <<"WSP2", 3::64, 7::64, 5::64, 1024::16, 67_108_864::32, 67_108_864::32, 1::16,
+               1::16, 0::16, -1::signed-32, 0::signed-32, 2::signed-32, 1, 0, 2::64>>
+
+    for revisions <- [%{}, %{key => 6}, %{key => -1}, %{key => 2, extra: 0}] do
+      assert_raise ArgumentError, fn ->
+        Wire.plan(3, 5, %{plan | revisions: revisions}, config, 3)
+      end
+    end
+
+    assert_raise ArgumentError, fn -> Wire.plan(3, 5, %{plan | lineage: 0}, config, 3) end
+  end
+
   test "surface metadata has explicit cell sizes and remains bounded" do
     {:ok, key} = Key.new({-1, 0, 2}, 1)
     cell = <<3::little-16, 8::little-32, 255, 1, 9::little-16>>

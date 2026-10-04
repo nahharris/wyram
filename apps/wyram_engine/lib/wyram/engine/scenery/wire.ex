@@ -3,8 +3,11 @@ defmodule Wyram.Engine.Scenery.Wire do
   alias Wyram.Scenery.{Config, Key}
   @max_u64 18_446_744_073_709_551_615
 
-  def plan(epoch, stamp, %{content: content} = plan, %Config{} = config)
-      when epoch in 1..@max_u64 and stamp in 0..@max_u64 and content in 1..@max_u64 do
+  def plan(epoch, stamp, plan, config, protocol \\ 2)
+
+  def plan(epoch, stamp, %{content: content} = plan, %Config{} = config, protocol)
+      when epoch in 1..@max_u64 and stamp in 0..@max_u64 and content in 1..@max_u64 and
+             protocol in [2, 3] do
     :ok = Config.validate(config)
     indices = plan.order |> Enum.with_index() |> Map.new()
     count = map_size(indices)
@@ -13,17 +16,42 @@ defmodule Wyram.Engine.Scenery.Wire do
       do: raise(ArgumentError, "invalid scenery plan")
 
     roots = Enum.map(plan.roots, &<<Map.fetch!(indices, &1)::16>>)
-    nodes = Enum.map(plan.order, &node(&1, Map.fetch!(plan.nodes, &1), indices))
+    {magic, identity, revisions} = revision_info(plan, stamp, protocol)
+
+    nodes =
+      Enum.map(plan.order, fn key ->
+        trailer = if revisions, do: <<Map.fetch!(revisions, key)::64>>, else: <<>>
+        [node(key, Map.fetch!(plan.nodes, key), indices), trailer]
+      end)
 
     [
-      <<"WSP1", epoch::64, content::64, stamp::64, config.distance::16, config.cache_bytes::32,
-        config.mesh_bytes::32, count::16, length(roots)::16>>,
+      <<magic::binary, epoch::64, identity::64, stamp::64, config.distance::16,
+        config.cache_bytes::32, config.mesh_bytes::32, count::16, length(roots)::16>>,
       roots,
       nodes
     ]
   end
 
-  def plan(_, _, _, _), do: raise(ArgumentError, "invalid scenery plan")
+  def plan(_, _, _, _, _), do: raise(ArgumentError, "invalid scenery plan")
+
+  defp revision_info(plan, _, 2), do: {"WSP1", plan.content, nil}
+
+  defp revision_info(plan, stamp, 3) do
+    lineage = Map.get(plan, :lineage)
+    revisions = Map.get(plan, :revisions)
+
+    valid =
+      is_integer(lineage) and lineage in 1..@max_u64 and is_map(revisions) and
+        map_size(revisions) == length(plan.order) and
+        Enum.all?(plan.order, fn key ->
+          value = Map.get(revisions, key)
+          is_integer(value) and value in 0..stamp
+        end)
+
+    if not valid, do: raise(ArgumentError, "invalid scenery revisions")
+
+    {"WSP2", lineage, revisions}
+  end
 
   def tiles(epoch, delivery, tiles)
       when epoch in 1..@max_u64 and delivery in 1..@max_u64 and is_list(tiles) do
