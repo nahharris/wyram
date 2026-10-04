@@ -10,6 +10,8 @@ mod wire;
 /// Keeps each cell's exact sample count within `u32` (1024³ at the last level).
 pub const MAX_LEVEL: u8 = 10;
 pub const MAX_ENCODED_TILE_BYTES: usize = 20 + BLOCK_COUNT * 10;
+// Bump when visual generation, sample positions, reduction, or encoding changes.
+pub const CACHE_VERSION: u32 = 3;
 
 /// One vote per horizontal column, taking its highest occupied child.
 pub(crate) fn reduce_top(children: [(u32, u16); 8]) -> u16 {

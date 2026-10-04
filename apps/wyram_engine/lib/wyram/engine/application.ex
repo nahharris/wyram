@@ -26,6 +26,7 @@ defmodule Wyram.Engine.Application do
       {Task.Supervisor, name: Wyram.Engine.StreamSupervisor},
       {Task.Supervisor, name: Wyram.Engine.ScenerySupervisor, max_children: 2},
       {World, directory: Path.join(data_dir, "worlds")},
+      {Wyram.Engine.Scenery.Store, directory: Path.join([data_dir, "worlds", "scenery-cache"])},
       {Scenery, []},
       {LiquidSimulation, []},
       {Characters, []},

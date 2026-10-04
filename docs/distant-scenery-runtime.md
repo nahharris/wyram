@@ -53,6 +53,31 @@ tested independently and connected to the supervised visual service. The
 service is inactive for games without a scenery policy. Client capability
 negotiation now connects view requests and packed native delivery.
 
+## Persistent visual storage
+
+A separate store actor persists generated tile bytes under the world's
+`scenery-cache` directory. Only bounded scenery workers wait on its file I/O;
+the renderer and gameplay coordinator never call it synchronously. A slow store
+retains its caller's worker slot. An unavailable store falls back to generation.
+
+The stable identity includes the generator identity and seed, world bounds,
+numeric block mapping, and an explicit native visual algorithm version. Changes
+to generation, sampling, reduction or encoding must bump `CACHE_VERSION` in the
+native core. Development build profiles do not change this content identity.
+Each tile additionally includes its position, level and actual saved-edit sample
+bytes. Unrelated edits therefore reuse persisted tiles; changed represented
+samples regenerate their affected tiles. Snapshot checks still reject results
+when an edit occurs during the read, generation or cache wait.
+
+Storage uses a fixed slot pool with at most four times the configured tile count
+and the configured cache byte budget, independently of the in-memory loader.
+The disk budget includes the eight-byte slot metadata and every tile's 72-byte
+header. Eviction makes room before writing; startup applies smaller policies.
+Reads validate the content digest, payload length, checksum, tile key and native
+cell encoding. Damaged, partial or unsupported files become misses. The store
+touches only its numbered tile files and slot metadata; generated cache files
+do not belong in Git.
+
 ## Edits and delivery
 
 World owns a protected read model containing only known saved chunk edits.
@@ -195,8 +220,10 @@ presentation can hold both cases near 60 Hz despite different GPU costs.
 
 Distant queries must not activate gameplay regions or obtain authority over
 collision, liquids, or characters. The read model and native sample path now
-cover durable known edits, including restored saves. Persistent cache identity,
-storage budgets, and incremental tile invalidation remain to be implemented.
+cover durable known edits, including restored saves. Persistent storage reuses
+unchanged sampled content across restarts and edits. Incremental server and
+renderer invalidation remains to be implemented: a content change still clears
+their in-memory tiles and meshes, even when the disk store can supply the same bytes.
 
 Bounded native meshing, renderer residency, parent replacement, near clipping,
 and depth handling are connected. Tests cover synthetic caves, detached islands,

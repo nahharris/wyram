@@ -68,6 +68,30 @@ defmodule Wyram.Engine.WorldSceneryTest do
     refute_receive {:scenery_changed, _, _, _}, 10
   end
 
+  test "persistent visual identity survives owner restarts and separates generation inputs", %{
+    state: state
+  } do
+    {:reply, model, _} = World.handle_call(:scenery_read_model, nil, state)
+    identity = Map.get(model, :cache_identity)
+    assert is_binary(identity)
+    assert byte_size(identity) == 32
+    assert model.cache_directory == Path.join(Path.dirname(state.path), "scenery-cache")
+
+    restarted = %{state | scenery_session: make_ref(), edit_view: EditView.new(state.edited)}
+    {:reply, restored, _} = World.handle_call(:scenery_read_model, nil, restarted)
+    assert restored.cache_identity == identity
+
+    for changed <- [
+          %{state | generation: %{state.generation | seed: 42}},
+          %{state | generation: %{state.generation | identity: "new-generator"}},
+          %{state | generation: %{state.generation | bounds: {-16, 511}}},
+          %{state | blocks: %{"test:stone" => 43}}
+        ] do
+      {:reply, different, _} = World.handle_call(:scenery_read_model, nil, changed)
+      refute different.cache_identity == identity
+    end
+  end
+
   test "duplicate subscriptions reuse a monitor and terminated readers are removed", %{
     state: state
   } do

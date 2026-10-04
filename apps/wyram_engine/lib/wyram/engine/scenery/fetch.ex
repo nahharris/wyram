@@ -1,7 +1,7 @@
 defmodule Wyram.Engine.Scenery.Fetch do
   @moduledoc "Collects saved edit samples in bounded batches before visual generation."
   alias Wyram.Engine.Native
-  alias Wyram.Engine.Scenery.EditView
+  alias Wyram.Engine.Scenery.{CachedGeneration, EditView}
   alias Wyram.Scenery.Key
 
   def run(%{generation: %{resource: nil}}, _keys),
@@ -21,7 +21,7 @@ defmodule Wyram.Engine.Scenery.Fetch do
     with :ok <- current?(model),
          {:ok, inputs} <- collect(model, resource, keys),
          :ok <- current?(model),
-         {:ok, binaries} <- Native.generate_edited_scenic_tiles(resource, inputs),
+         {:ok, binaries} <- CachedGeneration.run(model, resource, inputs),
          :ok <- current?(model) do
       {:ok, binaries}
     end

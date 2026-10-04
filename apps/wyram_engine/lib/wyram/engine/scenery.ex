@@ -3,7 +3,7 @@ defmodule Wyram.Engine.Scenery do
   use GenServer
   require Logger
   alias Wyram.Engine.{PluginManager, World}
-  alias Wyram.Engine.Scenery.{EditView, Fetch, Loader, Plan}
+  alias Wyram.Engine.Scenery.{EditView, Fetch, Loader, Plan, Store}
   alias Wyram.Scenery.Config
 
   def start_link(options) do
@@ -28,7 +28,10 @@ defmodule Wyram.Engine.Scenery do
     if config do
       :ok = Config.validate(config)
       world = Keyword.get(options, :world, World)
-      model = GenServer.call(world, {:watch_scenery, self()})
+
+      model =
+        GenServer.call(world, {:watch_scenery, self()})
+        |> Map.put(:cache, Keyword.get(options, :cache, Store))
 
       if Keyword.get(options, :name, __MODULE__) == __MODULE__,
         do: send_if_started(Wyram.Engine.ClientPort, :scenery_ready)

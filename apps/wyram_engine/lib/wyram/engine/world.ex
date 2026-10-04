@@ -3,7 +3,7 @@ defmodule Wyram.Engine.World do
   use GenServer
 
   alias Wyram.Engine.{Native, PluginManager, Region, WorldGenerator}
-  alias Wyram.Engine.Scenery.EditView
+  alias Wyram.Engine.Scenery.{EditView, Identity}
 
   @region_side 4
   @chunk_side 16
@@ -265,7 +265,9 @@ defmodule Wyram.Engine.World do
       generation: state.generation,
       edits: state.edit_view,
       session: state.scenery_session,
-      stamp: stamp
+      stamp: stamp,
+      cache_identity: Identity.new(state.generation, state.blocks),
+      cache_directory: Path.join(Path.dirname(state.path), "scenery-cache")
     }
   end
 

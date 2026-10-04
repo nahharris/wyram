@@ -3,6 +3,22 @@ use wyram_core::scenery::{LodTile, TileKey};
 
 use super::binary_from_bytes;
 
+#[rustler::nif]
+fn scenery_cache_version() -> u32 {
+    wyram_core::scenery::CACHE_VERSION
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn validate_visual_tiles(tiles: Vec<Binary<'_>>) -> Result<Vec<bool>, &'static str> {
+    if tiles.len() > 2 {
+        return Err("oversized visual validation batch");
+    }
+    Ok(tiles
+        .into_iter()
+        .map(|tile| LodTile::decode(tile.as_slice()).is_ok())
+        .collect())
+}
+
 #[rustler::nif(schedule = "DirtyCpu")]
 fn import_visual_chunks<'a>(
     env: Env<'a>,

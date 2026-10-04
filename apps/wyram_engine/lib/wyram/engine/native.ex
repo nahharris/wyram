@@ -55,6 +55,9 @@ defmodule Wyram.Engine.Native do
   @doc "Compiled profile and optimization level of the loaded native library."
   def build_info, do: :erlang.nif_error(:nif_not_loaded)
 
+  def scenery_cache_version, do: :erlang.nif_error(:nif_not_loaded)
+  def validate_visual_tiles(_tiles), do: :erlang.nif_error(:nif_not_loaded)
+
   @spec generate_chunk(
           non_neg_integer(),
           integer(),
