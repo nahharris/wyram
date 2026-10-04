@@ -6,6 +6,7 @@ pub struct FlightBenchmark {
     created: Instant,
     started: Option<Instant>,
     stationary: bool,
+    stationary_seconds: u64,
 }
 impl FlightBenchmark {
     pub fn from_env() -> Option<Self> {
@@ -13,6 +14,11 @@ impl FlightBenchmark {
             created: Instant::now(),
             started: None,
             stationary: std::env::var("WYRAM_BENCHMARK_STATIONARY").as_deref() == Ok("1"),
+            stationary_seconds: std::env::var("WYRAM_BENCHMARK_STATIONARY_SECONDS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .filter(|seconds| (35..=120).contains(seconds))
+                .unwrap_or(35),
         })
     }
     pub fn sample(&mut self, available: bool) -> Option<Intent> {
@@ -46,7 +52,12 @@ impl FlightBenchmark {
         }
     }
     pub fn finished(&self) -> bool {
-        self.elapsed() >= if self.stationary { 35.0 } else { 95.0 }
+        self.elapsed()
+            >= if self.stationary {
+                self.stationary_seconds as f64
+            } else {
+                95.0
+            }
             || self.created.elapsed() >= Duration::from_secs(135)
     }
 }
@@ -90,6 +101,25 @@ fn intent(seconds: f32) -> Intent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn longer_stationary_captures_keep_a_finite_exit_deadline() {
+        let mut benchmark = FlightBenchmark {
+            created: Instant::now(),
+            started: Some(Instant::now() - Duration::from_secs(74)),
+            stationary: true,
+            stationary_seconds: 75,
+        };
+        assert!(!benchmark.finished());
+        benchmark.started = Some(Instant::now() - Duration::from_secs(75));
+        assert!(benchmark.finished());
+        benchmark.started = None;
+        benchmark.created = Instant::now() - Duration::from_secs(135);
+        assert!(
+            benchmark.finished(),
+            "an unavailable player cannot leave a test game running"
+        );
+    }
+
     #[test]
     fn replay_requests_flight_once_and_returns_over_the_same_route() {
         for seconds in [0.0, 5.0, 25.0, 55.0, 85.0] {

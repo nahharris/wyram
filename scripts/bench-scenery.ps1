@@ -1,11 +1,13 @@
-param([ValidateRange(1,3)][int]$Rounds = 2, [switch]$Stationary)
+param([ValidateRange(1,3)][int]$Rounds = 2, [switch]$Stationary,
+    [ValidateRange(35,120)][int]$StationarySeconds = 35)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $directory = Join-Path $root ('.tools\scenery-flight\' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $directory | Out-Null
 $variables = @('WYRAM_DATA_DIR', 'WYRAM_CLIENT', 'WYRAM_CLIENT_METRICS', 'WYRAM_FRAME_CAPTURE',
     'WYRAM_FRAME_CAPTURE_AFTER_MS', 'WYRAM_FLIGHT_BENCHMARK', 'WYRAM_SCENERY_PROTOCOL',
-    'WYRAM_CHUNK_PROTOCOL', 'WYRAM_CONTROL_PORT', 'WYRAM_GAME_PLUGIN', 'WYRAM_BENCHMARK_STATIONARY')
+    'WYRAM_CHUNK_PROTOCOL', 'WYRAM_CONTROL_PORT', 'WYRAM_GAME_PLUGIN', 'WYRAM_BENCHMARK_STATIONARY',
+    'WYRAM_BENCHMARK_STATIONARY_SECONDS')
 $previous = @{}
 foreach ($name in $variables) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 try {
@@ -16,9 +18,10 @@ try {
     $env:WYRAM_GAME_PLUGIN = 'wyram'
     $env:WYRAM_FRAME_CAPTURE_AFTER_MS = '92000'
     $env:WYRAM_BENCHMARK_STATIONARY = if ($Stationary) { '1' } else { $null }
+    $env:WYRAM_BENCHMARK_STATIONARY_SECONDS = [string]$StationarySeconds
     if ($Stationary) {
         $env:WYRAM_CONTROL_PORT = '0'
-        $env:WYRAM_FRAME_CAPTURE_AFTER_MS = '30000'
+        $env:WYRAM_FRAME_CAPTURE_AFTER_MS = [string](($StationarySeconds - 5) * 1000)
     }
     for ($round = 0; $round -lt $Rounds; $round++) {
         $order = if ($round % 2 -eq 0) { @(0,1) } else { @(1,0) }

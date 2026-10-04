@@ -184,12 +184,25 @@ struct Grid<'a> {
 }
 
 impl Grid<'_> {
+    fn sample_position(&self, p: [i32; 3]) -> [f32; 3] {
+        // A coarse cell center can skip a neighbor's thin boundary stratum.
+        // Read immediately across the interface; interior reads retain centers.
+        std::array::from_fn(|i| {
+            if p[i] < 0 {
+                self.origin[i] - 0.125
+            } else if p[i] >= self.side as i32 {
+                self.origin[i] + self.side as f32 * self.step + 0.125
+            } else {
+                self.origin[i] + (p[i] as f32 + 0.5) * self.step
+            }
+        })
+    }
+
     fn neighbor(&self, p: [i32; 3]) -> Option<&Neighbor> {
         if p.iter().all(|&v| (0..self.side as i32).contains(&v)) {
             return None;
         }
-        let world: [f32; 3] =
-            std::array::from_fn(|i| self.origin[i] + (p[i] as f32 + 0.5) * self.step);
+        let world = self.sample_position(p);
         self.neighbors
             .iter()
             .filter(|neighbor| {
@@ -202,8 +215,7 @@ impl Grid<'_> {
     }
     fn get(&self, p: [i32; 3]) -> u16 {
         if p.iter().any(|&v| !(0..self.side as i32).contains(&v)) {
-            let world: [f32; 3] =
-                std::array::from_fn(|i| self.origin[i] + (p[i] as f32 + 0.5) * self.step);
+            let world = self.sample_position(p);
             return self.neighbor(p).map_or(0, |neighbor| {
                 let tile = &neighbor.tile;
                 let low = tile.key().origin().map(|v| v as f32);
@@ -587,6 +599,90 @@ mod tests {
                 "the shared water bottom must be hidden"
             );
         }
+    }
+
+    #[test]
+    fn budget_fallback_cannot_duplicate_a_generated_neighbors_water_surface() {
+        use wyram_core::worldgen::{Generator, Settings};
+        let generator = Generator::new(2026, Settings::default()).unwrap();
+        let descriptors = HashMap::from([(
+            4,
+            RenderDescriptor {
+                opacity: 160,
+                emissive: false,
+                height: 1.0,
+                liquid: 1,
+            },
+        )]);
+        let planes = HashMap::from([(4, 1.0)]);
+        let mut meshes = Vec::new();
+        for (y, budget) in [(-1, 64 << 10), (0, 2 << 20)] {
+            let position = [1, y, 1];
+            let key = TileKey::new(position, 5).unwrap();
+            let tile = generator.scenic_tile(key).unwrap();
+            let neighbors: Vec<_> = crate::chunk_mesh::FACES
+                .iter()
+                .map(|(offset, _, _)| {
+                    let adjacent =
+                        TileKey::new(std::array::from_fn(|i| position[i] + offset[i]), 5).unwrap();
+                    Arc::new(generator.scenic_tile(adjacent).unwrap()).into()
+                })
+                .collect();
+            meshes.push(
+                build_with_neighbors(&tile, &colors(), &descriptors, &planes, budget, &neighbors)
+                    .unwrap(),
+            );
+        }
+        assert!(
+            meshes[0].side < 32,
+            "the lower tile must exercise budget fallback"
+        );
+        assert_eq!(meshes[1].side, 32);
+        let rectangles: Vec<Vec<_>> = meshes
+            .iter()
+            .map(|mesh| {
+                mesh.vertices
+                    .as_chunks::<6>()
+                    .0
+                    .iter()
+                    .filter(|quad| {
+                        quad[0].normal[1] == 127
+                            && quad[0].base.opacity < 1.0
+                            && quad[0].base.position[1] == 1.0
+                    })
+                    .map(|quad| {
+                        [0, 2].map(|axis| {
+                            (
+                                quad.iter()
+                                    .map(|v| v.base.position[axis])
+                                    .fold(f32::INFINITY, f32::min),
+                                quad.iter()
+                                    .map(|v| v.base.position[axis])
+                                    .fold(f32::NEG_INFINITY, f32::max),
+                            )
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+        assert!(
+            !rectangles[1].is_empty(),
+            "the upper tile owns a visible sea surface"
+        );
+        let overlap: f32 = rectangles[0]
+            .iter()
+            .flat_map(|a| {
+                rectangles[1].iter().map(move |b| {
+                    (0..2)
+                        .map(|axis| (a[axis].1.min(b[axis].1) - a[axis].0.max(b[axis].0)).max(0.0))
+                        .product::<f32>()
+                })
+            })
+            .sum();
+        assert_eq!(
+            overlap, 0.0,
+            "fallback and full-resolution neighbors cannot blend the same water area twice"
+        );
     }
 
     #[test]

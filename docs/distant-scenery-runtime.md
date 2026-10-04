@@ -122,6 +122,10 @@ Meshing reads adjacent planned tiles, or their planned ancestors, to suppress
 shared walls. It waits for these immutable summaries in the work scheduler;
 rendering and gameplay never wait for a synchronous actor request. A changed
 neighbor plan schedules a replacement while keeping the previous mesh available.
+External samples read just across the shared boundary. A reduced mesh's cell
+center can skip a neighbor's thin water stratum and incorrectly emit a second
+sea cap. A generated-coast regression checks the actual overlap area between
+a budget fallback mesh and its full-resolution vertical neighbor.
 A parent that can refine does not prove its children's opaque face coverage,
 so its summary cannot suppress those external walls. Refinement eligibility is
 part of mesh dependencies, including camera changes that keep the same tile keys.
@@ -162,6 +166,12 @@ For stationary captures, run:
 mise exec -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bench-scenery.ps1 -Rounds 1 -Stationary
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scenery-perf-report.ps1 -Directory <run-directory>
 ```
+
+Stationary cases last 35 seconds by default. Pass `-StationarySeconds 75` to
+inspect slower cold loads after they settle; the supported range is 35 through
+120 seconds. The GPU capture delay is the requested duration minus five seconds.
+Keep cold completion time separate from steady rendering cost, and check tile
+readiness before treating the image or timing interval as settled.
 
 The stationary mode positions the player through the authenticated local control
 API, then fixes the presentation viewpoint at the requested coordinates. Flight
