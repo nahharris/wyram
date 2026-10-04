@@ -2,6 +2,9 @@ defmodule Wyram.Engine.Scenery.Plan do
   @moduledoc "Bounded visual refinement with complete sibling replacement groups."
   alias Wyram.Scenery.{Config, Key}
   @coordinate_limit 1_000_000
+  # Retain at least six fully blended quads per tile, including vertex normals,
+  # ordered indices and the shared buffers' maximum allocation slack.
+  @minimum_mesh_bytes 2592
 
   def new({x, y, z} = observer, {low, high}, %Config{} = config)
       when is_integer(x) and is_integer(y) and is_integer(z) and is_integer(low) and
@@ -9,6 +12,10 @@ defmodule Wyram.Engine.Scenery.Plan do
     with true <- Enum.all?([x, y, z, low, high], &(abs(&1) <= @coordinate_limit)),
          true <- (high - low) in 0..511,
          :ok <- Config.validate(config),
+         config <- %{
+           config
+           | max_tiles: min(config.max_tiles, div(config.mesh_bytes, @minimum_mesh_bytes))
+         },
          {:ok, roots} <- roots(observer, {low, high}, config) do
       nodes = Map.new(roots, &{&1, []})
       {nodes, order} = refine(nodes, Enum.reverse(roots), roots, observer, {low, high}, config)

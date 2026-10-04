@@ -3,6 +3,16 @@ defmodule Wyram.Engine.Scenery.PlanTest do
   alias Wyram.Engine.Scenery.Plan
   alias Wyram.Scenery.{Config, Key}
 
+  test "mesh reserves limit refinements and reject roots that cannot retain complete coverage" do
+    config =
+      Config.new!(%{max_tiles: 4096, cache_bytes: 256 * 1024 * 1024, mesh_bytes: 4 * 1024 * 1024})
+
+    assert {:ok, plan} = Plan.new({0, 0, 0}, {-192, 319}, config)
+    assert map_size(plan.nodes) * 2592 <= config.mesh_bytes
+    config = %{config | distance: 4096, max_level: 3}
+    assert Plan.new({0, 0, 0}, {-192, 319}, config) == {:error, :scenery_root_budget}
+  end
+
   test "refinement stays bounded and every replacement is a complete ordered sibling set" do
     config = Config.new!(%{})
     assert {:ok, plan} = Plan.new({-17, 260, -33}, {-192, 319}, config)

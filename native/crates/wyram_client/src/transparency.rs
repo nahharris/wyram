@@ -1,7 +1,9 @@
+use crate::scenery::mesh::ProxyVertex;
 use crate::world::Vertex;
 use glam::Vec3;
 use std::collections::BTreeMap;
 use std::time::Instant;
+use wyram_core::scenery::TileKey;
 
 #[derive(Default)]
 pub struct PrepareStats {
@@ -15,6 +17,10 @@ pub struct PrepareStats {
 #[derive(Default)]
 pub struct BlendedMeshes {
     chunks: BTreeMap<[i32; 3], Vec<[Vertex; 6]>>,
+    far: BTreeMap<[i32; 4], Vec<[ProxyVertex; 6]>>,
+    normals: Vec<[i8; 4]>,
+    normal_buffer: Option<wgpu::Buffer>,
+    normal_capacity: usize,
     buffer: Option<wgpu::Buffer>,
     capacity: usize,
     index_buffer: Option<wgpu::Buffer>,
@@ -37,6 +43,25 @@ struct UploadPlan {
 }
 
 impl BlendedMeshes {
+    pub fn normal_layout() -> wgpu::VertexBufferLayout<'static> {
+        const ATTRIBUTES: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![3 => Snorm8x4];
+        wgpu::VertexBufferLayout {
+            array_stride: 4,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &ATTRIBUTES,
+        }
+    }
+
+    pub fn replace_far(&mut self, key: TileKey, quads: &[[ProxyVertex; 6]]) {
+        let p = key.position();
+        let key = [i32::from(key.level()), p[0], p[1], p[2]];
+        if quads.is_empty() {
+            self.dirty |= self.far.remove(&key).is_some();
+        } else if self.far.get(&key).is_none_or(|old| old.as_slice() != quads) {
+            self.far.insert(key, quads.to_vec());
+            self.dirty = true;
+        }
+    }
     pub fn replace(&mut self, key: [i32; 3], vertices: &[Vertex]) {
         let quads: Vec<_> = vertices
             .as_chunks::<6>()
@@ -65,6 +90,12 @@ impl BlendedMeshes {
             self.vertices.clear();
             self.vertices
                 .extend(self.chunks.values().flat_map(|quads| quads.iter().copied()));
+            self.normals.clear();
+            self.normals.resize(self.vertices.len() * 6, [0; 4]);
+            for quad in self.far.values().flat_map(|quads| quads.iter()) {
+                self.vertices.push(quad.map(|v| v.base));
+                self.normals.extend(quad.map(|v| v.normal));
+            }
             self.centers.clear();
             self.centers.extend(self.vertices.iter().map(|quad| {
                 (Vec3::from_array(quad[0].position) + Vec3::from_array(quad[2].position)) * 0.5
@@ -125,11 +156,18 @@ impl BlendedMeshes {
             ..PrepareStats::default()
         };
         if self.count == 0 {
+            self.buffer = None;
+            self.capacity = 0;
+            self.index_buffer = None;
+            self.index_capacity = 0;
+            self.normal_buffer = None;
+            self.normal_capacity = 0;
             return stats;
         }
         let write = Instant::now();
         if plan.vertices {
             stats.bytes += self.vertices.len() * size_of::<[Vertex; 6]>();
+            stats.bytes += self.normals.len() * 4;
             upload(
                 device,
                 queue,
@@ -138,6 +176,15 @@ impl BlendedMeshes {
                 bytemuck::cast_slice(&self.vertices),
                 wgpu::BufferUsages::VERTEX,
                 "Resident blended faces",
+            );
+            upload(
+                device,
+                queue,
+                &mut self.normal_buffer,
+                &mut self.normal_capacity,
+                bytemuck::cast_slice(&self.normals),
+                wgpu::BufferUsages::VERTEX,
+                "Blended face normals",
             );
         }
         if plan.indices {
@@ -174,6 +221,13 @@ impl BlendedMeshes {
                     .slice(..),
                 wgpu::IndexFormat::Uint32,
             );
+            pass.set_vertex_buffer(
+                1,
+                self.normal_buffer
+                    .as_ref()
+                    .expect("blended normals allocated")
+                    .slice(..),
+            );
             pass.draw_indexed(0..self.count, 0, 0..1);
         }
     }
@@ -188,7 +242,7 @@ fn upload(
     usage: wgpu::BufferUsages,
     label: &str,
 ) {
-    if bytes.len() > *capacity {
+    if bytes.len() > *capacity || *capacity > bytes.len().next_power_of_two() {
         *capacity = bytes.len().next_power_of_two();
         *buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),

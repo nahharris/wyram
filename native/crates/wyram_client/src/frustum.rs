@@ -17,14 +17,14 @@ impl Frustum {
 
     pub fn intersects_chunk(&self, key: [i32; 3]) -> bool {
         let low = key.map(|c| c as f32 * 16.0);
+        self.intersects_bounds(low, low.map(|v| v + 16.0))
+    }
+
+    pub fn intersects_bounds(&self, low: [f32; 3], high: [f32; 3]) -> bool {
         self.0.iter().all(|plane| {
             let normal = plane.truncate();
             let corner = glam::Vec3::from_array(std::array::from_fn(|i| {
-                if normal[i] >= 0.0 {
-                    low[i] + 16.0
-                } else {
-                    low[i]
-                }
+                if normal[i] >= 0.0 { high[i] } else { low[i] }
             }));
             // Keep uncertain boundary boxes, including at large coordinates.
             let error = (normal.abs().dot(corner.abs()) + plane.w.abs()) * f32::EPSILON * 8.0;
@@ -37,6 +37,23 @@ impl Frustum {
 mod tests {
     use super::*;
     use glam::{Mat4, Vec3};
+
+    #[test]
+    fn reverse_infinite_depth_retains_distant_bounds_and_still_rejects_behind_the_eye() {
+        let matrix = Mat4::perspective_infinite_reverse_rh(70f32.to_radians(), 16.0 / 9.0, 0.05)
+            * Mat4::look_to_rh(Vec3::new(-17.0, 100.0, -33.0), Vec3::NEG_Z, Vec3::Y);
+        let frustum = Frustum::new(matrix);
+        for distance in [1024.0, 4096.0, 8192.0] {
+            let p = Vec3::new(-17.0, 100.0, -33.0 - distance);
+            let clip = matrix * p.extend(1.0);
+            assert!(clip.z > 0.0 && clip.z < clip.w);
+            assert!(frustum.intersects_bounds(
+                (p - Vec3::splat(32.0)).to_array(),
+                (p + Vec3::splat(32.0)).to_array()
+            ));
+        }
+        assert!(!frustum.intersects_bounds([-32.0, 96.0, 0.0], [0.0, 128.0, 32.0]));
+    }
 
     fn view(eye: Vec3) -> Mat4 {
         Mat4::perspective_rh(70f32.to_radians(), 16.0 / 9.0, 0.05, 512.0)

@@ -35,6 +35,19 @@ use crate::telemetry::{FrameSample, FrameTelemetry};
 use crate::world::{RenderDescriptor, Vertex, VoxelWorld};
 
 #[derive(Debug, Deserialize)]
+struct Hello {
+    colors: HashMap<String, [u8; 3]>,
+    descriptors: HashMap<String, RenderDescriptor>,
+    noncolliding: Vec<u16>,
+    placeable: Vec<u16>,
+    characters: Vec<Snapshot>,
+    #[serde(default)]
+    models: Vec<rig::Source>,
+    #[serde(default)]
+    scenery_planes: HashMap<String, f32>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerPacket {
     CharacterStates {
@@ -47,15 +60,7 @@ enum ServerPacket {
         yaw: f32,
         pitch: f32,
     },
-    Hello {
-        colors: HashMap<String, [u8; 3]>,
-        descriptors: HashMap<String, RenderDescriptor>,
-        noncolliding: Vec<u16>,
-        placeable: Vec<u16>,
-        characters: Vec<Snapshot>,
-        #[serde(default)]
-        models: Vec<rig::Source>,
-    },
+    Hello(Box<Hello>),
     Chunk {
         key: [i32; 3],
         revision: u64,
@@ -235,6 +240,8 @@ struct Graphics {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     blended_pipeline: wgpu::RenderPipeline,
+    scenery_pipeline: wgpu::RenderPipeline,
+    scenery: scenery::gpu::Scene,
     blended: transparency::BlendedMeshes,
     depth: wgpu::TextureView,
     camera: wgpu::Buffer,
@@ -360,7 +367,7 @@ impl Graphics {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32Float,
                     depth_write_enabled: Some(!blended),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    depth_compare: Some(wgpu::CompareFunction::Greater),
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
@@ -370,7 +377,9 @@ impl Graphics {
             })
         };
         let pipeline = make_pipeline(false);
-        let blended_pipeline = make_pipeline(true);
+        let scenery = scenery::gpu::Scene::new(&device);
+        let (scenery_pipeline, blended_pipeline) =
+            scenery.pipelines(&device, &camera_layout, config.format, true);
         let depth = Self::create_depth(&device, &config);
         let characters = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Character vertex batch"),
@@ -385,6 +394,8 @@ impl Graphics {
             config,
             pipeline,
             blended_pipeline,
+            scenery_pipeline,
+            scenery,
             blended: transparency::BlendedMeshes::default(),
             depth,
             camera,
@@ -426,6 +437,7 @@ impl Graphics {
     }
 
     fn replace_mesh(&mut self, key: [i32; 3], vertices: &[Vertex]) {
+        self.scenery.near_ready(key);
         self.blended.replace(key, vertices);
         let opaque: Vec<_> = vertices
             .iter()
@@ -447,12 +459,19 @@ impl Graphics {
         }
     }
 
-    fn render(&mut self, position: Vec3, direction: Vec3, characters: &[Vertex]) -> FrameSample {
+    fn render(
+        &mut self,
+        position: Vec3,
+        direction: Vec3,
+        characters: &[Vertex],
+        scenery_distance: f32,
+    ) -> FrameSample {
         let mut stats = FrameSample::default();
         if let Some(timer) = &mut self.gpu_timer {
             stats.gpu_render_ms = timer.collect(&self.device);
         }
         let blended_start = Instant::now();
+        self.scenery.frame(&self.queue, position, scenery_distance);
         let blended = self.blended.prepare(&self.device, &self.queue, position);
         stats.blended_write_bytes = blended.bytes;
         stats.blended_collect_cpu_ms = blended.collect_ms;
@@ -466,7 +485,7 @@ impl Graphics {
                 .write_buffer(&self.characters, 0, bytemuck::cast_slice(characters));
         }
         let aspect = self.config.width as f32 / self.config.height as f32;
-        let matrix = Mat4::perspective_rh(70f32.to_radians(), aspect, 0.05, 512.0)
+        let matrix = Mat4::perspective_infinite_reverse_rh(70f32.to_radians(), aspect, 0.05)
             * Mat4::look_to_rh(position, direction, Vec3::Y);
         let frustum = frustum::Frustum::new(matrix);
         self.queue.write_buffer(
@@ -518,7 +537,7 @@ impl Graphics {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        load: wgpu::LoadOp::Clear(0.0),
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
@@ -542,6 +561,10 @@ impl Graphics {
                 pass.set_vertex_buffer(0, self.characters.slice(..));
                 pass.draw(0..characters.len() as u32, 0..1);
             }
+            pass.set_pipeline(&self.scenery_pipeline);
+            pass.set_bind_group(1, &self.scenery.group, &[]);
+            (stats.scenery_opaque_draws, stats.scenery_opaque_vertices) =
+                self.scenery.draw(&mut pass, &frustum, self.culling);
             pass.set_pipeline(&self.blended_pipeline);
             self.blended.draw(&mut pass);
         }
@@ -570,6 +593,7 @@ struct Game {
     inbound_queue_max_ms: f64,
     world: VoxelWorld,
     scenery: scenery::view::View,
+    scenery_meshing: scenery::pipeline::Pipeline,
     position: Vec3,
     yaw: f32,
     pitch: f32,
@@ -604,6 +628,7 @@ impl Game {
             inbound_queue_max_ms: 0.0,
             world: VoxelWorld::default(),
             scenery: scenery::view::View::default(),
+            scenery_meshing: scenery::pipeline::Pipeline::new(),
             position: Vec3::new(0.5, 73.0, 0.5),
             yaw: 0.0,
             pitch: -0.15,
@@ -805,16 +830,19 @@ impl ApplicationHandler<UserEvent> for Game {
                 yaw,
                 pitch,
             }) => self.apply_teleport(x, y, z, yaw, pitch),
-            UserEvent::Packet(ServerPacket::Hello {
-                colors,
-                descriptors,
-                noncolliding,
-                placeable,
-                characters,
-                models,
-            }) => {
+            UserEvent::Packet(ServerPacket::Hello(hello)) => {
+                let Hello {
+                    colors,
+                    descriptors,
+                    noncolliding,
+                    placeable,
+                    characters,
+                    models,
+                    scenery_planes,
+                } = *hello;
                 self.world.set_palette(colors);
                 self.world.set_descriptors(descriptors, noncolliding);
+                self.scenery_meshing.set_water(scenery_planes, &self.world);
                 self.placeable = placeable
                     .into_iter()
                     .filter(|id| self.world.has_block_id(*id))
@@ -850,6 +878,7 @@ impl ApplicationHandler<UserEvent> for Game {
                 if let Some(graphics) = self.graphics.as_mut() {
                     graphics.meshes.remove(&key);
                     graphics.blended.replace(key, &[]);
+                    graphics.scenery.forget_near(key);
                 }
             }
             UserEvent::Disconnected => event_loop.exit(),
@@ -975,8 +1004,27 @@ impl ApplicationHandler<UserEvent> for Game {
                         .update(&mut self.world, center, |key, vertices| {
                             graphics.replace_mesh(key, vertices)
                         });
-                    let render_stats =
-                        graphics.render(view.position, view.direction, &character_vertices);
+                    let selected =
+                        self.scenery_meshing
+                            .update(&self.scenery, &self.world, |key, mesh| {
+                                graphics.scenery.upload(&graphics.device, key, mesh)
+                            });
+                    graphics.scenery.select(
+                        self.scenery_meshing.ready(),
+                        selected,
+                        &mut graphics.blended,
+                    );
+                    let scenery_distance = self
+                        .scenery
+                        .plan
+                        .as_ref()
+                        .map_or(512.0, |plan| f32::from(plan.distance));
+                    let render_stats = graphics.render(
+                        view.position,
+                        view.direction,
+                        &character_vertices,
+                        scenery_distance,
+                    );
                     let outbound = self
                         .outbound
                         .as_ref()
@@ -997,6 +1045,18 @@ impl ApplicationHandler<UserEvent> for Game {
                         loaded_chunks: self.world.chunk_count(),
                         dirty_chunks: self.world.dirty_count(),
                         in_flight: self.meshing.in_flight(),
+                        scenery_update_cpu_ms: self.scenery_meshing.stats.update_ms,
+                        scenery_worker_mesh_ms: self.scenery_meshing.stats.worker_ms,
+                        scenery_upload_cpu_ms: self.scenery_meshing.stats.upload_ms,
+                        scenery_uploads: self.scenery_meshing.stats.uploads,
+                        scenery_upload_bytes: self.scenery_meshing.stats.upload_bytes,
+                        scenery_stale_meshes: self.scenery_meshing.stats.stale,
+                        scenery_degraded_meshes: self.scenery_meshing.stats.degraded,
+                        scenery_ready_tiles: self.scenery_meshing.ready().len(),
+                        scenery_selected_tiles: self.scenery_meshing.stats.selected,
+                        scenery_in_flight: self.scenery_meshing.in_flight(),
+                        scenery_failed_tiles: self.scenery_meshing.failed(),
+                        scenery_mesh_reserved_bytes: self.scenery_meshing.ready().values().sum(),
                         outbound_queued: outbound.queued,
                         outbound_sent: outbound.sent,
                         outbound_coalesced_inputs: outbound.coalesced_inputs,
@@ -1081,6 +1141,22 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hello_keeps_legacy_compatibility_and_reads_configured_surface_planes() {
+        let hello = serde_json::json!({"type":"hello","colors":{},"descriptors":{},"noncolliding":[],
+            "placeable":[],"characters":[]});
+        let super::ServerPacket::Hello(packet) = serde_json::from_value(hello.clone()).unwrap()
+        else {
+            panic!("hello");
+        };
+        assert!(packet.scenery_planes.is_empty());
+        let mut hello = hello;
+        hello["scenery_planes"] = serde_json::json!({"73":-16.25});
+        let super::ServerPacket::Hello(packet) = serde_json::from_value(hello).unwrap() else {
+            panic!("hello");
+        };
+        assert_eq!(packet.scenery_planes["73"], -16.25);
+    }
     #[test]
     fn background_decode_validates_scenery_packets_before_ui_delivery() {
         let mut bytes = b"WSP1".to_vec();

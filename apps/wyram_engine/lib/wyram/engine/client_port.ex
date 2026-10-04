@@ -12,7 +12,8 @@ defmodule Wyram.Engine.ClientPort do
     Paths,
     PluginManager,
     Scenery,
-    World
+    World,
+    WorldGenerator
   }
 
   alias Wyram.Engine.Scenery.Transport
@@ -60,11 +61,16 @@ defmodule Wyram.Engine.ClientPort do
 
   @impl true
   def handle_info(:initialize, state) do
+    blocks = PluginManager.blocks()
+    descriptors = PluginManager.render_descriptors()
+
     send_packet(state.port, %{
       type: "hello",
-      blocks: PluginManager.blocks(),
+      blocks: blocks,
       colors: PluginManager.block_colors(),
-      descriptors: PluginManager.render_descriptors(),
+      descriptors: descriptors,
+      scenery_planes:
+        WorldGenerator.scenery_planes(PluginManager.worldgen(), blocks, descriptors),
       noncolliding: PluginManager.noncolliding(),
       placeable: PluginManager.placeable() |> Enum.sort() |> Enum.map(&elem(&1, 1)),
       characters: Characters.latest(),
