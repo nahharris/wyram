@@ -215,6 +215,97 @@ impl Generator {
         }
         Ok(bytes)
     }
+
+    /// Reuse horizontal fields and feature anchors within one native batch.
+    /// Cache lifetime is the call: no shared locks, mutable generator state or
+    /// persistent memory growth across region requests.
+    pub fn chunks(&self, keys: &[[i32; 3]]) -> Result<Vec<Vec<u8>>, &'static str> {
+        use std::collections::HashMap;
+        if keys.iter().flatten().any(|c| c.unsigned_abs() > 62_500) {
+            return Err("world coordinate out of bounds");
+        }
+        let mut counts = HashMap::new();
+        for [x, _, z] in keys {
+            *counts.entry([*x, *z]).or_insert(0usize) += 1;
+        }
+        let mut prepared = HashMap::new();
+        for (&[x, z], &count) in &counts {
+            if count < 2 {
+                continue;
+            }
+            let columns: Vec<_> = (0..16)
+                .flat_map(|dz| (0..16).map(move |dx| (dx, dz)))
+                .map(|(dx, dz)| self.column(x * 16 + dx, z * 16 + dz))
+                .collect();
+            let instances = features::instances(
+                self,
+                [x * 16, self.bounds().0, z * 16],
+                [x * 16 + 15, self.bounds().1, z * 16 + 15],
+            );
+            prepared.insert([x, z], (columns, instances));
+        }
+        keys.iter()
+            .map(|&key| match prepared.get(&[key[0], key[2]]) {
+                Some((columns, instances)) => Ok(self.prepared_chunk(key, columns, instances)),
+                None => self.chunk(key),
+            })
+            .collect()
+    }
+
+    fn prepared_chunk(
+        &self,
+        key: [i32; 3],
+        columns: &[Column],
+        instances: &[features::Instance<'_>],
+    ) -> Vec<u8> {
+        let origin = key.map(|v| v * 16);
+        let max = origin.map(|v| v + 15);
+        let mut bytes = vec![0; BYTE_COUNT];
+        if max[1] < self.bounds().0 || origin[1] > self.bounds().1 {
+            return bytes;
+        }
+        let instances: Vec<_> = instances
+            .iter()
+            .filter(|i| {
+                i.anchor[1] - i.feature.support_depth <= max[1]
+                    && i.anchor[1] + i.feature.height > origin[1]
+            })
+            .collect();
+        // Conservative absence proof. Carvers only remove material; islands,
+        // water and every intersecting feature remain accounted for.
+        if instances.is_empty()
+            && columns.iter().all(|c| {
+                c.height < origin[1]
+                    && self.settings.sea_level < origin[1]
+                    && c.island.is_none_or(|(_, top)| top < origin[1])
+            })
+        {
+            return bytes;
+        }
+        for z in 0..CHUNK_SIDE {
+            for x in 0..CHUNK_SIDE {
+                let column = &columns[z * CHUNK_SIDE + x];
+                for y in 0..CHUNK_SIDE {
+                    let p = [
+                        origin[0] + x as i32,
+                        origin[1] + y as i32,
+                        origin[2] + z as i32,
+                    ];
+                    let mut id = self.base(p, column);
+                    if id == 0 && p[1] >= self.bounds().0 && p[1] <= self.bounds().1 {
+                        id = instances
+                            .iter()
+                            .map(|i| i.block(p, column))
+                            .find(|id| *id > 0)
+                            .unwrap_or(0);
+                    }
+                    let at = ((y * 16 + z) * 16 + x) * 2;
+                    bytes[at..at + 2].copy_from_slice(&id.to_le_bytes());
+                }
+            }
+        }
+        bytes
+    }
     pub fn spawn(&self) -> [i32; 3] {
         for radius in 0i32..=64 {
             for z in -radius..=radius {

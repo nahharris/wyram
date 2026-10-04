@@ -149,12 +149,13 @@ fn generate_world_chunks<'a>(
     if keys.len() > 32 {
         return Err("oversized generation batch");
     }
-    keys.into_iter()
-        .map(|(x, y, z)| {
-            g.0.chunk([x, y, z])
-                .map(|bytes| ((x, y, z), binary_from_bytes(env, &bytes)))
-        })
-        .collect()
+    let coordinates: Vec<_> = keys.iter().map(|&(x, y, z)| [x, y, z]).collect();
+    let chunks = g.0.chunks(&coordinates)?;
+    Ok(keys
+        .into_iter()
+        .zip(chunks)
+        .map(|(key, bytes)| (key, binary_from_bytes(env, &bytes)))
+        .collect())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
