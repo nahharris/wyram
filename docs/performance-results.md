@@ -62,3 +62,59 @@ All six runs finish with 75 resident chunks, zero dirty chunks, zero mesh jobs i
 **INCONCLUSIVE:** ordinary full-frame improvement. Tail ranges overlap, and the small difference does not establish a causal FPS gain. Full-renderer frame tails during a deliberately stalled engine have not been measured; the backpressure result above is isolated producer behavior. Pose coalescing and explicit saturation/disconnect behavior are intentional semantics under overload; delivery is not acknowledged and shutdown may abandon queued edits. See [the design](outbound-ipc.md) for these limits.
 
 Raw captures stay ignored under `.tools/outbound-pass/`: `matched-debug.jsonl`, `route-{baseline,candidate}-{0,1,2}/frames.jsonl`, and `routes-summary.json`. Reproduce the controlled receiver comparison with `mise run bench:outbound -- -Profile dev`.
+
+## Generation profiles and distant loading
+
+Measured on 2026-10-04 with the same Windows toolchain. The performance launcher
+previously optimized the client while retaining debug generation. It now uses
+optimized generation as well. This is a build-profile correction, not an
+algorithm comparison. Normal debug development remains available.
+
+The headless fixture in `bench/native_generation.exs` generates the official
+seed-2026 plan at `{672, 300, 672}` (1,018 scenery tiles in two-tile batches), then
+2,592 near chunks at horizontal chunk coordinates 38 through 46 across the
+configured vertical range. Four runs alternate debug/perf/debug/perf, with three
+passes per workload per run. Startup and hashing are excluded from the timer.
+
+| Workload | Debug median ms | Perf median ms | Ratio |
+| --- | ---: | ---: | ---: |
+| Scenery generation | 22,463.69 | 2,028.54 | 11.07× |
+| Near-chunk generation | 2,200.99 | 224.87 | 9.79× |
+
+Every scenery result contains 6,418,312 bytes with deterministic SHA-256
+`a612a0306dc131ac939082e1ddf599b19d6bc8fce19ece41976212b5469e1dec`.
+Every near result contains 21,233,664 bytes with SHA-256
+`154058d009b69e8cee2b7a5eccd53eb0407a4db920b2198ec6c0aab8889895ad`.
+The output is byte-identical across profiles. Reproduce the fixture with
+`mise run bench:generation` and `mise run bench:generation -- -Profile dev`.
+
+Four stationary desktop pairs use debug/perf/perf/debug generation order and
+the same optimized client, seed and presentation viewpoint `{672.5, 300, 672.5}`.
+Each pair includes near-only and distant drawing, fresh data and a 35-second
+automatic exit. The adapter is RTX 4050 Laptop, Vulkan driver 591.74,
+2240×1260 pixels with FIFO presentation. No builds or tests run during capture.
+All 1,018 scenery tiles become ready at 23.26 and 23.80 seconds with debug
+generation, versus 13.05 seconds in both optimized runs. All four distant BMP
+captures have the same SHA-256, so this viewpoint's settled image is identical.
+There are no failed tiles or dropped samples; at most two scenery mesh jobs and
+one upload occur per redraw. Each run finishes with 897 selected tiles.
+
+The settled 25–35 second interval gives frame p95 17.40–17.60 ms in debug and
+17.30–17.34 ms in perf. GPU p95 is 0.98–0.99 ms and 1.08–1.10 ms respectively.
+Faster arrivals change off-screen budget fallback: final reserved mesh bytes are
+12,918,768 versus 16,123,488; opaque vertices 160,080 versus 184,026; degraded
+tiles 34 versus 22. These values remain within the configured bounds. This
+verifies faster cold completion, not an FPS improvement or final visual quality.
+Shoreline approximations and mixed-resolution acceptance remain open.
+
+Raw CPU reports and the game manifest/summary stay ignored under
+`.tools/distant-scenery`. Reproduce game cases with the following commands,
+reversing order for the second pair:
+
+```powershell
+mise exec -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bench-scenery.ps1 -Rounds 1 -Stationary -NativeProfile dev
+mise exec -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bench-scenery.ps1 -Rounds 1 -Stationary -NativeProfile perf
+```
+
+Each capture records the actual loaded
+generation profile and library hash alongside client and adapter metadata.
