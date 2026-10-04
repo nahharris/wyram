@@ -28,6 +28,8 @@ Use `mise run dev:agent` and the [local automation interface](docs/automation.md
 
 Use `mise run dev:perf` or `mise run dev:agent:perf` for an optimized native client with debug symbols. These use the same plugin staging and cleanup as ordinary development; normal `dev` remains unoptimized. `mise run bench:mesh` compares greedy meshing against the simple test oracle in the same optimized profile. The [performance issue plan](docs/performance-plan.md) lists the remaining approaches and verification gates.
 
+Nearby terrain uses a full-height circle with radius 11 chunks by default. Set `WYRAM_NEAR_VIEW_RADIUS` to an integer from 1 to 11 to reduce the radius. Streaming and mesh uploads use bounded admission to keep movement responsive while new terrain loads.
+
 The [gameplay roadmap](docs/gameplay-plan.md) tracks reusable character movement, models, animations and cameras. Walk/run policy and movement tuning live in the public Elixir character profile; a shared fixed-step Elixir owner now controls position and grounded jumping through batched swept collision, providing the foundation for additional traversal. The game includes two original reusable rigs, state-driven animations, and F5 first/third/front camera switching. External mouse-wheel zoom keeps the character head as the edit origin. Use isolated worktrees and PRs targeting the protected main branch for changes.
 
 ## Plugins

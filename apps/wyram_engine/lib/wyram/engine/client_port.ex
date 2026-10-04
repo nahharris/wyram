@@ -14,7 +14,6 @@ defmodule Wyram.Engine.ClientPort do
     World
   }
 
-  @radius 4
   @chunk_side 16
 
   def start_link(_), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
@@ -206,8 +205,10 @@ defmodule Wyram.Engine.ClientPort do
     state
   end
 
-  defp handle_packet(%{"type" => "capabilities", "chunk_protocol" => 1}, state),
-    do: %{state | chunk_protocol: 1}
+  defp handle_packet(%{"type" => "capabilities", "chunk_protocol" => 1} = packet, state) do
+    forget_protocol = if packet["forget_protocol"] == 1, do: 1, else: 0
+    %{state | chunk_protocol: 1, forget_protocol: forget_protocol}
+  end
 
   defp handle_packet(%{"type" => "edit", "x" => x, "y" => y, "z" => z, "id" => id}, state)
        when is_integer(x) and is_integer(y) and is_integer(z) and is_integer(id) do
@@ -239,11 +240,13 @@ defmodule Wyram.Engine.ClientPort do
       loader: ChunkLoader.new(),
       stream_ref: nil,
       bounds: World.generation().bounds,
+      view_radius: ChunkStream.view_radius(),
       player: nil,
       exit_status: nil,
       exit_waiters: [],
       process_watch: watch,
-      chunk_protocol: 0
+      chunk_protocol: 0,
+      forget_protocol: 0
     }
   end
 
@@ -256,12 +259,14 @@ defmodule Wyram.Engine.ClientPort do
   defp stream(%{port: nil} = state, _), do: state
 
   defp stream(state, center) do
-    keys = ChunkStream.keys(center, state.bounds, @radius)
+    keys = ChunkStream.keys(center, state.bounds, state.view_radius)
     wanted = MapSet.new(keys)
 
-    Enum.each(MapSet.difference(state.sent, wanted), fn key ->
-      send_packet(state.port, %{type: "forget", key: Tuple.to_list(key)})
-    end)
+    state.sent
+    |> MapSet.difference(wanted)
+    |> Enum.to_list()
+    |> ChunkStream.forget_packets(state.forget_protocol)
+    |> Enum.each(&send_packet(state.port, &1))
 
     ref = make_ref()
     send(self(), {:stream_batch, ref})

@@ -1,9 +1,20 @@
 # Run against immutable engine/NIF snapshots with a fresh real-game plugin.
-alias Wyram.Engine.{ChunkStream, Native, World, WorldGenerator}
+alias Wyram.Engine.{Native, World, WorldGenerator}
 context = World.generation()
 {x, y, z} = Native.generator_spawn(context.resource)
-center = {Integer.floor_div(x, 16), Integer.floor_div(y, 16), Integer.floor_div(z, 16)}
-keys = ChunkStream.keys(center, context.bounds, 4)
+{cx, cy, cz} = {Integer.floor_div(x, 16), Integer.floor_div(y, 16), Integer.floor_div(z, 16)}
+{min_y, max_y} = context.bounds
+
+# Keep the historical generation workload independent of renderer residency.
+keys =
+  for x <- (cx - 4)..(cx + 4),
+      z <- (cz - 4)..(cz + 4),
+      y <- Integer.floor_div(min_y, 16)..Integer.floor_div(max_y, 16),
+      do: {x, y, z}
+
+keys =
+  Enum.sort_by(keys, fn {x, y, z} -> {(x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2, y, x, z} end)
+
 {us, chunks} = :timer.tc(fn -> WorldGenerator.chunks(context, keys) end)
 true = length(chunks) == 2592
 
