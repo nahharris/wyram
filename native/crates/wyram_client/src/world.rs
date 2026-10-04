@@ -10,7 +10,7 @@ use wyram_core::BLOCK_COUNT;
 use wyram_core::{BYTE_COUNT, CHUNK_SIDE};
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, PartialEq, Pod, Zeroable)]
 pub struct Vertex {
     pub(crate) position: [f32; 3],
     pub(crate) color: [f32; 3],
@@ -147,6 +147,13 @@ impl VoxelWorld {
     }
 
     pub fn receive_chunk(&mut self, key: [i32; 3], revision: u64, data: &str) -> bool {
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) else {
+            return false;
+        };
+        self.receive_packed(key, revision, bytes)
+    }
+
+    pub fn receive_packed(&mut self, key: [i32; 3], revision: u64, bytes: Vec<u8>) -> bool {
         if self
             .chunks
             .get(&key)
@@ -154,9 +161,6 @@ impl VoxelWorld {
         {
             return false;
         }
-        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) else {
-            return false;
-        };
         if bytes.len() != BYTE_COUNT {
             return false;
         }
@@ -224,19 +228,31 @@ impl VoxelWorld {
         })
     }
 
-    pub fn next_mesh_job(&mut self, center: [i32; 3], busy: &HashSet<[i32; 3]>) -> Option<MeshJob> {
-        let key = self
+    pub fn next_mesh_jobs(
+        &mut self,
+        center: [i32; 3],
+        busy: &HashSet<[i32; 3]>,
+        limit: usize,
+    ) -> Vec<MeshJob> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let mut keys: Vec<_> = self
             .dirty
             .iter()
             .filter(|key| !busy.contains(*key))
-            .min_by_key(|key| {
-                let distance: i64 = (0..3)
-                    .map(|i| (i64::from(key[i]) - i64::from(center[i])).abs())
-                    .sum();
-                (distance, **key)
-            })
-            .copied()?;
-        self.mesh_job(key)
+            .copied()
+            .collect();
+        keys.sort_unstable_by_key(|key| {
+            let distance: i64 = (0..3)
+                .map(|i| (i64::from(key[i]) - i64::from(center[i])).abs())
+                .sum();
+            (distance, *key)
+        });
+        keys.into_iter()
+            .take(limit)
+            .filter_map(|key| self.mesh_job(key))
+            .collect()
     }
 
     pub fn chunk_count(&self) -> usize {

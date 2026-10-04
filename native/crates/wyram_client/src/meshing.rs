@@ -1,21 +1,28 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::world::{MeshJob, Vertex, VoxelWorld};
 
 const WORKERS: usize = 2;
-const MAX_UPLOADS: usize = 2;
+// Includes queued jobs, active jobs and completed results awaiting admission.
+// A bounded window lets workers refill without waiting for a redraw.
+const MAX_JOBS: usize = 32;
+const MAX_UPLOADS: usize = 8;
 const MAX_UPLOAD_BYTES: usize = 2 * 1024 * 1024;
 const UPLOAD_TIME: Duration = Duration::from_millis(1);
 
-struct Worker {
-    sender: SyncSender<MeshJob>,
-    key: Option<[i32; 3]>,
+pub fn upload_limit() -> usize {
+    std::env::var("WYRAM_MESH_UPLOAD_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|limit| (1..=MAX_UPLOADS).contains(limit))
+        .unwrap_or(MAX_UPLOADS)
 }
 
 struct MeshResult {
-    worker: usize,
     key: [i32; 3],
     generation: u64,
     vertices: Vec<Vertex>,
@@ -35,6 +42,7 @@ struct UploadBudget {
     start: Instant,
     count: usize,
     bytes: usize,
+    limit: usize,
 }
 
 impl UploadBudget {
@@ -43,6 +51,7 @@ impl UploadBudget {
             start: Instant::now(),
             count: 0,
             bytes: 0,
+            limit: MAX_UPLOADS,
         }
     }
 
@@ -50,7 +59,7 @@ impl UploadBudget {
         // One indivisible oversized mesh must be allowed to progress. The time
         // limit controls admission, not the duration of a driver call.
         self.count == 0
-            || (self.count < MAX_UPLOADS
+            || (self.count < self.limit
                 && self.bytes + bytes <= MAX_UPLOAD_BYTES
                 && self.start.elapsed() < UPLOAD_TIME)
     }
@@ -62,46 +71,59 @@ impl UploadBudget {
 }
 
 pub struct MeshPipeline {
-    workers: Vec<Worker>,
+    sender: Option<SyncSender<MeshJob>>,
+    workers: Vec<JoinHandle<()>>,
     receiver: Receiver<MeshResult>,
-    deferred: Option<MeshResult>,
+    in_flight: HashMap<[i32; 3], u64>,
+    deferred: VecDeque<MeshResult>,
+    upload_limit: usize,
 }
 
 impl MeshPipeline {
     pub fn new() -> Self {
-        let (results, receiver) = mpsc::sync_channel(WORKERS);
+        let (sender, jobs) = mpsc::sync_channel::<MeshJob>(MAX_JOBS);
+        let jobs = Arc::new(Mutex::new(jobs));
+        let (results, receiver) = mpsc::sync_channel(MAX_JOBS);
         let workers = (0..WORKERS)
-            .map(|worker| {
-                let (sender, jobs) = mpsc::sync_channel::<MeshJob>(1);
+            .map(|_| {
+                let jobs = Arc::clone(&jobs);
                 let results = results.clone();
                 std::thread::spawn(move || {
-                    while let Ok(job) = jobs.recv() {
-                        let start = Instant::now();
-                        let vertices = job.build();
-                        let result = MeshResult {
-                            worker,
-                            key: job.key,
-                            generation: job.generation,
-                            vertices,
-                            mesh_ms: start.elapsed().as_secs_f64() * 1000.0,
-                        };
-                        if results.send(result).is_err() {
+                    loop {
+                        // The receive lock is released before meshing. Render-thread
+                        // admission never locks this mutex or waits for workers.
+                        let job = jobs.lock().expect("mesh queue poisoned").recv();
+                        if let Ok(job) = job {
+                            let start = Instant::now();
+                            let vertices = job.build();
+                            let result = MeshResult {
+                                key: job.key,
+                                generation: job.generation,
+                                vertices,
+                                mesh_ms: start.elapsed().as_secs_f64() * 1000.0,
+                            };
+                            if results.send(result).is_err() {
+                                break;
+                            }
+                        } else {
                             break;
                         }
                     }
-                });
-                Worker { sender, key: None }
+                })
             })
             .collect();
         Self {
+            sender: Some(sender),
             workers,
             receiver,
-            deferred: None,
+            in_flight: HashMap::new(),
+            deferred: VecDeque::new(),
+            upload_limit: upload_limit(),
         }
     }
 
     pub fn in_flight(&self) -> usize {
-        self.workers.iter().filter(|w| w.key.is_some()).count()
+        self.in_flight.len()
     }
 
     pub fn update(
@@ -112,44 +134,67 @@ impl MeshPipeline {
     ) -> MeshStats {
         let mut stats = MeshStats::default();
         let mut budget = UploadBudget::new();
-        while let Some(result) = self
-            .deferred
-            .take()
-            .or_else(|| self.receiver.try_recv().ok())
-        {
+        budget.limit = self.upload_limit;
+        while self.deferred.len() < MAX_JOBS {
+            match self.receiver.try_recv() {
+                Ok(result) => self.deferred.push_back(result),
+                Err(_) => break,
+            }
+        }
+        // Scan each ready result once. A deferred geometry upload must not
+        // prevent cheap empty completions or stale-result rejection behind it.
+        let ready = self.deferred.len();
+        for _ in 0..ready {
+            let result = self.deferred.pop_front().expect("ready result exists");
             if !world.mesh_is_current(result.key, result.generation) {
-                self.workers[result.worker].key = None;
+                self.in_flight.remove(&result.key);
                 stats.stale += 1;
                 stats.mesh_ms += result.mesh_ms;
                 continue;
             }
             let bytes = result.vertices.len() * size_of::<Vertex>();
-            if !budget.allows(bytes) {
-                self.deferred = Some(result);
-                break;
+            if bytes > 0 && !budget.allows(bytes) {
+                self.deferred.push_back(result);
+                continue;
             }
-            self.workers[result.worker].key = None;
+            self.in_flight.remove(&result.key);
             let start = Instant::now();
             upload(result.key, &result.vertices);
             stats.upload_ms += start.elapsed().as_secs_f64() * 1000.0;
             stats.mesh_ms += result.mesh_ms;
-            stats.uploads += 1;
             stats.upload_bytes += bytes;
-            budget.record(bytes);
+            if bytes > 0 {
+                stats.uploads += 1;
+                budget.record(bytes);
+            }
         }
-        let mut busy: HashSet<_> = self.workers.iter().filter_map(|w| w.key).collect();
-        for worker in &mut self.workers {
-            if worker.key.is_none()
-                && let Some(job) = world.next_mesh_job(center, &busy)
+        let busy: HashSet<_> = self.in_flight.keys().copied().collect();
+        let available = MAX_JOBS - self.in_flight.len();
+        for job in world.next_mesh_jobs(center, &busy, available) {
+            self.in_flight.insert(job.key, job.generation);
+            if self
+                .sender
+                .as_ref()
+                .expect("mesh queue open")
+                .try_send(job)
+                .is_err()
             {
-                worker.key = Some(job.key);
-                busy.insert(job.key);
-                if worker.sender.try_send(job).is_err() {
-                    panic!("mesh worker unavailable");
-                }
+                panic!("mesh worker unavailable or admission bound violated");
             }
         }
         stats
+    }
+}
+
+impl Drop for MeshPipeline {
+    fn drop(&mut self) {
+        self.sender.take();
+        // Wake workers blocked on a full result queue before joining them.
+        let (_, closed) = mpsc::channel();
+        drop(std::mem::replace(&mut self.receiver, closed));
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -177,8 +222,8 @@ mod tests {
             panic!("first update only dispatches")
         });
         assert_eq!(stats.uploads, 0);
-        assert_eq!(pipeline.in_flight(), 2);
-        assert_eq!(world.dirty_count(), 1);
+        assert_eq!(pipeline.in_flight(), 3);
+        assert_eq!(world.dirty_count(), 0);
         world.forget([0, 0, 0]);
         world.receive_chunk(
             [4, 0, 0],
@@ -193,7 +238,7 @@ mod tests {
                 uploaded.insert(key, vertices.len());
             });
             assert!(stats.uploads <= MAX_UPLOADS);
-            assert!(pipeline.in_flight() <= WORKERS);
+            assert!(pipeline.in_flight() <= MAX_JOBS);
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(!uploaded.contains_key(&[0, 0, 0]));
@@ -210,5 +255,110 @@ mod tests {
         let mut budget = UploadBudget::new();
         budget.record(MAX_UPLOAD_BYTES / 2);
         assert!(!budget.allows(MAX_UPLOAD_BYTES));
+    }
+
+    #[test]
+    fn cheap_uploads_use_the_available_time_budget_with_a_finite_count_bound() {
+        let mut budget = UploadBudget::new();
+        // A future start fixes elapsed() at zero, independent of CI scheduling.
+        budget.start = Instant::now() + Duration::from_secs(60);
+        for _ in 0..8 {
+            assert!(budget.allows(1024));
+            budget.record(1024);
+        }
+        assert!(!budget.allows(1024));
+        budget.start = Instant::now() - Duration::from_secs(1);
+        assert!(!budget.allows(1));
+    }
+
+    #[test]
+    fn one_admission_keeps_workers_busy_between_redraws() {
+        let mut world = VoxelWorld::default();
+        for x in 0..8 {
+            world.receive_chunk([x * 4, 0, 0], 0, &block());
+        }
+        let mut pipeline = MeshPipeline::new();
+        pipeline.update(&mut world, [0, 0, 0], |_, _| panic!("admission only"));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut completed = 0;
+        while completed < 8 {
+            assert!(
+                Instant::now() < deadline,
+                "workers need another redraw to receive work"
+            );
+            if pipeline.receiver.try_recv().is_ok() {
+                completed += 1;
+            } else {
+                std::thread::yield_now();
+            }
+        }
+    }
+
+    #[test]
+    fn empty_results_do_not_consume_geometry_upload_slots() {
+        let mut world = VoxelWorld::default();
+        let air = base64::engine::general_purpose::STANDARD.encode(vec![0; BYTE_COUNT]);
+        for x in 0..8 {
+            world.receive_chunk([x * 4, 0, 0], 0, &air);
+        }
+        let mut pipeline = MeshPipeline::new();
+        pipeline.update(&mut world, [0, 0, 0], |_, _| {});
+        // Receive the first pair and put them back as deferred test results;
+        // this gates completion without relying on a performance threshold.
+        let first = pipeline
+            .receiver
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        let second = pipeline
+            .receiver
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        let (sender, receiver) = mpsc::sync_channel(8);
+        sender.send(first).unwrap();
+        sender.send(second).unwrap();
+        pipeline.receiver = receiver;
+        let stats = pipeline.update(&mut world, [0, 0, 0], |_, vertices| {
+            assert!(vertices.is_empty())
+        });
+        assert_eq!(
+            stats.uploads, 0,
+            "empty completions cannot consume vertex upload admission"
+        );
+    }
+
+    #[test]
+    fn admission_is_bounded_and_an_empty_revision_removes_the_old_mesh() {
+        let mut world = VoxelWorld::default();
+        for x in 0..100 {
+            world.receive_chunk([x * 4, 0, 0], 0, &block());
+        }
+        let mut pipeline = MeshPipeline::new();
+        pipeline.update(&mut world, [0, 0, 0], |_, _| {});
+        assert_eq!(pipeline.in_flight(), MAX_JOBS);
+        assert_eq!(world.dirty_count(), 100 - MAX_JOBS);
+        let mut meshes = HashMap::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while pipeline.in_flight() > 0 || world.dirty_count() > 0 {
+            assert!(Instant::now() < deadline, "bounded queue did not drain");
+            let stats = pipeline.update(&mut world, [0, 0, 0], |key, vertices| {
+                meshes.insert(key, vertices.len());
+            });
+            assert!(stats.uploads <= MAX_UPLOADS);
+            assert!(pipeline.in_flight() <= MAX_JOBS);
+            std::thread::yield_now();
+        }
+        assert_eq!(meshes.len(), 100);
+        assert_eq!(meshes[&[0, 0, 0]], 36);
+        let air = base64::engine::general_purpose::STANDARD.encode(vec![0; BYTE_COUNT]);
+        world.receive_chunk([0, 0, 0], 1, &air);
+        while pipeline.in_flight() > 0 || world.dirty_count() > 0 {
+            assert!(Instant::now() < deadline, "empty revision did not drain");
+            let stats = pipeline.update(&mut world, [0, 0, 0], |key, vertices| {
+                meshes.insert(key, vertices.len());
+            });
+            assert_eq!(stats.uploads, 0);
+            std::thread::yield_now();
+        }
+        assert_eq!(meshes[&[0, 0, 0]], 0);
     }
 }

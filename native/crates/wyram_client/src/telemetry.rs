@@ -12,8 +12,23 @@ pub struct FrameSample {
     pub frame_ms: f64,
     pub redraw_cpu_ms: f64,
     pub decode_ms: f64,
+    pub inbound_decode_ms: f64,
+    pub inbound_wire_bytes: usize,
+    pub inbound_queue_max_ms: f64,
     pub worker_mesh_ms: f64,
     pub upload_cpu_ms: f64,
+    pub blended_prepare_cpu_ms: f64,
+    pub blended_write_bytes: usize,
+    pub blended_collect_cpu_ms: f64,
+    pub blended_sort_cpu_ms: f64,
+    pub blended_write_cpu_ms: f64,
+    pub blended_quads: usize,
+    pub surface_acquire_ms: f64,
+    pub render_encode_cpu_ms: f64,
+    pub render_submit_cpu_ms: f64,
+    pub opaque_draws: usize,
+    pub opaque_vertices: usize,
+    pub gpu_render_ms: Option<f64>,
     pub uploaded_meshes: usize,
     pub uploaded_bytes: usize,
     pub stale_meshes: usize,
@@ -142,6 +157,35 @@ mod tests {
                 .as_str()
                 .is_some_and(|profile| !profile.is_empty())
         );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn frame_capture_attributes_blended_uploads_and_surface_wait() {
+        let path = std::env::temp_dir().join(format!(
+            "wyram-phases-{}-{:?}.jsonl",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let mut capture = FrameTelemetry::open(&path).unwrap();
+        capture.record(FrameSample {
+            blended_prepare_cpu_ms: 2.5,
+            blended_write_bytes: 4096,
+            surface_acquire_ms: 7.0,
+            render_encode_cpu_ms: 0.3,
+            render_submit_cpu_ms: 0.4,
+            opaque_draws: 12,
+            opaque_vertices: 2048,
+            ..FrameSample::default()
+        });
+        drop(capture);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let sample: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(sample["blended_prepare_cpu_ms"], 2.5);
+        assert_eq!(sample["blended_write_bytes"], 4096);
+        assert_eq!(sample["surface_acquire_ms"], 7.0);
+        assert_eq!(sample["opaque_draws"], 12);
+        assert_eq!(sample["opaque_vertices"], 2048);
         std::fs::remove_file(path).unwrap();
     }
 }
