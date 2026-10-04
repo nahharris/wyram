@@ -286,3 +286,66 @@ control follows a different authoritative path (about 21 units less altitude),
 so its timing and image are not a matched rendering comparison. Both cases
 load the same optimized generation DLL. Raw captures and `validation.json` are
 under `.tools/scenery-flight/0196a3c134014f87929f658334cd7991`.
+
+## Final-allowance quality refinement
+
+Degraded meshes previously retried only when their per-node allowance doubled.
+Intermediate allocations could therefore survive after every tile arrived,
+leaving cold and warm loads at different detail. Loading still uses the doubling
+threshold. Once all wanted tile data is known, a larger final allowance now
+triggers one replacement even below that threshold. A still-degraded result
+records the attempted allowance so it cannot repeatedly rebuild at that budget.
+The same rule applies to late results from a partial-data allocation. The two-job,
+one-nonempty-upload and configured memory limits remain fixed.
+
+Eight stationary captures use the same reference route, policy, optimized
+profiles, seed, viewpoint, adapter, resolution and FIFO presentation as above.
+A baseline cold/warm pair precedes four candidate games, then a second baseline
+pair checks drift. All eight load the same generation DLL, and no builds or
+tests run during capture. Baseline source is restored temporarily, then the
+candidate file is restored byte-for-byte before validation.
+
+| Policy and load | First all ready, seconds | Final recorded geometry settled, seconds | Final degraded tiles |
+| --- | --- | --- | --- |
+| Baseline cold, before / after | 4.452 / 4.584 | 4.501 / 4.655 | 14 / 14 |
+| Final refinement cold, two runs | 4.593 / 4.513 | 4.626 / 4.546 | 0 / 0 |
+| Baseline warm, before / after | 3.364 / 3.135 | 3.364 / 3.135 | 6 / 4 |
+| Final refinement warm, two runs | 3.227 / 3.210 | 3.227 / 3.210 | 0 / 0 |
+
+Every candidate settled BMP has exact SHA-256
+`ec4a9745261cc4f4067a9439cf0327d844921bea05f0e44b1712dfedc8e113ae`.
+All four have the same recorded geometry totals: 240,276 visible opaque vertices,
+22,533,120 reserved mesh bytes, 897 selected tiles and no budget-degraded meshes.
+The candidate image was visually inspected. Baseline cold images share a
+different hash and retain 14 degraded meshes; baseline warm images retain four
+or six degraded meshes and differing memory totals. This verifies convergence
+of the reference route's settled image, detail and recorded resource totals.
+It does not establish byte parity of every off-screen GPU buffer or visual
+acceptance of all generated terrain.
+
+All runs finish with 1,018 received and ready tiles, 2,592 near chunks, no failed
+tiles or dropped samples, at most two jobs and one nonempty upload per redraw,
+and reservation below the 64 MiB limit. Cold candidate games submit 250 nonempty
+uploads versus 237 in each baseline cold run. Final geometry settling is the
+first frame after which ready/selected counts, reservation, degraded count,
+visible opaque vertices and zero scenery jobs remain at their final values.
+It is separate from first all-ready time, which can precede a quality replacement.
+
+Loading ranges overlap; no further loading or FPS gain is established here.
+Settled GPU p95 is 1.35–1.48 ms for candidate, versus 1.21–1.23 ms baseline cold
+and 1.34–1.36 ms baseline warm, with different retained geometry. Frame p95 is
+17.94–19.11 ms versus 17.61–19.09 ms. This change makes final detail consistent
+within the existing limits. It does not remove intrinsic LOD sampling or shore
+approximations, and a smaller configured allowance can still require proxies.
+
+Native regressions compare actual mesh vertex bytes after staged and simultaneous
+delivery, exercise sub-doubling final headroom while bounding intermediate churn,
+and verify late partial-budget results converge. A fitting reduced-detail result
+must settle without further submissions when its final budget cannot support
+full mesh detail. Existing stale-content, pressure, parent and neighbor-replacement
+tests remain part of validation.
+
+Ignored raw directories are `cache-54810b9c1443436ea6efdea7936c5bd2` (baseline),
+`cache-d225535221054ad2a407d0cbb2cfe2ac` (candidate), and
+`cache-a2b3287d07894583ae804a6b8feb5efa` (baseline confirmation), under
+`.tools/scenery-flight`. The aggregate is `.tools/distant-scenery/quality-summary.json`.

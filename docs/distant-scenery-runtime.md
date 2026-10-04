@@ -147,8 +147,12 @@ resolution. The planner reserves enough space for a minimal proxy for each node;
 parents remain resident so memory pressure can preserve coarse coverage.
 Decoded empty tiles release their unused mesh allowance. Unknown tiles still
 reserve space; occupied tiles share the remaining allowance, capped at 2 MiB
-each. Degraded meshes can rebuild when their allowance doubles. Budget decreases
-remove oversized geometry and schedule a fitting replacement.
+each. While data is incomplete, degraded meshes rebuild when their allowance
+doubles. Once every wanted tile is known, a larger final allowance triggers a
+replacement even below that threshold. A result that still needs reduced detail
+records the final allowance, preventing repeated attempts at the same budget.
+Late results from a partial-data budget follow the same final refinement rule.
+Budget decreases remove oversized geometry and schedule a fitting replacement.
 
 Queued, active and completed jobs share a two-job limit. The renderer admits at
 most one nonempty upload per redraw, with a maximum 2 MiB payload. Content changes
@@ -259,11 +263,12 @@ negative positions, budget fallback, complete replacement, and GPU near coverage
 and global translucent ordering. Actual generated terrain still requires visual
 acceptance, particularly mixed-resolution shorelines and representative materials.
 
-Settled proxy quality still depends on data arrival: degraded meshes rebuild
-when their allowance doubles, so an intermediate allocation can survive after
-the final occupancy set is known. Cold and warm reader-credit captures retain
-different degraded-tile counts despite the same plan and policy. Arrival-independent
-settled quality and its rebuild cost remain to be validated.
+Final-allowance refinement now makes cold and warm captures of the stationary
+reference route converge to identical images and geometry. Native regressions
+compare staged and simultaneous delivery, late partial-budget results, and
+intrinsically reduced-detail geometry that must stop rebuilding. This verifies
+settled quality for that route and bounded retries; it does not establish visual
+acceptance for every generated layout or configured resource policy.
 
 Visual and performance validation must exercise cold loading, warm reuse,
 camera movement, edited terrain, rapid view changes, negative coordinates,
