@@ -1,4 +1,5 @@
 param([ValidateRange(1,3)][int]$Rounds = 2, [switch]$Stationary,
+    [ValidateSet('dev','perf')][string]$NativeProfile = 'perf',
     [ValidateRange(35,120)][int]$StationarySeconds = 35)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -54,13 +55,13 @@ try {
                         throw 'Stationary benchmark could not position the player'
                     }
                 }
-                & (Join-Path $PSScriptRoot 'dev.ps1') -Profile perf
+                & (Join-Path $PSScriptRoot 'dev.ps1') -Profile perf -NativeProfile $NativeProfile
                 if ($LASTEXITCODE -ne 0) { throw "Flight benchmark failed: $case" }
                 if ($positionJob) {
                     Receive-Job -Job $positionJob -Wait -ErrorAction Stop
                     if ($positionJob.State -ne 'Completed') { throw 'Stationary positioning failed' }
                 }
-                foreach ($output in @('terrain.bmp','frames.jsonl','frames.adapter.json')) {
+                foreach ($output in @('terrain.bmp','frames.jsonl','frames.adapter.json','frames.native.json')) {
                     if (-not (Test-Path -LiteralPath (Join-Path $case $output))) {
                         throw "Benchmark output missing: $output in $case"
                     }

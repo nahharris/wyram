@@ -1,0 +1,11 @@
+[expected] = System.argv()
+Code.ensure_loaded!(Wyram.Engine.Native)
+{profile, opt_level} = Wyram.Engine.Native.build_info()
+true = profile == if(expected == "dev", do: "debug", else: "perf")
+true = opt_level == if(expected == "dev", do: "0", else: "3")
+library = System.fetch_env!("WYRAM_NATIVE_LIBRARY")
+hash = System.fetch_env!("WYRAM_NATIVE_BUILD_HASH")
+path = Wyram.Engine.Native.library_path()
+true = Path.basename(path) == library <> ".dll"
+^hash = File.read!(path) |> then(&:crypto.hash(:sha256, &1)) |> Base.encode16(case: :lower)
+IO.puts("Loaded native profile=#{profile} opt_level=#{opt_level} sha256=#{hash}")

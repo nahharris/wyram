@@ -6,7 +6,54 @@ defmodule Wyram.Engine.Native do
     @external_resource path
   end
 
-  use Rustler, otp_app: :wyram_engine, crate: :wyram_nif
+  use Rustler, otp_app: :wyram_engine, crate: :wyram_nif, lib: false
+
+  @on_load :load_native
+  def load_native do
+    :code.purge(__MODULE__)
+    path = Application.app_dir(:wyram_engine, "priv/native/#{native_library()}")
+
+    case :erlang.load_nif(String.to_charlist(path), 0) do
+      :ok ->
+        extension = if match?({:win32, _}, :os.type()), do: ".dll", else: ".so"
+        :persistent_term.put({__MODULE__, :library_path}, path <> extension)
+        :ok
+
+      error ->
+        error
+    end
+  end
+
+  @doc "Path of the native library successfully loaded in this VM."
+  def library_path, do: :persistent_term.get({__MODULE__, :library_path})
+
+  defp native_library do
+    case {Application.get_env(:wyram_engine, :native_development_selection, false),
+          System.get_env("WYRAM_NATIVE_PROFILE")} do
+      {true, profile} when profile in ["dev", "perf"] ->
+        hash = System.fetch_env!("WYRAM_NATIVE_BUILD_HASH")
+        library = "wyram_nif_#{profile}_#{hash}"
+
+        unless Regex.match?(~r/\A[0-9a-f]{64}\z/, hash) and
+                 System.get_env("WYRAM_NATIVE_LIBRARY") == library do
+          raise ArgumentError, "invalid native build identity"
+        end
+
+        library
+
+      {true, nil} ->
+        "wyram_nif"
+
+      {false, _} ->
+        "wyram_nif"
+
+      _ ->
+        raise ArgumentError, "invalid native development profile"
+    end
+  end
+
+  @doc "Compiled profile and optimization level of the loaded native library."
+  def build_info, do: :erlang.nif_error(:nif_not_loaded)
 
   @spec generate_chunk(
           non_neg_integer(),

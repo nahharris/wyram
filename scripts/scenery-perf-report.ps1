@@ -33,7 +33,10 @@ $report = foreach ($case in Get-ChildItem -LiteralPath $Directory -Directory | S
         'scenery_opaque_draws','scenery_opaque_vertices','loaded_chunks','inbound_queue_max_ms')) {
         $maxima[$metric] = ($frames | Measure-Object -Property $metric -Maximum).Maximum
     }
+    $nativePath = Join-Path $case.FullName 'frames.native.json'
+    $native = if (Test-Path -LiteralPath $nativePath) { Get-Content -LiteralPath $nativePath -Raw | ConvertFrom-Json } else { $null }
     @{ name = $case.Name; frames = $frames.Count; adapter = (Get-Content -LiteralPath (Join-Path $case.FullName 'frames.adapter.json') -Raw | ConvertFrom-Json);
+        native = $native;
         profile = $frames[0].build_profile; opt_level = $frames[0].opt_level;
         dropped_samples = $frames[-1].dropped_samples; maxima = $maxima; phases = @($phases);
         final_degraded_ready_tiles = $frames[-1].scenery_degraded_ready_tiles;

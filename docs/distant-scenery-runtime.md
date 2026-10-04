@@ -173,6 +173,14 @@ inspect slower cold loads after they settle; the supported range is 35 through
 Keep cold completion time separate from steady rendering cost, and check tile
 readiness before treating the image or timing interval as settled.
 
+The default benchmark uses optimized builds of both the client and generation
+library. Pass `-NativeProfile dev` to keep the optimized client while measuring
+debug generation as a control. Each case records the actual loaded generation
+profile, optimization level and library hash in `frames.native.json`; the report
+includes this metadata alongside the adapter and frame measurements. Older
+captures without native metadata remain readable, but do not assume their
+generation profile from the client profile.
+
 The stationary mode positions the player through the authenticated local control
 API, then fixes the presentation viewpoint at the requested coordinates. Flight
 approval and near streaming still follow the authoritative player state; the

@@ -5,6 +5,11 @@ mod worldgen;
 
 use rustler::{Binary, Env, OwnedBinary};
 
+#[rustler::nif]
+fn build_info() -> (&'static str, &'static str) {
+    (env!("WYRAM_NATIVE_PROFILE"), env!("WYRAM_OPT_LEVEL"))
+}
+
 fn binary_from_bytes<'a>(env: Env<'a>, bytes: &[u8]) -> Binary<'a> {
     let mut result = OwnedBinary::new(bytes.len()).expect("failed to allocate chunk binary");
     result.as_mut_slice().copy_from_slice(bytes);
