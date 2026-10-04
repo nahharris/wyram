@@ -5,6 +5,7 @@
 //! of non-air samples. Representative materials are approximate at higher levels.
 
 use crate::{BLOCK_COUNT, BYTE_COUNT, CHUNK_SIDE};
+mod wire;
 
 /// Keeps each cell's exact sample count within `u32` (1024³ at the last level).
 pub const MAX_LEVEL: u8 = 10;
@@ -17,6 +18,7 @@ pub enum LodError {
     MaxLevel,
     DuplicateChild,
     IncompatibleChildren,
+    BadEncoding,
 }
 
 /// A material proxy and occupancy information for a visual cell.
