@@ -4,42 +4,26 @@ use std::sync::Arc;
 use wyram_core::scenery::{LodTile, TileKey};
 
 #[derive(Default)]
-pub struct View {
-    pub plan: Option<Plan>,
-    pub tiles: HashMap<TileKey, Arc<LodTile>>,
+pub struct Reception {
+    epoch: u64,
     wanted: HashSet<TileKey>,
     delivery: u64,
 }
 
-impl View {
-    pub fn replace(&mut self, plan: Plan) -> bool {
-        if self
-            .plan
-            .as_ref()
-            .is_some_and(|current| current.epoch >= plan.epoch)
-        {
+impl Reception {
+    pub fn replace(&mut self, plan: &Plan) -> bool {
+        if self.epoch >= plan.epoch {
             return false;
         }
-        let same_content = self
-            .plan
-            .as_ref()
-            .is_some_and(|current| current.content == plan.content && current.stamp == plan.stamp);
+        self.epoch = plan.epoch;
         self.wanted = plan.nodes.iter().map(|node| node.key).collect();
-        if same_content {
-            self.tiles.retain(|key, _| self.wanted.contains(key));
-        } else {
-            self.tiles.clear();
-        }
         self.delivery = 0;
-        self.plan = Some(plan);
         true
     }
 
-    pub fn accept(&mut self, batch: Batch) -> bool {
-        let Some(plan) = &self.plan else {
-            return false;
-        };
-        if batch.epoch != plan.epoch
+    pub fn accept(&mut self, batch: &Batch) -> bool {
+        if self.epoch == 0
+            || batch.epoch != self.epoch
             || batch.delivery <= self.delivery
             || batch
                 .tiles
@@ -48,10 +32,44 @@ impl View {
         {
             return false;
         }
+        self.delivery = batch.delivery;
+        true
+    }
+}
+
+#[derive(Default)]
+pub struct View {
+    pub plan: Option<Plan>,
+    pub tiles: HashMap<TileKey, Arc<LodTile>>,
+    reception: Reception,
+}
+
+impl View {
+    pub fn replace(&mut self, plan: Plan) -> bool {
+        if !self.reception.replace(&plan) {
+            return false;
+        }
+        let same_content = self
+            .plan
+            .as_ref()
+            .is_some_and(|current| current.content == plan.content && current.stamp == plan.stamp);
+        if same_content {
+            self.tiles
+                .retain(|key, _| self.reception.wanted.contains(key));
+        } else {
+            self.tiles.clear();
+        }
+        self.plan = Some(plan);
+        true
+    }
+
+    pub fn accept(&mut self, batch: Batch) -> bool {
+        if !self.reception.accept(&batch) {
+            return false;
+        }
         for tile in batch.tiles {
             self.tiles.insert(tile.key(), Arc::new(tile));
         }
-        self.delivery = batch.delivery;
         true
     }
 }

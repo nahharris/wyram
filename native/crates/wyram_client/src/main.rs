@@ -8,6 +8,7 @@ mod flight_input;
 mod frame_capture;
 mod frustum;
 mod gpu_timer;
+mod inbound;
 mod meshing;
 mod outbound;
 mod replica;
@@ -18,7 +19,7 @@ mod transparency;
 mod world;
 
 use std::collections::{HashMap, HashSet};
-use std::io::{self, Read};
+use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -146,40 +147,17 @@ struct ReceivedPacket {
     queued_at: Instant,
 }
 
-fn start_reader(proxy: EventLoopProxy<UserEvent>) -> std::sync::mpsc::Receiver<ReceivedPacket> {
+fn start_reader(
+    proxy: EventLoopProxy<UserEvent>,
+    credits: outbound::ScenerySender,
+) -> std::sync::mpsc::Receiver<ReceivedPacket> {
     let (sender, receiver) = std::sync::mpsc::sync_channel(32);
     std::thread::spawn(move || {
         let mut input = io::stdin().lock();
-        loop {
-            let mut prefix = [0u8; 4];
-            if input.read_exact(&mut prefix).is_err() {
-                let _ = proxy.send_event(UserEvent::Disconnected);
-                break;
-            }
-            let length = u32::from_be_bytes(prefix) as usize;
-            if length > 4 * 1024 * 1024 {
-                let _ = proxy.send_event(UserEvent::Disconnected);
-                break;
-            }
-            let mut bytes = vec![0u8; length];
-            if input.read_exact(&mut bytes).is_err() {
-                let _ = proxy.send_event(UserEvent::Disconnected);
-                break;
-            }
-            let start = Instant::now();
-            if let Some(packet) = decode_packet(&bytes) {
-                let packet = ReceivedPacket {
-                    packet,
-                    decode_cpu_ms: start.elapsed().as_secs_f64() * 1000.0,
-                    wire_bytes: length,
-                    queued_at: Instant::now(),
-                };
-                if sender.send(packet).is_err() || proxy.send_event(UserEvent::PacketReady).is_err()
-                {
-                    break;
-                }
-            }
-        }
+        let _ = inbound::read(&mut input, sender, &credits, || {
+            proxy.send_event(UserEvent::PacketReady).is_ok()
+        });
+        let _ = proxy.send_event(UserEvent::Disconnected);
     });
     receiver
 }
@@ -862,10 +840,7 @@ impl ApplicationHandler<UserEvent> for Game {
                 self.scenery.replace(plan);
             }
             UserEvent::Packet(ServerPacket::SceneryTiles(batch)) => {
-                let (epoch, delivery) = (batch.epoch, batch.delivery);
-                if self.scenery.accept(batch) {
-                    self.send_packet(ClientPacket::SceneryReady { epoch, delivery });
-                }
+                self.scenery.accept(batch);
             }
             UserEvent::Packet(ServerPacket::Teleport {
                 x,
@@ -1185,14 +1160,16 @@ fn main() {
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .expect("event loop creation failed");
-    let inbound = start_reader(event_loop.create_proxy());
     let mut game = Game::new();
-    game.inbound = Some(inbound);
     let proxy = event_loop.create_proxy();
     let (outbound, _worker) = outbound::Outbound::start(io::stdout(), move |error| {
         let _ = proxy.send_event(UserEvent::Disconnected);
         eprintln!("engine connection write failed: {error}");
     });
+    game.inbound = Some(start_reader(
+        event_loop.create_proxy(),
+        outbound.scenery_sender(),
+    ));
     game.outbound = Some(outbound);
     if std::env::var("WYRAM_CHUNK_PROTOCOL").as_deref() != Ok("0") {
         game.send_packet(ClientPacket::Capabilities {

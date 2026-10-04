@@ -45,7 +45,24 @@ pub struct Outbound {
     shared: Arc<Shared>,
 }
 
+/// A reader may release bounded scenery delivery without owning writer shutdown.
+pub struct ScenerySender {
+    shared: Arc<Shared>,
+}
+
+impl ScenerySender {
+    pub fn send(&self, epoch: u64, delivery: u64) -> Result<(), SendError> {
+        self.shared
+            .send(ClientPacket::SceneryReady { epoch, delivery })
+    }
+}
+
 impl Outbound {
+    pub fn scenery_sender(&self) -> ScenerySender {
+        ScenerySender {
+            shared: self.shared.clone(),
+        }
+    }
     pub fn start<W, F>(mut output: W, on_error: F) -> (Self, JoinHandle<io::Result<W>>)
     where
         W: Write + Send + 'static,
@@ -110,7 +127,17 @@ impl Outbound {
     }
 
     pub fn send(&self, packet: ClientPacket) -> Result<(), SendError> {
-        let mut state = self.shared.state.lock().unwrap();
+        self.shared.send(packet)
+    }
+
+    pub fn snapshot(&self) -> Snapshot {
+        self.shared.state.lock().unwrap().stats
+    }
+}
+
+impl Shared {
+    fn send(&self, packet: ClientPacket) -> Result<(), SendError> {
+        let mut state = self.state.lock().unwrap();
         if state.failed || state.closing {
             return Err(SendError::Closed);
         }
@@ -161,12 +188,8 @@ impl Outbound {
         });
         state.stats.queued = state.pending.len();
         drop(state);
-        self.shared.ready.notify_one();
+        self.ready.notify_one();
         Ok(())
-    }
-
-    pub fn snapshot(&self) -> Snapshot {
-        self.shared.state.lock().unwrap().stats
     }
 }
 
@@ -192,6 +215,26 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn reader_credit_handle_does_not_own_writer_shutdown() {
+        let (outbound, worker) = Outbound::start(Vec::new(), |_| panic!("write failed"));
+        let credits = outbound.scenery_sender();
+        credits.send(7, 11).expect("reader can release delivery");
+        drop(credits);
+        outbound
+            .send(edit(1))
+            .expect("reader exit does not close owner");
+        let credits = outbound.scenery_sender();
+        drop(outbound);
+        assert_eq!(credits.send(7, 12), Err(SendError::Closed));
+        let packets = decode(&worker.join().unwrap().unwrap());
+        assert_eq!(packets.len(), 2);
+        assert_eq!(packets[0]["type"], "scenery_ready");
+        assert_eq!(packets[0]["epoch"], 7);
+        assert_eq!(packets[0]["delivery"], 11);
+        assert_eq!(packets[1]["type"], "edit");
+    }
 
     fn edit(x: i32) -> ClientPacket {
         ClientPacket::Edit {
