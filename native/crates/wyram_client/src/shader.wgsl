@@ -147,7 +147,7 @@ fn boundary_accepts(world_position: vec3<f32>, lod_size: u32, threshold: f32, de
     }
   }
   var color = input.color;
-  if (input.source != 2u && camera.fog.y > 0.5) {
+  if (input.source != 2u && camera.fog.y > 0.5 && camera.anchor.w == 0) {
     let center = vec2<f32>(f32(camera.grid.w), f32(camera.anchor.x)) * 16.0 + vec2<f32>(8.0);
     let distance = length(input.world_position.xz - center);
     let radius = max(camera.fog.x, 1.0);

@@ -300,6 +300,7 @@ struct Graphics {
     meshes: HashMap<[i32; 3], (wgpu::Buffer, u32)>,
     near_ready: HashSet<[i32; 3]>,
     culling: bool,
+    fog_enabled: bool,
     gpu_timer: Option<gpu_timer::GpuTimer>,
     characters: wgpu::Buffer,
 }
@@ -493,6 +494,7 @@ impl Graphics {
             meshes: HashMap::new(),
             near_ready: HashSet::new(),
             culling,
+            fog_enabled: std::env::var("WYRAM_LOD_FOG").as_deref() != Ok("0"),
             gpu_timer,
             characters,
         })
@@ -641,7 +643,7 @@ impl Graphics {
                 lod.center[2],
                 lod.config.near_radius as i32,
                 i32::from(lod.config.max_cell_size),
-                0,
+                i32::from(!self.fog_enabled),
             ];
             uniform.grid = [0, 0, 0, lod.center[0]];
             if let Some(frame) = &lod.coverage_frame {

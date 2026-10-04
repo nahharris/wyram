@@ -16,6 +16,8 @@ The radii follow the nearby radius times 1, 2, 4, 8 and 16. There is no larger-c
 
 `WYRAM_LOD_MAX_CELL_SIZE` selects 2, 4, 8 or 16; the default is 16. Set it to 0 to run the accepted circle-only baseline. Visual acceptance proceeds through 2, then 4, 8 and 16, including fog at each stage.
 
+Set `WYRAM_LOD_FOG=0` to inspect terrain without fog during visual review. Coverage selection, near protection and LOD transitions remain enabled. Fog is enabled by default; without it, unfinished coverage and the outer terrain boundary are visible.
+
 Available parallelism is resolved once from the smaller of the native client's CPU report and BEAM's online dirty CPU scheduler count. Failed detection uses 4. The combined worker budget is `clamp(floor(P / 2) - 2, 2, 8)`; generation receives its rounded-up half and meshing its rounded-down half. For P=22, this is 4 generation and 4 meshing workers. Nearby workers are unchanged.
 
 `WYRAM_LOD_GEN_WORKERS` and `WYRAM_LOD_MESH_WORKERS` independently override their automatic counts with integers from 1 through 8. Invalid overrides fail startup with a configuration error. Increasing workers does not enlarge admission, memory or transport limits; cancelled jobs still running consume worker slots.

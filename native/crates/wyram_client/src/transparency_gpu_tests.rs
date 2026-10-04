@@ -6,16 +6,22 @@ use wgpu::util::DeviceExt;
 #[test]
 #[ignore = "requires a graphics adapter; manual offscreen rendering parity check"]
 fn resident_blended_draw_matches_vertex_reference_pixels() {
-    render_blended_fixture(false);
+    render_blended_fixture(None);
 }
 
 #[test]
 #[ignore = "requires a graphics adapter; manual liquid fog check"]
 fn fully_fogged_liquid_hides_background_without_grain_or_edges() {
-    render_blended_fixture(true);
+    render_blended_fixture(Some(true));
 }
 
-fn render_blended_fixture(fog: bool) {
+#[test]
+#[ignore = "requires a graphics adapter; manual fog bypass check"]
+fn disabling_fog_preserves_lod_coverage_and_liquid_color() {
+    render_blended_fixture(Some(false));
+}
+
+fn render_blended_fixture(fog_mode: Option<bool>) {
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
@@ -26,10 +32,10 @@ fn render_blended_fixture(fog: bool) {
         .expect("offscreen parity device");
     println!("offscreen adapter: {:?}", adapter.get_info());
     let mut uniform = crate::lod_runtime::CameraUniform::disabled(Mat4::IDENTITY);
-    if fog {
+    if let Some(fog_enabled) = fog_mode {
         uniform.fog = [1.0, 1.0, 0.0, 1.0];
         uniform.grid = [-1, -1, 2, 0];
-        uniform.anchor = [0, 0, 0, 0];
+        uniform.anchor = [0, 0, 0, i32::from(!fog_enabled)];
     }
     let camera = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Parity camera"),
@@ -61,9 +67,13 @@ fn render_blended_fixture(fog: bool) {
             },
         ],
     });
+    let mut columns = [[1.0f32, 1.0, 0.0, 3.0]; 4];
+    if fog_mode == Some(false) {
+        columns[2] = [0.0; 4];
+    }
     let mask = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Disabled coverage"),
-        contents: bytemuck::cast_slice(&[[1.0f32, 1.0, 0.0, 3.0]; 4]),
+        contents: bytemuck::cast_slice(&columns),
         usage: wgpu::BufferUsages::STORAGE,
     });
     let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -191,9 +201,9 @@ fn render_blended_fixture(fog: bool) {
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: if fog { 0.0 } else { 0.43 },
-                                g: if fog { 0.0 } else { 0.65 },
-                                b: if fog { 0.0 } else { 0.86 },
+                                r: if fog_mode.is_some() { 0.0 } else { 0.43 },
+                                g: if fog_mode.is_some() { 0.0 } else { 0.65 },
+                                b: if fog_mode.is_some() { 0.0 } else { 0.86 },
                                 a: 1.0,
                             }),
                             store: wgpu::StoreOp::Store,
@@ -264,7 +274,7 @@ fn render_blended_fixture(fog: bool) {
             actual == expected,
             "offscreen alpha pixels differ at step {step}"
         );
-        if fog {
+        if fog_mode == Some(true) {
             // All these pixels are covered by water. Full fog must obscure a dark
             // background with continuous sky color rather than transparent grain.
             for y in 8..24 {
@@ -275,6 +285,23 @@ fn render_blended_fixture(fog: bool) {
                     );
                 }
             }
+        } else if fog_mode == Some(false) {
+            let pixel = |x: usize, y: usize| &actual[(y * 32 + x) * 4..(y * 32 + x) * 4 + 4];
+            assert_eq!(
+                pixel(12, 12),
+                &[0, 0, 0, 255],
+                "unready coverage must remain hidden without fog"
+            );
+            assert_ne!(
+                pixel(18, 12),
+                &[110, 166, 219, 255],
+                "fog bypass must retain liquid color"
+            );
+            assert_ne!(
+                pixel(18, 12),
+                &[0, 0, 0, 255],
+                "ready coverage must remain visible without fog"
+            );
         } else if let Some(previous) = previous {
             assert!(actual != previous, "fixture must exercise visible changes");
         }
