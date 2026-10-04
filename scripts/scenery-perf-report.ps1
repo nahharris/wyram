@@ -36,6 +36,7 @@ $report = foreach ($case in Get-ChildItem -LiteralPath $Directory -Directory | S
     @{ name = $case.Name; frames = $frames.Count; adapter = (Get-Content -LiteralPath (Join-Path $case.FullName 'frames.adapter.json') -Raw | ConvertFrom-Json);
         profile = $frames[0].build_profile; opt_level = $frames[0].opt_level;
         dropped_samples = $frames[-1].dropped_samples; maxima = $maxima; phases = @($phases);
+        final_degraded_ready_tiles = $frames[-1].scenery_degraded_ready_tiles;
         image = (Join-Path $case.FullName 'terrain.bmp') }
 }
 $report | ConvertTo-Json -Depth 12

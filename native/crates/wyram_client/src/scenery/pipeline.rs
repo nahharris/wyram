@@ -45,6 +45,19 @@ fn neighbor_keys(key: TileKey, wanted: &HashSet<TileKey>) -> Vec<TileKey> {
 }
 
 impl Forest {
+    fn allowance(&self, view: &View, total: usize) -> usize {
+        if self.wanted.is_empty() {
+            return 0;
+        }
+        // Missing data still reserves its share. Only decoded, immutable empty
+        // tiles can release a share within the current content revision.
+        let occupied_or_unknown = self
+            .wanted
+            .iter()
+            .filter(|key| view.tiles.get(key).is_none_or(|tile| tile.occupied() != 0))
+            .count();
+        (total / occupied_or_unknown.max(1)).min(MAX_JOB_BYTES)
+    }
     fn new(plan: &Plan) -> Self {
         let limit = plan.mesh_bytes / MIN_TILE_BYTES;
         if plan.roots.len() > limit {
@@ -119,6 +132,7 @@ struct ResultMesh {
     mesh: Result<Mesh, &'static str>,
     mesh_ms: f64,
     neighbors: Vec<TileKey>,
+    budget: usize,
 }
 
 #[derive(Default)]
@@ -142,6 +156,7 @@ pub struct Pipeline {
     deferred: VecDeque<ResultMesh>,
     ready: HashMap<TileKey, usize>,
     ready_neighbors: HashMap<TileKey, Vec<TileKey>>,
+    degraded: HashMap<TileKey, usize>,
     dirty: HashSet<TileKey>,
     planned: HashSet<TileKey>,
     failed: HashSet<TileKey>,
@@ -186,6 +201,7 @@ impl Pipeline {
                                 mesh,
                                 mesh_ms: start.elapsed().as_secs_f64() * 1000.0,
                                 neighbors: job.neighbors.iter().map(|tile| tile.key()).collect(),
+                                budget: job.budget,
                             })
                             .is_err()
                         {
@@ -204,6 +220,7 @@ impl Pipeline {
             deferred: VecDeque::new(),
             ready: HashMap::new(),
             ready_neighbors: HashMap::new(),
+            degraded: HashMap::new(),
             dirty: HashSet::new(),
             planned: HashSet::new(),
             failed: HashSet::new(),
@@ -225,6 +242,9 @@ impl Pipeline {
     pub fn failed(&self) -> usize {
         self.failed.len()
     }
+    pub fn degraded_ready(&self) -> usize {
+        self.degraded.len()
+    }
     pub fn set_water(&mut self, planes: HashMap<String, f32>, world: &VoxelWorld) {
         let descriptors = world.presentation().descriptors;
         let planes = planes
@@ -242,6 +262,7 @@ impl Pipeline {
             self.generation += 1;
             self.ready.clear();
             self.ready_neighbors.clear();
+            self.degraded.clear();
             self.dirty.clear();
             self.failed.clear();
         }
@@ -265,12 +286,14 @@ impl Pipeline {
             !Arc::ptr_eq(&colors, &self.colors) || !Arc::ptr_eq(&descriptors, &self.descriptors);
         let content = Some((plan.content, plan.stamp));
         if self.epoch != plan.epoch || palette_changed {
-            let forest = Forest::new(plan);
+            let mut forest = Forest::new(plan);
+            forest.budget = forest.allowance(view, plan.mesh_bytes);
             self.planned = plan.nodes.iter().map(|node| node.key).collect();
             if self.content != content || palette_changed {
                 self.generation += 1;
                 self.ready.clear();
                 self.ready_neighbors.clear();
+                self.degraded.clear();
                 self.dirty.clear();
                 self.failed.clear();
             }
@@ -293,6 +316,22 @@ impl Pipeline {
             self.content = content;
             self.colors = colors;
             self.descriptors = descriptors;
+        }
+        let allowance = self.forest.allowance(view, plan.mesh_bytes);
+        if self.forest.budget != allowance {
+            self.failed.clear();
+            self.forest.budget = allowance;
+            self.ready.retain(|_, bytes| *bytes <= allowance);
+            self.ready_neighbors
+                .retain(|key, _| self.ready.contains_key(key));
+            self.dirty.retain(|key| self.ready.contains_key(key));
+        }
+        self.degraded.retain(|key, _| self.ready.contains_key(key));
+        for (&key, &previous_allowance) in &self.degraded {
+            // Doubling bounds rebuild churn while empty summaries arrive.
+            if allowance >= previous_allowance.saturating_mul(2) {
+                self.dirty.insert(key);
+            }
         }
         // Results and retired work retain their slots until drained. Camera or
         // palette changes cannot start additional workers or accumulate jobs.
@@ -327,6 +366,11 @@ impl Pipeline {
                     uploaded |= !mesh.vertices.is_empty();
                     self.in_flight.remove(&result.key);
                     self.ready.insert(result.key, mesh.bytes());
+                    if mesh.side < 32 {
+                        self.degraded.insert(result.key, result.budget);
+                    } else {
+                        self.degraded.remove(&result.key);
+                    }
                     self.ready_neighbors.insert(result.key, result.neighbors);
                     self.dirty.remove(&result.key);
                     self.stats.worker_ms += result.mesh_ms;
@@ -425,6 +469,144 @@ mod tests {
                 children: vec![],
             }))
             .collect(),
+        }
+    }
+
+    #[test]
+    fn known_empty_tiles_release_their_equal_mesh_allowance() {
+        let mut view = View::default();
+        view.replace(plan(4 << 20));
+        for (i, node) in view.plan.as_ref().unwrap().nodes.iter().enumerate() {
+            view.tiles.insert(
+                node.key,
+                Arc::new(LodTile::uniform(node.key, if i == 0 { 42 } else { 0 })),
+            );
+        }
+        let mut pipeline = Pipeline::new();
+        pipeline.update(&view, &VoxelWorld::default(), |_, _| {
+            panic!("initial dispatch")
+        });
+        assert_eq!(
+            pipeline.forest.budget, MAX_JOB_BYTES,
+            "known empty tiles must not force occupied geometry to degrade"
+        );
+    }
+
+    #[test]
+    fn reclaimed_allowance_preserves_sparse_geometry_without_exceeding_the_view_budget() {
+        let mut chunk = vec![0; wyram_core::BYTE_COUNT];
+        for y in 0..16 {
+            for z in 0..16 {
+                for x in 0..16 {
+                    if (x + y + z) % 4 == 0 {
+                        let index = ((y * 16 + z) * 16 + x) * 2;
+                        chunk[index..index + 2].copy_from_slice(&42u16.to_le_bytes());
+                    }
+                }
+            }
+        }
+        let air = vec![0; wyram_core::BYTE_COUNT];
+        let leaves: Vec<_> = (0..8)
+            .map(|i| {
+                LodTile::from_chunk(
+                    TileKey::new([i & 1, (i >> 1) & 1, i >> 2], 0).unwrap(),
+                    if i == 0 { &chunk } else { &air },
+                )
+                .unwrap()
+            })
+            .collect();
+        let tile = LodTile::reduce(std::array::from_fn(|i| &leaves[i])).unwrap();
+        let root = tile.key();
+        let mut p = plan(4 << 20);
+        p.nodes = std::iter::once(Node {
+            key: root,
+            children: vec![],
+        })
+        .chain((1..=100).map(|x| Node {
+            key: TileKey::new([x * 2, 0, 0], 1).unwrap(),
+            children: vec![],
+        }))
+        .collect();
+        p.roots = (0..p.nodes.len()).collect();
+        let mut view = View::default();
+        view.replace(p);
+        let mut pipeline = Pipeline::new();
+        let world = VoxelWorld::default();
+        assert_eq!(pipeline.forest.allowance(&view, 4 << 20), 0);
+        pipeline.update(&view, &world, |_, _| panic!("no tiles delivered"));
+        assert_eq!(
+            pipeline.forest.budget,
+            (4 << 20) / 101,
+            "unknown tiles still reserve space"
+        );
+        for node in &view.plan.as_ref().unwrap().nodes {
+            view.tiles.insert(
+                node.key,
+                Arc::new(if node.key == root {
+                    tile.clone()
+                } else {
+                    LodTile::uniform(node.key, 0)
+                }),
+            );
+        }
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let mut full_resolution = false;
+        while !pipeline.ready.contains_key(&root) {
+            assert!(Instant::now() < deadline);
+            pipeline.update(&view, &world, |key, mesh| {
+                if key == root {
+                    assert_eq!(mesh.side, 32);
+                    assert!(mesh.bytes() > (4 << 20) / 101);
+                    full_resolution = true;
+                }
+            });
+            assert!(pipeline.ready.values().sum::<usize>() <= 4 << 20);
+            assert!(pipeline.in_flight.len() <= WORKERS);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(full_resolution);
+        let mut smaller = Plan {
+            epoch: 2,
+            content: 7,
+            stamp: 0,
+            distance: 128,
+            cache_bytes: 4 << 20,
+            mesh_bytes: MIN_TILE_BYTES * 101,
+            roots: vec![],
+            nodes: vec![],
+        };
+        let previous = view.plan.as_ref().unwrap();
+        smaller.roots = previous.roots.clone();
+        smaller.nodes = previous
+            .nodes
+            .iter()
+            .map(|node| Node {
+                key: node.key,
+                children: node.children.clone(),
+            })
+            .collect();
+        view.replace(smaller);
+        pipeline.update(&view, &world, |key, mesh| {
+            assert_ne!(
+                key, root,
+                "the smaller root replacement is not dispatched yet"
+            );
+            assert!(
+                mesh.vertices.is_empty(),
+                "other completions are empty tiles"
+            );
+        });
+        assert!(!pipeline.ready.contains_key(&root));
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while !pipeline.ready.contains_key(&root) {
+            assert!(Instant::now() < deadline);
+            pipeline.update(&view, &world, |key, mesh| {
+                if key == root {
+                    assert!(mesh.side < 32);
+                }
+            });
+            assert!(pipeline.ready.values().sum::<usize>() <= MIN_TILE_BYTES * 101);
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
 

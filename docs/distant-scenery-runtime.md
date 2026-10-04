@@ -101,6 +101,10 @@ faces preserve disconnected geometry and cave openings at the available sample
 resolution. A mesh that exceeds its per-node allowance is rebuilt at a coarser
 resolution. The planner reserves enough space for a minimal proxy for each node;
 parents remain resident so memory pressure can preserve coarse coverage.
+Decoded empty tiles release their unused mesh allowance. Unknown tiles still
+reserve space; occupied tiles share the remaining allowance, capped at 2 MiB
+each. Degraded meshes can rebuild when their allowance doubles. Budget decreases
+remove oversized geometry and schedule a fitting replacement.
 
 Queued, active and completed jobs share a two-job limit. The renderer admits at
 most one nonempty upload per redraw, with a maximum 2 MiB payload. Content changes
@@ -138,7 +142,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scenery-perf-report.
 ```
 
 The stationary mode positions the player through the authenticated local control
-API. The flight route uses wall-clock inputs, so different authoritative tick
+API, then fixes the presentation viewpoint at the requested coordinates. Flight
+approval and near streaming still follow the authoritative player state; the
+fixed presentation avoids transient falling before flight approval changing the
+camera comparison. The flight route uses wall-clock inputs, so different authoritative tick
 rates can produce different paths. Check the recorded positions before treating
 those runs as matched camera comparisons. `redraw_cpu_ms` includes surface
 acquisition waits; it is not a measure of pure renderer computation. FIFO

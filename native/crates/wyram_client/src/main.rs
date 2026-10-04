@@ -779,7 +779,11 @@ impl Game {
 
     fn step(&mut self) {
         self.update_input(false);
-        self.position = self.replica.sample(&self.world);
+        self.position = self
+            .benchmark
+            .as_ref()
+            .and_then(|b| b.observer())
+            .unwrap_or_else(|| self.replica.sample(&self.world));
     }
     fn edit(&mut self, place: bool) {
         let mut previous = None;
@@ -1111,6 +1115,7 @@ impl ApplicationHandler<UserEvent> for Game {
                         scenery_upload_bytes: self.scenery_meshing.stats.upload_bytes,
                         scenery_stale_meshes: self.scenery_meshing.stats.stale,
                         scenery_degraded_meshes: self.scenery_meshing.stats.degraded,
+                        scenery_degraded_ready_tiles: self.scenery_meshing.degraded_ready(),
                         scenery_ready_tiles: self.scenery_meshing.ready().len(),
                         scenery_selected_tiles: self.scenery_meshing.stats.selected,
                         scenery_in_flight: self.scenery_meshing.in_flight(),

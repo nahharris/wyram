@@ -30,6 +30,12 @@ impl FlightBenchmark {
         self.started
             .map_or(0.0, |start| start.elapsed().as_secs_f64())
     }
+    /// Stationary renderer measurements use an exact presentation viewpoint.
+    /// Gameplay and chunk streaming still follow the approved player state.
+    pub fn observer(&self) -> Option<glam::Vec3> {
+        self.stationary
+            .then_some(glam::Vec3::new(672.5, 300.0, 672.5))
+    }
     pub fn phase(&self) -> &'static str {
         if self.started.is_none() {
             "waiting"

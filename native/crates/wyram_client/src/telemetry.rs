@@ -46,6 +46,7 @@ pub struct FrameSample {
     pub scenery_upload_bytes: usize,
     pub scenery_stale_meshes: usize,
     pub scenery_degraded_meshes: usize,
+    pub scenery_degraded_ready_tiles: usize,
     pub scenery_ready_tiles: usize,
     pub scenery_selected_tiles: usize,
     pub scenery_in_flight: usize,
