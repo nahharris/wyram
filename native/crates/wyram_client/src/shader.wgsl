@@ -75,14 +75,17 @@ fn protected_column(world_position: vec3<f32>) -> bool {
 }
 
 fn layer_accepts(column: vec4<f32>, lod_size: u32, world_position: vec3<f32>, threshold: f32) -> bool {
-  if (column.w < 0.5) {
+  let readiness = u32(round(column.w));
+  // The camera can cross a chunk boundary before the background coverage window
+  // catches up. Full-detail prefetch is already GPU-resident and safe to reveal.
+  if (protected_column(world_position)) {
+    return lod_size == 1u && (readiness & 2u) != 0u;
+  }
+  if ((readiness & 1u) == 0u) {
     return false;
   }
   let current_size = u32(round(column.x));
   let previous_size = u32(round(column.y));
-  if (protected_column(world_position) && lod_size != 1u) {
-    return false;
-  }
   if (lod_size == current_size) {
     if (current_size == previous_size) {
       return true;
@@ -151,7 +154,7 @@ fn boundary_accepts(world_position: vec3<f32>, lod_size: u32, threshold: f32, de
     let fade_start = radius * 0.8;
     let fog_amount = smoothstep(fade_start, radius, distance);
     let sky = vec3<f32>(0.43, 0.65, 0.86);
-    color = vec4<f32>(mix(color.rgb, sky, fog_amount), color.a);
+    color = vec4<f32>(mix(color.rgb, sky, fog_amount), mix(color.a, 1.0, fog_amount));
   }
   return color;
 }

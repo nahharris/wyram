@@ -21,6 +21,43 @@ fn ready_near(c: &mut LodCoverage, x: i32, z: i32, now: f32) {
     }
 }
 
+#[test]
+fn ready_fine_prefetch_is_retained_in_the_distant_band() {
+    let mut c = coverage(4, 2);
+    c.set_view([0, 0], 0.0, 1);
+    ready_near(&mut c, 5, 0, 0.0);
+    assert_eq!(c.represented_size([5, 0]), 1);
+    let index = c.column_index([5, 0]).unwrap();
+    assert_eq!(c.frame(0.0).columns[index][3], 3.0);
+    c.set_view([1, 0], 0.1, 1);
+    assert_eq!(c.represented_size([5, 0]), 1);
+    c.set_view([0, 0], 0.2, 1);
+    assert_eq!(c.represented_size([5, 0]), 1);
+}
+
+#[test]
+fn walking_into_prefetched_columns_keeps_the_frontier_outside_near_terrain() {
+    let mut c = coverage(4, 2);
+    c.set_view([0, 0], 0.0, 1);
+    for x in -6i32..=6 {
+        for z in -6i32..=6 {
+            if x * x + z * z <= 36 {
+                ready_near(&mut c, x, z, 0.0);
+            }
+        }
+    }
+    for step in 0..200 {
+        c.frame(step as f32 * 0.1);
+    }
+    for center in [[1, 0], [0, 0], [1, 0], [0, 0]] {
+        c.set_view(center, 20.0, 1);
+        assert!(
+            c.frame(20.0).frontier_radius_blocks > 4.0 * 16.0,
+            "walking within prefetch must not hide the near circle"
+        );
+    }
+}
+
 fn ready_tile_stack(c: &mut LodCoverage, size: u8, x: i32, z: i32, now: f32) {
     let span_chunks = i32::from(size) * 2;
     let tx = x.div_euclid(span_chunks);

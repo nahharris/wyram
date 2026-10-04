@@ -73,6 +73,7 @@ impl Generator {
                     let mut solid_hits = 0usize;
                     let mut liquid_top = None;
                     let mut heights = [0i32; 4];
+                    let mut feature_height = 0;
                     let mut top_materials = BTreeMap::<u16, usize>::new();
                     let mut supported_columns = 0usize;
                     for hz in 0..2 {
@@ -130,6 +131,14 @@ impl Generator {
                                         .map(|&i| instances[i].block(p, column))
                                         .find(|&id| id != 0)
                                         .unwrap_or(0);
+                                    if material != 0
+                                        && let Some((top, _)) = surface.feature
+                                    {
+                                        heights[local_column] = heights[local_column]
+                                            .max((top - cell_low + 1).clamp(0, size));
+                                        feature_height =
+                                            feature_height.max((top - cell_low + 1).clamp(0, size));
+                                    }
                                 }
                                 if material == 0 {
                                     continue;
@@ -173,7 +182,11 @@ impl Generator {
                         0
                     };
                     let mut solid_height = if solid_supported || top_supported {
-                        ((heights.iter().sum::<i32>() + 2) / 4).clamp(0, size) as u8
+                        // Unsupported footprint columns must not shorten every
+                        // vertical tree cell into disconnected horizontal slabs.
+                        ((heights.iter().sum::<i32>() + 2) / 4)
+                            .max(feature_height)
+                            .clamp(0, size) as u8
                     } else {
                         0
                     };
@@ -294,10 +307,12 @@ fn surface_sample(
         let end = (instance.anchor[1] + instance.feature.height - 1).min(high);
         for y in (start..=end).rev() {
             let id = instance.block([horizontal[0], y, horizontal[1]], column);
-            let geology_top = terrain
-                .map_or(i32::MIN, |(y, _)| y)
-                .max(island.map_or(i32::MIN, |(_, y, _)| y));
-            if id != 0 && y > geology_top && feature.is_none_or(|(previous, _)| y > previous) {
+            // A floating island above a tree does not bury the tree's cap.
+            // Check occupancy at the cap rather than the highest geology surface.
+            if id != 0
+                && generator.base([horizontal[0], y, horizontal[1]], column) == 0
+                && feature.is_none_or(|(previous, _)| y > previous)
+            {
                 feature = Some((y, id));
                 break;
             }

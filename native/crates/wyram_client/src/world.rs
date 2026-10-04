@@ -98,7 +98,13 @@ impl MeshJob {
             self.key,
             &self.snapshot.colors,
             &self.snapshot.descriptors,
-            |p| self.snapshot.render_block(p),
+            |p| {
+                if VoxelWorld::in_circle(self.snapshot.render_circle, [self.key[0], self.key[2]]) {
+                    self.snapshot.render_block(p)
+                } else {
+                    self.snapshot.block(p[0], p[1], p[2])
+                }
+            },
         )
     }
 }
@@ -563,6 +569,8 @@ mod tests {
         let old = world.mesh_job([1, 0, 0]).unwrap();
         assert_eq!(old.build().len(), 36);
         assert_eq!(world.block(32, 0, 0), 1);
+        // Prefetch must contain real geometry before entering the protected circle.
+        assert_eq!(world.mesh_job([2, 0, 0]).unwrap().build().len(), 30);
         world.set_render_circle([1, 0], 1);
         assert!(!world.mesh_is_current(old.key, old.generation));
         assert_eq!(old.build().len(), 36);

@@ -16,6 +16,44 @@ fn new_tile(cell_size: u8, position: [i32; 3]) -> Tile {
     Tile::empty(TileKey::new(cell_size, position).unwrap()).unwrap()
 }
 
+#[test]
+fn stacked_source_water_has_one_exposed_top_and_no_submerged_sheets() {
+    let mut tile = new_tile(2, [0; 3]);
+    let water = Cell {
+        liquid: 4,
+        liquid_height: 2,
+        ..Cell::default()
+    };
+    set_cell(&mut tile, [0, 0, 0], water);
+    set_cell(&mut tile, [0, 1, 0], water);
+    let descriptors = HashMap::from([(
+        4,
+        RenderDescriptor {
+            liquid: 4,
+            height: 0.9,
+            opacity: 128,
+            ..Default::default()
+        },
+    )]);
+    let (parts, _) = meshes(&tile, &descriptors, |_| None);
+    let vertices: Vec<_> = parts.into_iter().flat_map(|p| p.vertices).collect();
+    assert_eq!(
+        quad_area(&vertices, 1, 1.9),
+        0.0,
+        "submerged cell must not emit a lowered surface"
+    );
+    assert_eq!(
+        quad_area(&vertices, 1, 2.0),
+        0.0,
+        "shared interface must be culled"
+    );
+    assert_eq!(
+        quad_area(&vertices, 1, 3.9),
+        4.0,
+        "exposed liquid height must stay authored"
+    );
+}
+
 fn core_index(x: usize, y: usize, z: usize) -> usize {
     ((y + 1) * 34 + (z + 1)) * 34 + (x + 1)
 }

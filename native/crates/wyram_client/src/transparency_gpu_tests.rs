@@ -6,6 +6,16 @@ use wgpu::util::DeviceExt;
 #[test]
 #[ignore = "requires a graphics adapter; manual offscreen rendering parity check"]
 fn resident_blended_draw_matches_vertex_reference_pixels() {
+    render_blended_fixture(false);
+}
+
+#[test]
+#[ignore = "requires a graphics adapter; manual liquid fog check"]
+fn fully_fogged_liquid_hides_background_without_grain_or_edges() {
+    render_blended_fixture(true);
+}
+
+fn render_blended_fixture(fog: bool) {
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
@@ -15,9 +25,15 @@ fn resident_blended_draw_matches_vertex_reference_pixels() {
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
         .expect("offscreen parity device");
     println!("offscreen adapter: {:?}", adapter.get_info());
+    let mut uniform = crate::lod_runtime::CameraUniform::disabled(Mat4::IDENTITY);
+    if fog {
+        uniform.fog = [1.0, 1.0, 0.0, 1.0];
+        uniform.grid = [-1, -1, 2, 0];
+        uniform.anchor = [0, 0, 0, 0];
+    }
     let camera = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Parity camera"),
-        contents: bytemuck::bytes_of(&crate::lod_runtime::CameraUniform::disabled(Mat4::IDENTITY)),
+        contents: bytemuck::bytes_of(&uniform),
         usage: wgpu::BufferUsages::UNIFORM,
     });
     let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -47,7 +63,7 @@ fn resident_blended_draw_matches_vertex_reference_pixels() {
     });
     let mask = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Disabled coverage"),
-        contents: &[0; 16],
+        contents: bytemuck::cast_slice(&[[1.0f32, 1.0, 0.0, 3.0]; 4]),
         usage: wgpu::BufferUsages::STORAGE,
     });
     let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -175,9 +191,9 @@ fn resident_blended_draw_matches_vertex_reference_pixels() {
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 0.43,
-                                g: 0.65,
-                                b: 0.86,
+                                r: if fog { 0.0 } else { 0.43 },
+                                g: if fog { 0.0 } else { 0.65 },
+                                b: if fog { 0.0 } else { 0.86 },
                                 a: 1.0,
                             }),
                             store: wgpu::StoreOp::Store,
@@ -248,7 +264,18 @@ fn resident_blended_draw_matches_vertex_reference_pixels() {
             actual == expected,
             "offscreen alpha pixels differ at step {step}"
         );
-        if let Some(previous) = previous {
+        if fog {
+            // All these pixels are covered by water. Full fog must obscure a dark
+            // background with continuous sky color rather than transparent grain.
+            for y in 8..24 {
+                for x in 12..20 {
+                    assert_eq!(
+                        &actual[(y * 32 + x) * 4..(y * 32 + x) * 4 + 4],
+                        &[110, 166, 219, 255]
+                    );
+                }
+            }
+        } else if let Some(previous) = previous {
             assert!(actual != previous, "fixture must exercise visible changes");
         }
         previous = Some(actual);

@@ -2,6 +2,57 @@ use wyram_core::lod::{Cell, ChunkOverride, Tile, TileKey};
 use wyram_core::worldgen::{Generator, Settings};
 use wyram_core::{BYTE_COUNT, write_block};
 
+#[test]
+fn occupied_tree_interiors_fill_the_entire_coarse_cell_height() {
+    let mut settings = Settings {
+        relief: 0,
+        ..Settings::default()
+    };
+    settings.biomes[0].elevation_offset = 64;
+    settings.biomes[0]
+        .features
+        .push(wyram_core::worldgen::Feature {
+            kind: 0,
+            block: 9,
+            accent: 10,
+            spacing: 32,
+            density: 1.0,
+            radius: 5,
+            height: 16,
+            salt: 101,
+            domain: 0,
+            support_depth: 0,
+        });
+    let generator = Generator::new(2026, settings).unwrap();
+    let mut checked = 0;
+    for tile_y in 0..3 {
+        let tile = generator.lod_tile(key(2, [0, tile_y, 0]), &[]).unwrap();
+        for z in (0..64).step_by(2) {
+            for x in (0..64).step_by(2) {
+                for y in (tile_y * 64..tile_y * 64 + 64).step_by(2) {
+                    let supported_columns = (0..2)
+                        .flat_map(|dz| (0..2).map(move |dx| (dx, dz)))
+                        .filter(|&(dx, dz)| {
+                            (0..2).all(|dy| {
+                                matches!(generator.voxel([x + dx, y + dy, z + dz]), 9 | 10)
+                            })
+                        })
+                        .count();
+                    if supported_columns >= 2 {
+                        assert_eq!(
+                            tile.sample([x, y, z]).unwrap().solid_height,
+                            2,
+                            "tree interior at {x},{y},{z} must not become a floating slab"
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 0, "fixture must contain occupied tree interiors");
+}
+
 fn key(size: u8, position: [i32; 3]) -> TileKey {
     TileKey::new(size, position).expect("valid LOD key")
 }

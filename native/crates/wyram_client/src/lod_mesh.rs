@@ -472,7 +472,16 @@ fn build_liquid_faces(
         return;
     }
     let bottom = (origin[1] + i32::from(cell.solid_height)) as f32;
-    let top = origin[1] as f32 + f32::from(cell.liquid_height) - 1.0 + descriptor.height;
+    let top = liquid_top(
+        tile,
+        BoundaryCell {
+            origin,
+            size: tile.key.cell_size,
+            cell,
+        },
+        descriptors,
+        sample,
+    );
     if top <= bottom {
         return;
     }
@@ -586,7 +595,15 @@ fn build_liquid_faces(
                 point[horizontal] = origin[horizontal] + tangent;
                 point[1] = y;
                 if let Some(neighbor) = adjacent_cell(tile, point, sample) {
-                    interval_breaks(neighbor, descriptors, bottom, top, &mut breaks);
+                    interval_breaks(
+                        tile,
+                        neighbor,
+                        descriptors,
+                        sample,
+                        bottom,
+                        top,
+                        &mut breaks,
+                    );
                 }
             }
             breaks.sort_by(f32::total_cmp);
@@ -623,8 +640,10 @@ fn build_liquid_faces(
 }
 
 fn interval_breaks(
+    tile: &Tile,
     neighbor: BoundaryCell,
     descriptors: &HashMap<u16, RenderDescriptor>,
+    sample: &impl Fn([i32; 3]) -> Option<BoundaryCell>,
     bottom: f32,
     top: f32,
     breaks: &mut Vec<f32>,
@@ -634,11 +653,9 @@ fn interval_breaks(
     if neighbor.cell.material != 0 {
         breaks.push((y + f32::from(neighbor.cell.solid_height)).clamp(bottom, top));
     }
-    if neighbor.cell.liquid != 0
-        && let Some(descriptor) = descriptors.get(&neighbor.cell.liquid)
-    {
+    if neighbor.cell.liquid != 0 && descriptors.contains_key(&neighbor.cell.liquid) {
         let liquid_bottom = y + f32::from(neighbor.cell.solid_height);
-        let liquid_top = y + f32::from(neighbor.cell.liquid_height) - 1.0 + descriptor.height;
+        let liquid_top = liquid_top(tile, neighbor, descriptors, sample);
         breaks.push(liquid_bottom.clamp(bottom, top));
         breaks.push(liquid_top.clamp(bottom, top));
     }
@@ -676,8 +693,7 @@ fn liquid_side_occluded(
         return false;
     }
     let lower = (neighbor.origin[1] + i32::from(neighbor.cell.solid_height)) as f32;
-    let upper = neighbor.origin[1] as f32 + f32::from(neighbor.cell.liquid_height) - 1.0
-        + neighbor_descriptor.height;
+    let upper = liquid_top(tile, neighbor, descriptors, sample);
     y >= lower && y < upper
 }
 
@@ -712,13 +728,46 @@ fn liquid_face_visible(
         return true;
     }
     let neighbor_bottom = neighbor.origin[1] as f32 + f32::from(neighbor.cell.solid_height);
-    let neighbor_top = neighbor.origin[1] as f32 + f32::from(neighbor.cell.liquid_height) - 1.0
-        + descriptor.height;
+    let neighbor_top = liquid_top(tile, neighbor, descriptors, sample);
     if above {
         !(neighbor_bottom <= plane && neighbor_top > plane)
     } else {
         !(neighbor_bottom < plane && neighbor_top >= plane)
     }
+}
+
+/// Only the exposed surface uses the authored fractional liquid height. A full
+/// cell with connected liquid above reaches its ceiling, avoiding internal gaps
+/// and transparent sheets throughout an ocean column.
+fn liquid_top(
+    tile: &Tile,
+    neighbor: BoundaryCell,
+    descriptors: &HashMap<u16, RenderDescriptor>,
+    sample: &impl Fn([i32; 3]) -> Option<BoundaryCell>,
+) -> f32 {
+    let descriptor = descriptors
+        .get(&neighbor.cell.liquid)
+        .copied()
+        .unwrap_or_default();
+    let ceiling = neighbor.origin[1] + i32::from(neighbor.size);
+    if neighbor.cell.liquid_height == neighbor.size {
+        let position = [
+            neighbor.origin[0] + i32::from(neighbor.size) / 2,
+            ceiling,
+            neighbor.origin[2] + i32::from(neighbor.size) / 2,
+        ];
+        if let Some(above) = adjacent_cell(tile, position, sample)
+            && above.cell.liquid_height > above.cell.solid_height
+            && above.origin[1] + i32::from(above.cell.solid_height) <= ceiling
+            && descriptor.liquid != 0
+            && descriptors
+                .get(&above.cell.liquid)
+                .is_some_and(|other| other.liquid == descriptor.liquid)
+        {
+            return ceiling as f32;
+        }
+    }
+    neighbor.origin[1] as f32 + f32::from(neighbor.cell.liquid_height) - 1.0 + descriptor.height
 }
 
 fn liquid_color(base: [u8; 3], descriptor: RenderDescriptor, shade: f32) -> [f32; 3] {

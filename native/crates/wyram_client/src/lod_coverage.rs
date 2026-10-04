@@ -22,7 +22,8 @@ pub struct CoverageFrame {
     pub origin_chunk: [i32; 2],
     pub center_chunk: [i32; 2],
     pub side: usize,
-    /// `[current_size, previous_size, transition_start_seconds, ready_flag]`.
+    /// `[current_size, previous_size, transition_start_seconds, readiness_bits]`.
+    /// Bit 0 is selected coverage; bit 1 is complete full-detail prefetch.
     pub columns: Vec<[f32; 4]>,
     pub frontier_radius_blocks: f32,
 }
@@ -33,6 +34,7 @@ struct ColumnState {
     previous: u8,
     transition_start: f32,
     ready: bool,
+    near_ready: bool,
 }
 
 impl ColumnState {
@@ -41,7 +43,7 @@ impl ColumnState {
             f32::from(self.current),
             f32::from(self.previous),
             self.transition_start,
-            f32::from(self.ready),
+            f32::from(u8::from(self.ready) | (u8::from(self.near_ready) << 1)),
         ]
     }
 }
@@ -368,8 +370,12 @@ impl LodCoverage {
         if desired == 0 {
             return 0;
         }
+        // Ready full-detail prefetch can cover a band while its distant replacement loads.
+        if self.near_column_ready(column) {
+            return 1;
+        }
         if desired == 1 {
-            return u8::from(self.near_column_ready(column));
+            return 0;
         }
         for size in [2, 4, 8, 16] {
             if size > desired || size > self.config.max_cell_size {
@@ -398,10 +404,14 @@ impl LodCoverage {
         }
         let desired = self.desired_size(column);
         let current = self.available_size(column, desired);
+        let near_ready = self.near_column_ready(column);
         let index = self.index(column).unwrap();
         let (changed, was_ready, is_ready, gpu) = {
             let state = self.states.entry(column).or_default();
-            if state.current == current && state.ready == (current != 0) {
+            if state.current == current
+                && state.ready == (current != 0)
+                && state.near_ready == near_ready
+            {
                 (false, state.ready, state.ready, state.gpu())
             } else {
                 let was_ready = state.ready;
@@ -413,6 +423,7 @@ impl LodCoverage {
                 };
                 state.current = current;
                 state.ready = current != 0;
+                state.near_ready = near_ready;
                 state.transition_start = now;
                 (true, was_ready, state.ready, state.gpu())
             }
