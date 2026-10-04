@@ -1,5 +1,7 @@
 # Gameplay and reusable characters
 
+This plan tracks the reusable character foundation. The [game design roadmap](game-design/roadmap.md) places it within the wider world, resource and frontier delivery plan; the [world vision](game-design/world-vision.md) defines Wyram's intended experience.
+
 [Roadmap #9](https://github.com/nahharris/wyram/issues/9) tracks richer voxel movement and character presentation. Each slice ships from an isolated worktree through a PR to `main`, with `mise run check`, `mise run test` and Windows CI. Existing work in another checkout must stay separate.
 
 ## Feasibility and delivery order
