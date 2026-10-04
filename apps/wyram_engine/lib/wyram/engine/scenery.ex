@@ -3,7 +3,7 @@ defmodule Wyram.Engine.Scenery do
   use GenServer
   require Logger
   alias Wyram.Engine.{PluginManager, World}
-  alias Wyram.Engine.Scenery.{EditView, Fetch, Loader, Plan, Store}
+  alias Wyram.Engine.Scenery.{EditView, Fetch, Invalidation, Loader, Plan, Store}
   alias Wyram.Scenery.Config
 
   def start_link(options) do
@@ -166,13 +166,15 @@ defmodule Wyram.Engine.Scenery do
   defp refresh_if_changed(state) do
     case EditView.stamp(state.model.edits) do
       {:ok, stamp} when stamp != state.model.stamp ->
+        invalidated = invalidated(state, stamp)
+
         state = %{
           state
           | model: %{state.model | stamp: stamp},
             content_id: System.unique_integer([:positive, :monotonic])
         }
 
-        if state.plan, do: replace(state, state.plan), else: state
+        if state.plan, do: replace(state, state.plan, invalidated), else: state
 
       {:ok, _} ->
         state
@@ -182,7 +184,17 @@ defmodule Wyram.Engine.Scenery do
     end
   end
 
-  defp replace(state, plan) do
+  defp invalidated(%{plan: nil}, _), do: :all
+
+  defp invalidated(state, stamp) do
+    case EditView.changes(state.model.edits, state.model.stamp, stamp) do
+      {:ok, ^stamp, chunks} -> Invalidation.keys(chunks, state.plan)
+      {:error, :unavailable} -> exit({:shutdown, :world_read_model_unavailable})
+      {:error, _} -> :all
+    end
+  end
+
+  defp replace(state, plan, invalidated \\ :all) do
     plan = Map.put(plan, :content, state.content_id)
     epoch = System.unique_integer([:positive, :monotonic])
     send(state.client, {:scenery_plan, epoch, state.model.stamp, plan, state.config})
@@ -193,7 +205,7 @@ defmodule Wyram.Engine.Scenery do
         epoch: epoch,
         waiting: nil,
         sent: MapSet.new(),
-        loader: Loader.reset(state.loader, plan, content(state))
+        loader: Loader.reset(state.loader, plan, content(state), invalidated)
     }
   end
 

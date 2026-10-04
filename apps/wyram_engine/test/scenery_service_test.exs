@@ -173,6 +173,67 @@ defmodule Wyram.Engine.Scenery.ServiceTest do
     refute_receive {:scenery_tiles, _, _, _}, 10
   end
 
+  test "coalesced durable edits retain unrelated cached tiles and reject old generation", %{
+    service: service,
+    model: model
+  } do
+    Scenery.view(service, self(), {0, 0, 0})
+    assert_receive {:scenery_plan, epoch, 0, _, _}
+    assert_receive {:started, one, 0, _}
+    assert_receive {:started, two, 0, _}
+    send(one, :finish)
+    assert_receive {:scenery_tiles, ^epoch, token, _}
+    assert_receive {:started, retired_one, 0, _}
+    send(two, :finish)
+    assert_receive {:started, retired_two, 0, _}
+    cached = :sys.get_state(service).loader.cache
+    assert map_size(cached) == 4
+    edited = cached |> Map.keys() |> Enum.sort() |> Enum.take(2)
+
+    # Multiple durable writes can precede the service's next event. Invalidating
+    # only that event's chunk would retain stale data from the earlier write.
+    for %Key{position: {x, y, z}} <- edited do
+      EditView.put(model.edits, {x * 2, y * 2, z * 2}, :binary.copy(<<0>>, 8192))
+    end
+
+    Scenery.acknowledge(service, epoch, token)
+    assert_receive {:scenery_plan, next, 2, _, _}
+    assert next > epoch
+    expected = Map.drop(cached, edited)
+    assert :sys.get_state(service).loader.cache == expected
+    assert map_size(:sys.get_state(service).loader.tasks) == 2
+    refute_receive {:scenery_tiles, ^epoch, _, _}, 10
+
+    send(retired_one, :finish)
+    assert_receive {:started, _, 2, _}
+    send(retired_two, :finish)
+    assert_receive {:started, _, 2, _}
+    assert :sys.get_state(service).loader.cache == expected
+  end
+
+  test "overwritten change history falls back to a complete cache reset", %{
+    service: service,
+    model: model
+  } do
+    Scenery.view(service, self(), {0, 0, 0})
+    assert_receive {:scenery_plan, epoch, 0, _, _}
+    assert_receive {:started, one, 0, _}
+    assert_receive {:started, _, 0, _}
+    send(one, :finish)
+    assert_receive {:scenery_tiles, ^epoch, token, _}
+    assert_receive {:started, _, 0, _}
+    assert map_size(:sys.get_state(service).loader.cache) == 2
+
+    for _ <- 1..1025 do
+      EditView.put(model.edits, {500, 0, 500}, :binary.copy(<<0>>, 8192))
+    end
+
+    Scenery.acknowledge(service, epoch, token)
+    assert_receive {:scenery_plan, next, 1025, _, _}
+    assert next > epoch
+    assert :sys.get_state(service).loader.cache == %{}
+  end
+
   defp eventually(assertion, attempts \\ 50)
   defp eventually(assertion, 1), do: assertion.()
 

@@ -4,8 +4,13 @@ defmodule Wyram.Engine.Scenery.Loader do
   alias Wyram.Engine.Scenery.Wire
   def new(config), do: %__MODULE__{config: config}
 
-  def reset(loader, plan, stamp) do
-    cache = if stamp == loader.stamp, do: Map.take(loader.cache, plan.order), else: %{}
+  def reset(loader, plan, stamp, invalidated \\ :all) do
+    cache =
+      cond do
+        stamp == loader.stamp -> Map.take(loader.cache, plan.order)
+        invalidated == :all -> %{}
+        true -> loader.cache |> Map.take(plan.order) |> Map.drop(MapSet.to_list(invalidated))
+      end
 
     %{
       loader

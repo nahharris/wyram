@@ -91,4 +91,39 @@ defmodule Wyram.Engine.Scenery.EditViewTest do
     assert_receive {:finished, reads}, 1000
     assert reads > 0
   end
+
+  test "history includes coalesced writes, deduplicates chunks and rejects stale reads" do
+    table = EditView.new(%{})
+    assert EditView.changes(table, 0, 0) == {:ok, 0, []}
+    assert EditView.put(table, {-1, 0, 0}, @air) == 1
+    assert EditView.put(table, {3, 0, 0}, @air) == 2
+    assert EditView.put(table, {-1, 0, 0}, @air) == 3
+    assert EditView.changes(table, 0, 3) == {:ok, 3, [{-1, 0, 0}, {3, 0, 0}]}
+    assert EditView.changes(table, 2, 3) == {:ok, 3, [{-1, 0, 0}]}
+    assert EditView.changes(table, 0, 2) == {:error, :stale}
+    assert EditView.changes(table, 2, 4) == {:error, :stale}
+    assert EditView.changes(table, 3, 2) == {:error, :invalid_history}
+    assert EditView.changes(table, -1, 3) == {:error, :invalid_history}
+    :ets.delete(table)
+    assert EditView.changes(table, 0, 3) == {:error, :unavailable}
+  end
+
+  test "fixed history slots wrap without hiding missing earlier writes" do
+    table = EditView.new(%{})
+
+    for sequence <- 1..1024 do
+      assert EditView.put(table, {sequence, 0, 0}, @air) == sequence
+    end
+
+    assert {:ok, 1024, keys} = EditView.changes(table, 0, 1024)
+    assert length(keys) == 1024
+    assert :ets.info(table, :size) == 2049
+    assert EditView.put(table, {1, 0, 0}, @air) == 1025
+    assert :ets.info(table, :size) == 2049
+    assert EditView.changes(table, 0, 1025) == {:error, :history_gap}
+    assert {:ok, 1025, tail} = EditView.changes(table, 1, 1025)
+    assert length(tail) == 1024
+    assert {1, 0, 0} in tail
+    assert EditView.changes(table, 1024, 1025) == {:ok, 1025, [{1, 0, 0}]}
+  end
 end
