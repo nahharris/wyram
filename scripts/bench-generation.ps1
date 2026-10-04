@@ -1,6 +1,8 @@
 param([ValidateSet('dev','perf')][string]$Profile = 'perf',
-  [ValidateRange(1,10)][int]$Rounds = 3, [string]$Output, [switch]$Cache)
+  [ValidateRange(1,10)][int]$Rounds = 3, [string]$Output, [switch]$Cache, [switch]$Edits)
 $ErrorActionPreference = 'Stop'
+if ($Cache -and $Edits) { throw 'Cache and edit benchmarks must run separately' }
+if ($Edits -and $Profile -ne 'perf') { throw 'Edit benchmark requires the perf native profile' }
 $root = Split-Path -Parent $PSScriptRoot
 $data = Join-Path $root ('.tools\generation-bench\' + [guid]::NewGuid().ToString('N'))
 if (-not $Output) { $Output = Join-Path $data 'report.json' }
@@ -42,7 +44,7 @@ try {
   $env:WYRAM_GENERATION_BENCH_ROUNDS = [string]$Rounds
   $env:WYRAM_GENERATION_BENCH_OUTPUT = $Output
   Invoke-WithDevelopmentPlugin -Package (Join-Path $root 'dist\wyram.wyrplug') -DataDirectory $data -Run {
-    $fixture = if ($Cache) { 'bench/scenery_cache.exs' } else { 'bench/native_generation.exs' }
+    $fixture = if ($Edits) { 'bench/scenery_edits.exs' } elseif ($Cache) { 'bench/scenery_cache.exs' } else { 'bench/native_generation.exs' }
     mix run $fixture
     if ($LASTEXITCODE -ne 0) { throw 'Generation benchmark failed' }
   }
