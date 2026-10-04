@@ -1116,6 +1116,13 @@ impl ApplicationHandler<UserEvent> for Game {
                         scenery_stale_meshes: self.scenery_meshing.stats.stale,
                         scenery_degraded_meshes: self.scenery_meshing.stats.degraded,
                         scenery_degraded_ready_tiles: self.scenery_meshing.degraded_ready(),
+                        scenery_epoch: self.scenery.plan.as_ref().map_or(0, |p| p.epoch),
+                        scenery_planned_tiles: self
+                            .scenery
+                            .plan
+                            .as_ref()
+                            .map_or(0, |p| p.nodes.len()),
+                        scenery_received_tiles: self.scenery.tiles.len(),
                         scenery_ready_tiles: self.scenery_meshing.ready().len(),
                         scenery_selected_tiles: self.scenery_meshing.stats.selected,
                         scenery_in_flight: self.scenery_meshing.in_flight(),

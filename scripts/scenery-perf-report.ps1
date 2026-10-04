@@ -33,12 +33,29 @@ $report = foreach ($case in Get-ChildItem -LiteralPath $Directory -Directory | S
         'scenery_opaque_draws','scenery_opaque_vertices','loaded_chunks','inbound_queue_max_ms')) {
         $maxima[$metric] = ($frames | Measure-Object -Property $metric -Maximum).Maximum
     }
+    $loading = @()
+    if ($frames[0].PSObject.Properties.Name -contains 'scenery_epoch') {
+        $loading = @($frames | Where-Object { $_.scenery_planned_tiles -gt 0 } |
+            Group-Object scenery_epoch | ForEach-Object {
+                $samples = $_.Group
+                $planned = $samples[-1].scenery_planned_tiles
+                $received = $samples | Where-Object { $_.scenery_received_tiles -eq $planned } | Select-Object -First 1
+                $ready = $samples | Where-Object { $_.scenery_ready_tiles -eq $planned } | Select-Object -First 1
+                @{ epoch = $samples[0].scenery_epoch; planned_tiles = $planned;
+                    first_plan_ms = $samples[0].benchmark_elapsed_ms;
+                    first_all_received_ms = if ($received) { $received.benchmark_elapsed_ms } else { $null };
+                    first_all_ready_ms = if ($ready) { $ready.benchmark_elapsed_ms } else { $null };
+                    final_received_tiles = $samples[-1].scenery_received_tiles;
+                    final_ready_tiles = $samples[-1].scenery_ready_tiles }
+            })
+    }
     $nativePath = Join-Path $case.FullName 'frames.native.json'
     $native = if (Test-Path -LiteralPath $nativePath) { Get-Content -LiteralPath $nativePath -Raw | ConvertFrom-Json } else { $null }
     @{ name = $case.Name; frames = $frames.Count; adapter = (Get-Content -LiteralPath (Join-Path $case.FullName 'frames.adapter.json') -Raw | ConvertFrom-Json);
         native = $native;
         profile = $frames[0].build_profile; opt_level = $frames[0].opt_level;
         dropped_samples = $frames[-1].dropped_samples; maxima = $maxima; phases = @($phases);
+        loading = $loading;
         final_degraded_ready_tiles = $frames[-1].scenery_degraded_ready_tiles;
         image = (Join-Path $case.FullName 'terrain.bmp') }
 }
