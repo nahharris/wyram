@@ -349,3 +349,56 @@ Ignored raw directories are `cache-54810b9c1443436ea6efdea7936c5bd2` (baseline),
 `cache-d225535221054ad2a407d0cbb2cfe2ac` (candidate), and
 `cache-a2b3287d07894583ae804a6b8feb5efa` (baseline confirmation), under
 `.tools/scenery-flight`. The aggregate is `.tools/distant-scenery/quality-summary.json`.
+
+## Selective server cache invalidation
+
+A single durable chunk edit previously discarded every cached scenery tile.
+The World read model now publishes a bounded ring of 1,024 chunk changes in the
+same atomic insertion as the edited bytes and global stamp. The service checks
+the complete intervening history, invalidates wanted ancestors at levels one
+through six, and retains other immutable summaries. Missing history or a racing
+read falls back to a full reset. Workers still reject old global stamps and keep
+their slots until completion. Native sample-chunk checks cover all six levels,
+negative coordinates and shifted sea strata; every sample stays within the
+conservatively invalidated tile volume.
+
+The reproducible headless fixture is `mise run bench:generation -- -Edits`.
+It uses the official seed 2026 and 1,018-tile reference plan, actual durable
+World writes, two service workers, credited two-tile delivery and optimized
+native generation. Disk caching is disabled. The service is suspended during
+the write; timing starts when it resumes after publication and ends after all
+tiles are delivered. Save I/O, initial population and full-reference validation
+are excluded. Each round clears or restores generated chunk `[32,13,32]`.
+
+An old-policy run of three edits precedes two candidate runs of three edits,
+then three old-policy edits repeat after the candidate. Baseline source is pinned
+to `f936fafc9ff8d5c17ba464b8b72ea7e4842f8e86` and the candidate is restored
+byte-for-byte after each baseline. All four processes load the same perf/opt-3
+DLL, SHA-256 `0c99dbc42a9071d8042dd05b6a108464488e762a122889d1aab0b2932de0f8d5`.
+
+| Case | Three update times, milliseconds | Tiles fetched per edit |
+| --- | --- | --- |
+| Old policy before | 2,268.364 / 2,212.454 / 6,479.360 | 1,018 |
+| Selective reuse first | 72.704 / 76.800 / 57.753 | 5 |
+| Selective reuse repeat | 73.420 / 71.782 / 73.318 | 5 |
+| Old policy after | 1,622.425 / 1,666.252 / 1,610.854 | 1,018 |
+
+The combined medians are 1,939.353 ms and 73.011 ms, about 26.6 times faster in
+this fixture. The baseline drifts substantially and includes a 6.479-second
+outlier; all samples are retained. The stable work reduction is 1,018 to five
+fetches, with 1,013 immutable summaries reused. Every update still delivers all
+1,018 tiles and exactly 6,418,312 encoded bytes. All delivered tile bytes match
+the independently rebuilt current snapshot. Clear rounds share SHA-256
+`0d7e844d8fe82410ecb3486467911a8808fc23b8cfa317f7788819e3b54d2441`;
+restored rounds share
+`ccd33c30260cbbe6d0f7225a2ca5a52f88be3e720827a020cd6ffd57ee61cdc5`.
+
+This verifies selective server reuse and snapshot correctness, not game FPS or
+renderer edit latency. The current wire protocol still replaces the whole
+client view, so localized renderer invalidation remains open. Full reset remains
+the correct fallback if the service misses more than 1,024 durable publications.
+
+Raw reports are `.tools/distant-scenery/edit-baseline-before.json`,
+`edit-candidate-repeat.json`, `edit-candidate-confirm.json` and
+`edit-baseline-confirm.json`. An earlier three-round candidate pilot is
+`edit-candidate-first.json` and is excluded from the table and combined medians.

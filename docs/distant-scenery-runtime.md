@@ -41,8 +41,9 @@ proxy; authoritative near chunks remain separate.
 The loader uses supervised tasks and batches at most two tiles per native call.
 Camera changes keep existing tasks counted against the concurrency limit until
 they finish. They do not repeatedly kill and replace dirty-CPU work. Results
-outside the current plan are discarded. A changed content revision clears
-cached results and rejects in-flight results from the previous revision.
+outside the current plan are discarded. A changed content revision invalidates
+affected cached tiles and rejects in-flight results from the previous revision.
+Incomplete change history falls back to clearing the whole cache.
 Still-valid cache entries are reused across view changes, and completing jobs
 are removed from the pending list before further dispatch.
 
@@ -103,7 +104,7 @@ The service owns one plan and retains at most the configured number of cached
 tiles. It runs at most two generation jobs, each containing at most two tiles,
 and keeps only one unacknowledged two-tile delivery to the current client.
 Camera changes retain running jobs against the worker limit. Content changes
-invalidate the encoded cache and outstanding delivery. Viewer termination
+invalidate affected encoded tiles and outstanding delivery. Viewer termination
 releases wanted tiles. Individual generation failures do not retry indefinitely.
 
 The client advertises scenery capability two. `WSP1` carries the epoch, content
@@ -253,9 +254,25 @@ presentation can hold both cases near 60 Hz despite different GPU costs.
 Distant queries must not activate gameplay regions or obtain authority over
 collision, liquids, or characters. The read model and native sample path now
 cover durable known edits, including restored saves. Persistent storage reuses
-unchanged sampled content across restarts and edits. Incremental server and
-renderer invalidation remains to be implemented: a content change still clears
-their in-memory tiles and meshes, even when the disk store can supply the same bytes.
+unchanged sampled content across restarts and edits. Server cache invalidation
+now uses a world-owned ring of 1,024 durable chunk changes. A coherent history
+invalidates the wanted ancestor at each visual level while retaining unrelated
+tile bytes. Changes coalesced before the service wakes are all included; gaps or
+races fall back to a complete cache reset. Old generation results remain rejected
+by the global stamp, and retired work retains its worker slot until completion.
+
+Renderer invalidation remains global: a content change still clears its tiles
+and meshes, and the server sends the complete view under a new epoch. Selective
+server reuse reduces fetch work; it does not yet localize mesh rebuilding or
+delivery. A future protocol must preserve stale-epoch rejection and conservative
+neighbor replacement before retaining geometry across edits.
+
+Run `mise run bench:generation -- -Edits` to measure the two-worker scenery
+service after actual durable World writes in an isolated benchmark save. It
+disables disk caching, excludes save I/O from the timer, and compares every
+delivered tile byte with a fresh rebuild. This is separate from game FPS and
+renderer update latency. Use the optimized generation profile; `-Cache` and
+`-Edits` select separate workloads.
 
 Bounded native meshing, renderer residency, parent replacement, near clipping,
 and depth handling are connected. Tests cover synthetic caves, detached islands,
