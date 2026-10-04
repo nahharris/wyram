@@ -206,3 +206,53 @@ fn intrinsically_degraded_final_geometry_cannot_rebuild_forever() {
     }
     assert_eq!(uploads, completed);
 }
+
+#[test]
+fn a_camera_plan_keeps_resident_detail_while_new_summaries_are_unknown() {
+    let (mut view, root, missing) = fixture(1);
+    for key in missing {
+        view.tiles.insert(key, Arc::new(LodTile::uniform(key, 0)));
+    }
+    let world = VoxelWorld::default();
+    let mut pipeline = Pipeline::new();
+    settle(&mut pipeline, &view, &world, |_, _| {});
+    let bytes = pipeline.ready[&root];
+    assert!(bytes > 8192);
+    let old = view.plan.as_ref().unwrap();
+    let mut plan = Plan {
+        epoch: old.epoch,
+        content: old.content,
+        stamp: old.stamp,
+        distance: old.distance,
+        cache_bytes: old.cache_bytes,
+        mesh_bytes: old.mesh_bytes,
+        roots: old.roots.clone(),
+        nodes: old
+            .nodes
+            .iter()
+            .map(|n| Node {
+                key: n.key,
+                children: n.children.clone(),
+            })
+            .collect(),
+        revisions: old.revisions.clone(),
+    };
+    plan.epoch += 1;
+    plan.cache_bytes = 64 << 20;
+    for x in 100..612 {
+        plan.roots.push(plan.nodes.len());
+        plan.nodes.push(Node {
+            key: TileKey::new([x, 0, 0], 1).unwrap(),
+            children: vec![],
+        });
+    }
+    assert!(view.replace(plan));
+    let selected = pipeline.update(&view, &world, |_, _| panic!("no new data to mesh"));
+    assert_eq!(
+        pipeline.ready.get(&root),
+        Some(&bytes),
+        "camera changes must not discard detailed resident geometry to reserve unknown tiles"
+    );
+    assert!(selected.contains(&root));
+    assert!(pipeline.ready.values().sum::<usize>() <= view.plan.as_ref().unwrap().mesh_bytes);
+}

@@ -164,6 +164,14 @@ fn distant_pixels_obey_near_coverage_and_global_alpha_order() {
     scene.select(&HashMap::from([(key, 192)]), vec![key], &mut blended);
     let pixels = render(&mut scene, &mut blended, Vec3::ZERO);
     assert!(pixels.iter().all(|p| *p == [255, 0, 0, 255]));
+    scene.near_view([0, 0, 0], 10);
+    assert!(
+        render(&mut scene, &mut blended, Vec3::ZERO)
+            .iter()
+            .all(|p| *p == [0, 0, 0, 255]),
+        "unmeshed nearby columns must never show coarse proxy geometry"
+    );
+    scene.near_view([1000, 0, 1000], 0);
     scene.near_ready([0, 0, 0]);
     let pixels = render(&mut scene, &mut blended, Vec3::ZERO);
     assert_eq!(

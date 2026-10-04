@@ -292,6 +292,7 @@ defmodule Wyram.Engine.ClientPort do
     %{
       port: port,
       sent: MapSet.new(),
+      near_radius: ChunkStream.view_radius(),
       center: nil,
       loader: ChunkLoader.new(),
       stream_ref: nil,
@@ -315,7 +316,9 @@ defmodule Wyram.Engine.ClientPort do
   defp stream(%{port: nil} = state, _), do: state
 
   defp stream(state, center) do
-    keys = ChunkStream.keys(center, state.bounds, @radius)
+    radius = Map.get(state, :near_radius, @radius)
+    send_packet(state.port, %{type: "near_view", center: Tuple.to_list(center), radius: radius})
+    keys = ChunkStream.keys(center, state.bounds, radius)
     wanted = MapSet.new(keys)
 
     Enum.each(MapSet.difference(state.sent, wanted), fn key ->

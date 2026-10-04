@@ -3,6 +3,14 @@ defmodule Wyram.Engine.Scenery.PlanTest do
   alias Wyram.Engine.Scenery.Plan
   alias Wyram.Scenery.{Config, Key}
 
+  test "the full-detail interior does not consume distant refinement nodes" do
+    assert {:ok, plan} = Plan.new({8, 8, 8}, {-192, 319}, Config.new!(%{}))
+    key = %Key{position: {0, 0, 0}, level: 2}
+    assert Map.has_key?(plan.nodes, key)
+    assert plan.nodes[key] == []
+    assert Enum.any?(plan.nodes, fn {tile, _} -> tile.level == 1 end)
+  end
+
   test "mesh reserves limit refinements and reject roots that cannot retain complete coverage" do
     config =
       Config.new!(%{max_tiles: 4096, cache_bytes: 256 * 1024 * 1024, mesh_bytes: 4 * 1024 * 1024})

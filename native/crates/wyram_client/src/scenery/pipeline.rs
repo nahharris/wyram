@@ -64,18 +64,33 @@ fn neighbor_keys(
 }
 
 impl Forest {
-    fn allowance(&self, view: &View, total: usize) -> usize {
-        if self.wanted.is_empty() {
+    fn allowance(&self, view: &View, total: usize, ready: &HashMap<TileKey, usize>) -> usize {
+        let mut count = 0;
+        let mut retained = Vec::new();
+        for key in &self.wanted {
+            if view.tiles.get(key).is_none_or(|tile| tile.occupied() != 0) {
+                count += 1;
+                if let Some(&bytes) = ready.get(key) {
+                    retained.push(bytes);
+                }
+            }
+        }
+        if count == 0 {
             return 0;
         }
-        // Missing data still reserves its share. Only decoded, immutable empty
-        // tiles can release a share within the current content revision.
-        let occupied_or_unknown = self
-            .wanted
-            .iter()
-            .filter(|key| view.tiles.get(key).is_none_or(|tile| tile.occupied() != 0))
-            .count();
-        (total / occupied_or_unknown.max(1)).min(MAX_JOB_BYTES)
+        // Preserve existing geometry when new unknown tiles reserve a share.
+        // Larger resident meshes retain their actual bytes; distribute only
+        // the remaining budget among other occupied or unknown tiles.
+        retained.sort_unstable_by(|a, b| b.cmp(a));
+        let mut available = total;
+        for bytes in retained {
+            if bytes <= available / count.max(1) {
+                break;
+            }
+            available = available.saturating_sub(bytes);
+            count -= 1;
+        }
+        (available / count.max(1)).min(MAX_JOB_BYTES)
     }
     fn new(plan: &Plan) -> Self {
         let limit = plan.mesh_bytes / MIN_TILE_BYTES;
@@ -331,7 +346,7 @@ impl Pipeline {
         let content = Some((plan.content, plan.stamp));
         if self.epoch != plan.epoch || palette_changed {
             let mut forest = Forest::new(plan);
-            forest.budget = forest.allowance(view, plan.mesh_bytes);
+            forest.budget = forest.allowance(view, plan.mesh_bytes, &self.ready);
             self.planned = plan.nodes.iter().map(|node| node.key).collect();
             self.refined = plan
                 .nodes
@@ -364,8 +379,10 @@ impl Pipeline {
             if self.forest.budget != forest.budget {
                 self.failed.clear();
             }
-            self.ready
-                .retain(|key, bytes| forest.wanted.contains(key) && *bytes <= forest.budget);
+            self.ready.retain(|key, _| forest.wanted.contains(key));
+            if self.ready.values().sum::<usize>() > plan.mesh_bytes {
+                self.ready.clear();
+            }
             self.ready_neighbors
                 .retain(|key, _| self.ready.contains_key(key));
             self.dirty.retain(|key| self.ready.contains_key(key));
@@ -381,11 +398,14 @@ impl Pipeline {
             self.colors = colors;
             self.descriptors = descriptors;
         }
-        let allowance = self.forest.allowance(view, plan.mesh_bytes);
+        let allowance = self.forest.allowance(view, plan.mesh_bytes, &self.ready);
         if self.forest.budget != allowance {
             self.failed.clear();
             self.forest.budget = allowance;
-            self.ready.retain(|_, bytes| *bytes <= allowance);
+
+            if self.ready.values().sum::<usize>() > plan.mesh_bytes {
+                self.ready.clear();
+            }
             self.ready_neighbors
                 .retain(|key, _| self.ready.contains_key(key));
             self.dirty.retain(|key| self.ready.contains_key(key));
@@ -783,7 +803,10 @@ mod tests {
         view.replace(p);
         let mut pipeline = Pipeline::new();
         let world = VoxelWorld::default();
-        assert_eq!(pipeline.forest.allowance(&view, 4 << 20), 0);
+        assert_eq!(
+            pipeline.forest.allowance(&view, 4 << 20, &pipeline.ready),
+            0
+        );
         pipeline.update(&view, &world, |_, _| panic!("no tiles delivered"));
         assert_eq!(
             pipeline.forest.budget,

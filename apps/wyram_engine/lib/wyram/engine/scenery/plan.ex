@@ -6,7 +6,9 @@ defmodule Wyram.Engine.Scenery.Plan do
   # ordered indices and the shared buffers' maximum allocation slack.
   @minimum_mesh_bytes 2592
 
-  def new({x, y, z} = observer, {low, high}, %Config{} = config)
+  def new(observer, bounds, config, previous \\ nil, near_radius \\ 4)
+
+  def new({x, y, z} = observer, {low, high}, %Config{} = config, previous, near_radius)
       when is_integer(x) and is_integer(y) and is_integer(z) and is_integer(low) and
              is_integer(high) do
     with true <- Enum.all?([x, y, z, low, high], &(abs(&1) <= @coordinate_limit)),
@@ -18,7 +20,19 @@ defmodule Wyram.Engine.Scenery.Plan do
          },
          {:ok, roots} <- roots(observer, {low, high}, config) do
       nodes = Map.new(roots, &{&1, []})
-      {nodes, order} = refine(nodes, Enum.reverse(roots), roots, observer, {low, high}, config)
+
+      {nodes, order} =
+        refine(
+          nodes,
+          Enum.reverse(roots),
+          roots,
+          observer,
+          {low, high},
+          config,
+          previous,
+          near_radius
+        )
+
       {:ok, %{roots: roots, nodes: nodes, order: Enum.reverse(order)}}
     else
       {:error, :scenery_root_budget} = error -> error
@@ -26,7 +40,7 @@ defmodule Wyram.Engine.Scenery.Plan do
     end
   end
 
-  def new(_, _, _), do: {:error, :invalid_scenery_view}
+  def new(_, _, _, _, _), do: {:error, :invalid_scenery_view}
 
   defp roots({x, _, z} = observer, {low, high}, config) do
     width = 16 * Integer.pow(2, config.max_level)
@@ -60,27 +74,41 @@ defmodule Wyram.Engine.Scenery.Plan do
     if first <= last, do: first..last, else: []
   end
 
-  defp refine(nodes, order, [], _, _, _), do: {nodes, order}
+  defp refine(nodes, order, [], _, _, _, _, _), do: {nodes, order}
 
-  defp refine(nodes, order, [key | pending], observer, bounds, config) do
-    if refinable?(key, observer, bounds, config) and map_size(nodes) + 8 <= config.max_tiles do
+  defp refine(nodes, order, [key | pending], observer, bounds, config, previous, near_radius) do
+    if refinable?(key, observer, bounds, config, previous, near_radius) and
+         map_size(nodes) + 8 <= config.max_tiles do
       children = children(key)
       nodes = Enum.reduce(children, Map.put(nodes, key, children), &Map.put(&2, &1, []))
       order = Enum.reverse(children, order)
       pending = Enum.sort_by(children ++ pending, &priority(&1, observer))
-      refine(nodes, order, pending, observer, bounds, config)
+      refine(nodes, order, pending, observer, bounds, config, previous, near_radius)
     else
-      refine(nodes, order, pending, observer, bounds, config)
+      refine(nodes, order, pending, observer, bounds, config, previous, near_radius)
     end
   end
 
-  defp refinable?(%Key{level: level} = key, observer, {low, high}, config) do
+  defp refinable?(%Key{level: level} = key, observer, {low, high}, config, previous, near_radius) do
     {:ok, {_, bottom, _}} = Key.origin(key)
     width = 16 * Integer.pow(2, level)
     threshold = config.detail_distance * Integer.pow(2, level)
+    retained = previous && Map.get(previous.nodes, key, []) != []
+    threshold = if retained, do: div(threshold * 5, 4), else: threshold
 
     level > 1 and bottom <= high and bottom + width > low and
+      not inside_near?(key, observer, near_radius) and
       distance_squared(key, observer) < threshold * threshold
+  end
+
+  defp inside_near?(key, {x, _, z}, radius) do
+    {:ok, {left, _, front}} = Key.origin(key)
+    width = 16 * Integer.pow(2, key.level)
+    cx = Integer.floor_div(x, 16)
+    cz = Integer.floor_div(z, 16)
+
+    left >= (cx - radius) * 16 and left + width <= (cx + radius + 1) * 16 and
+      front >= (cz - radius) * 16 and front + width <= (cz + radius + 1) * 16
   end
 
   defp children(%Key{position: {x, y, z}, level: level}) do

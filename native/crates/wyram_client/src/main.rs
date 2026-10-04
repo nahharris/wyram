@@ -80,6 +80,10 @@ enum ServerPacket {
     SceneryPlan(scenery::wire::Plan),
     #[serde(skip)]
     SceneryTiles(scenery::wire::Batch),
+    NearView {
+        center: [i32; 3],
+        radius: u8,
+    },
     Forget {
         key: [i32; 3],
     },
@@ -192,6 +196,11 @@ fn decode_packet(bytes: &[u8]) -> Option<ServerPacket> {
         }],
         ServerPacket::Chunks { chunks } if chunks.len() <= 16 => chunks,
         ServerPacket::Chunks { .. } => return None,
+        ServerPacket::NearView { center, radius }
+            if radius > 10 || center.iter().any(|v| v.unsigned_abs() > 1_000_000) =>
+        {
+            return None;
+        }
         packet => return Some(packet),
     };
     let chunks = chunks
@@ -602,6 +611,7 @@ struct Game {
     inbound_queue_max_ms: f64,
     world: VoxelWorld,
     scenery: scenery::view::View,
+    near_view: Option<([i32; 3], u8)>,
     scenery_meshing: scenery::pipeline::Pipeline,
     position: Vec3,
     yaw: f32,
@@ -638,6 +648,7 @@ impl Game {
             inbound_queue_max_ms: 0.0,
             world: VoxelWorld::default(),
             scenery: scenery::view::View::default(),
+            near_view: None,
             scenery_meshing: scenery::pipeline::Pipeline::new(),
             position: Vec3::new(0.5, 73.0, 0.5),
             yaw: 0.0,
@@ -893,6 +904,9 @@ impl ApplicationHandler<UserEvent> for Game {
                     self.decode_ms += start.elapsed().as_secs_f64() * 1000.0;
                 }
             }
+            UserEvent::Packet(ServerPacket::NearView { center, radius }) => {
+                self.near_view = Some((center, radius));
+            }
             UserEvent::Packet(ServerPacket::Forget { key }) => {
                 self.world.forget(key);
                 if let Some(graphics) = self.graphics.as_mut() {
@@ -1037,6 +1051,9 @@ impl ApplicationHandler<UserEvent> for Game {
                             .update(&self.scenery, &self.world, |key, mesh| {
                                 graphics.scenery.upload(&graphics.device, key, mesh)
                             });
+                    if let Some((center, radius)) = self.near_view {
+                        graphics.scenery.near_view(center, radius);
+                    }
                     graphics.scenery.select(
                         self.scenery_meshing.ready(),
                         selected,
@@ -1213,6 +1230,13 @@ mod tests {
             panic!("hello");
         };
         assert_eq!(packet.scenery_planes["73"], -16.25);
+    }
+    #[test]
+    fn near_view_boundary_reaches_the_renderer_before_chunk_meshes() {
+        assert!(
+            super::decode_packet(br#"{"type":"near_view","center":[-2,14,3],"radius":10}"#)
+                .is_some()
+        );
     }
     #[test]
     fn background_decode_validates_scenery_packets_before_ui_delivery() {

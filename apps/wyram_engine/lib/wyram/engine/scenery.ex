@@ -2,7 +2,7 @@ defmodule Wyram.Engine.Scenery do
   @moduledoc "Supervised visual generation with bounded work and acknowledged delivery."
   use GenServer
   require Logger
-  alias Wyram.Engine.{PluginManager, World}
+  alias Wyram.Engine.{ChunkStream, PluginManager, World}
   alias Wyram.Engine.Scenery.{EditView, Fetch, Invalidation, Loader, Plan, Store}
   alias Wyram.Scenery.Config
 
@@ -41,6 +41,7 @@ defmodule Wyram.Engine.Scenery do
       {:ok,
        %{
          config: config,
+         near_radius: ChunkStream.view_radius(),
          model: model,
          world_ref: Process.monitor(GenServer.whereis(world)),
          supervisor: Keyword.get(options, :supervisor, Wyram.Engine.ScenerySupervisor),
@@ -69,7 +70,13 @@ defmodule Wyram.Engine.Scenery do
     if client == state.client and observer == state.observer do
       {:noreply, state}
     else
-      case Plan.new(observer, state.model.generation.bounds, state.config) do
+      case Plan.new(
+             observer,
+             state.model.generation.bounds,
+             state.config,
+             state.plan,
+             state.near_radius
+           ) do
         {:ok, plan} ->
           if state.client_ref, do: Process.demonitor(state.client_ref, [:flush])
 

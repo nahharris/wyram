@@ -39,6 +39,24 @@ defmodule Wyram.Engine.Scenery.ServiceTest do
     {:ok, service: service, model: model, supervisor: supervisor}
   end
 
+  test "small boundary crossings retain the existing refined children", %{service: service} do
+    config = Config.new!(%{distance: 128, max_level: 2, detail_distance: 16})
+    :sys.replace_state(service, &%{&1 | config: config})
+    Scenery.view(service, self(), {120, 8, 8})
+    assert_receive {:scenery_plan, _, _, before, _}, 1000
+    key = %Key{position: {0, 0, 0}, level: 2}
+    assert length(before.nodes[key]) == 8
+    Scenery.view(service, self(), {136, 8, 8})
+    assert_receive {:scenery_plan, _, _, after_plan, _}, 1000
+    assert length(after_plan.nodes[key]) == 8
+    Scenery.view(service, self(), {120, 8, 8})
+    assert_receive {:scenery_plan, _, _, returned, _}, 1000
+    assert length(returned.nodes[key]) == 8
+    Scenery.view(service, self(), {152, 8, 8})
+    assert_receive {:scenery_plan, _, _, distant, _}, 1000
+    assert distant.nodes[key] == []
+  end
+
   test "retired service jobs hold worker slots and the new view resumes after they exit", %{
     service: service,
     supervisor: supervisor

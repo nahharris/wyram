@@ -6,8 +6,8 @@ use std::collections::{HashMap, HashSet};
 use wgpu::util::DeviceExt;
 use wyram_core::scenery::TileKey;
 
-const DIM: [u32; 3] = [17, 64, 17];
-const WORDS: usize = (17usize * 64 * 17).div_ceil(32);
+const DIM: [u32; 3] = [33, 64, 33];
+const WORDS: usize = (33usize * 64 * 33).div_ceil(32);
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Frame {
@@ -15,6 +15,7 @@ struct Frame {
     size: [u32; 4],
     eye: [f32; 4],
     fog: [f32; 4],
+    near_bounds: [i32; 4],
 }
 
 struct Resident {
@@ -31,6 +32,7 @@ pub struct Scene {
     mask: wgpu::Buffer,
     near: HashSet<[i32; 3]>,
     mask_dirty: bool,
+    near_bounds: [i32; 4],
     center: Option<[i32; 3]>,
     resident: HashMap<TileKey, Resident>,
     active: HashSet<TileKey>,
@@ -39,7 +41,7 @@ pub struct Scene {
 
 fn coverage(near: &HashSet<[i32; 3]>, center: [i32; 3]) -> ([i32; 4], Vec<u32>) {
     let min_y = near.iter().map(|key| key[1]).min().unwrap_or(0);
-    let origin = [center[0] - 8, min_y, center[2] - 8, 0];
+    let origin = [center[0] - 16, min_y, center[2] - 16, 0];
     let mut words = vec![0u32; WORDS];
     for key in near {
         let p: [i32; 3] = std::array::from_fn(|i| key[i] - origin[i]);
@@ -140,7 +142,7 @@ impl Scene {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Scenery frame layout"),
             entries: &[
-                entry(0, wgpu::BufferBindingType::Uniform, 64),
+                entry(0, wgpu::BufferBindingType::Uniform, 80),
                 entry(
                     1,
                     wgpu::BufferBindingType::Storage { read_only: true },
@@ -169,11 +171,21 @@ impl Scene {
             mask,
             near: HashSet::new(),
             mask_dirty: true,
+            near_bounds: [0; 4],
             center: None,
             resident: HashMap::new(),
             active: HashSet::new(),
             dirty: HashSet::new(),
         }
+    }
+    pub fn near_view(&mut self, center: [i32; 3], radius: u8) {
+        let radius = i32::from(radius);
+        self.near_bounds = [
+            (center[0] - radius) * 16,
+            (center[2] - radius) * 16,
+            (center[0] + radius + 1) * 16,
+            (center[2] + radius + 1) * 16,
+        ];
     }
     pub fn near_ready(&mut self, key: [i32; 3]) {
         self.mask_dirty |= self.near.insert(key);
@@ -187,9 +199,9 @@ impl Scene {
             self.mask_dirty = true;
         }
         let origin = [
-            center[0] - 8,
+            center[0] - 16,
             self.near.iter().map(|key| key[1]).min().unwrap_or(0),
-            center[2] - 8,
+            center[2] - 16,
             0,
         ];
         if self.mask_dirty {
@@ -203,6 +215,7 @@ impl Scene {
             size: [DIM[0], DIM[1], DIM[2], 0],
             eye: [eye.x, eye.y, eye.z, distance],
             fog: [0.43, 0.65, 0.86, distance * 0.75],
+            near_bounds: self.near_bounds,
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&frame));
     }
@@ -306,6 +319,14 @@ mod gpu_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn coverage_preserves_every_column_of_a_21_by_21_near_view() {
+        let near = (-10..=10)
+            .flat_map(|x| (-10..=10).map(move |z| [x, 0, z]))
+            .collect();
+        let (_, words) = coverage(&near, [0, 0, 0]);
+        assert_eq!(words.iter().map(|word| word.count_ones()).sum::<u32>(), 441);
+    }
     #[test]
     fn coverage_includes_empty_completions_and_excludes_forgotten_or_unready_chunks() {
         let mut near = HashSet::from([[-1, -4, -1], [0, -3, 0], [-10000, 99, 10000]]);

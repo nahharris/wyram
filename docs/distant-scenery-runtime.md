@@ -16,11 +16,19 @@ The policy currently defaults to a 1,024-unit horizontal view distance,
 maximum level five, detail distance 64, at most 1,024 planned tiles, two worker
 tasks, and 64 MiB each for encoded cache payload and renderer mesh payload.
 Every tile contains 16³ cells and cell width is `2^level` world units.
+The official game currently requests detail distance 128, 4,096 nodes and 256 MiB for each payload
+budget for owner visual testing. These are caps, not measured total memory.
+
+The full-detail nearby view remains 9×9 chunk columns by default. Set
+`WYRAM_NEAR_VIEW_RADIUS=10` before launching to test 21×21 columns. Values 1–10
+are accepted; malformed values use radius four. This changes full-height chunk
+residency, not the size or authority of a region actor. The 21×21 policy remains
+an unapproved visual/performance trial.
 
 `detail_distance` controls refinement: a tile can refine when observer distance
 to its bounding box is below `detail_distance * 2^level`. Refinement stops at
 level one or the tile count limit. A larger value requests finer detail farther
-away. The count includes roots, parents, empty tiles and all replacement
+away. Existing refinements are retained until their distance exceeds that threshold by 25%, reducing boundary oscillation. The count includes roots, parents, empty tiles and all replacement
 children; it is not just the number of eventual draw calls.
 
 The cache policy must accommodate the maximum encoded tile size for every
@@ -202,9 +210,11 @@ coarse wall reopened by a finer child's air gap and reversed worker completion.
 Different sample resolutions can still approximate the two sides of a boundary
 differently; the neighbor data is not a guarantee of exact surface agreement.
 
-Completed near meshes, including empty meshes, populate a bounded GPU coverage
-mask. Distant fragments covered by those chunks are discarded. Missing near
-meshes retain their distant fallback. Near and distant translucent faces share
+The engine sends the full-detail view boundary before its chunks. Distant
+fragments inside those columns are discarded even while near meshes are loading.
+Completed near meshes, including empty meshes, also populate a bounded GPU
+coverage mask spanning 33×64×33 chunks, retaining coverage outside that boundary.
+Outside the protected full-detail view, missing meshes retain their distant fallback. Near and distant translucent faces share
 one camera-sorted index stream. Ocean cap heights come from generator metadata
 and public material descriptors. A sampled water cap containing that plane uses
 its configured height even when the plane is near the bottom of the coarse
@@ -311,3 +321,19 @@ Visual and performance validation must exercise cold loading, warm reuse,
 camera movement, edited terrain, rapid view changes, negative coordinates,
 islands, cave openings, translucent boundaries and configured resource limits.
 CPU fixture improvements are not evidence of game FPS or final scenery quality.
+
+## Owner review repair
+
+Owner screenshots rejected the initial view: coarse terrain appeared too close
+and moving views flickered. Pixel tests now cover unmeshed near exclusion,
+21×21 coverage, and unchanged near alpha rendering. Service tests cover
+refinement hysteresis and eventual coarsening. A camera-plan regression proves
+that detailed residents survive new unknown tiles. Larger resident meshes reserve
+their actual bytes before the remaining mesh allowance is shared; the configured
+total remains bounded. Whole-view image quality and smooth motion still require
+owner acceptance. The earlier 9×9 versus 5×5 subjective stutter comparison is
+recorded for a later investigation, not a measured performance conclusion.
+Tiles fully inside the full-detail column boundary keep a coarse clipped parent
+without spending nodes on invisible descendants. Refinement capacity is spent
+on the visible transition band instead. Engine streaming and scenery planning
+share the same validated near-view radius.
