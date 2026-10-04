@@ -30,9 +30,17 @@ defmodule Wyram.Engine.Native do
 
   def compile_generator(_seed, _settings), do: :erlang.nif_error(:nif_not_loaded)
   def generate_world_chunks(_resource, _keys), do: :erlang.nif_error(:nif_not_loaded)
+  def generate_scenic_tiles(_resource, _keys), do: :erlang.nif_error(:nif_not_loaded)
   def sample_world(_resource, _positions), do: :erlang.nif_error(:nif_not_loaded)
   def generator_spawn(_resource), do: :erlang.nif_error(:nif_not_loaded)
   def surface_heights(_resource, _positions), do: :erlang.nif_error(:nif_not_loaded)
+
+  @spec import_visual_chunks([{{integer(), integer(), integer()}, binary()}]) ::
+          {:ok, [binary()]} | {:error, String.t()}
+  def import_visual_chunks(_chunks), do: :erlang.nif_error(:nif_not_loaded)
+
+  @spec reduce_visual_tiles([[binary()]]) :: {:ok, [binary()]} | {:error, String.t()}
+  def reduce_visual_tiles(_batches), do: :erlang.nif_error(:nif_not_loaded)
 
   def read_blocks(_data, _positions), do: :erlang.nif_error(:nif_not_loaded)
   def compare_write_blocks(_data, _edits), do: :erlang.nif_error(:nif_not_loaded)

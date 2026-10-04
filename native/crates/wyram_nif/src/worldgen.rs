@@ -157,6 +157,25 @@ fn generate_world_chunks<'a>(
         .map(|(key, bytes)| (key, binary_from_bytes(env, &bytes)))
         .collect())
 }
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn generate_scenic_tiles<'a>(
+    env: Env<'a>,
+    g: ResourceArc<Generation>,
+    keys: Vec<((i32, i32, i32), u8)>,
+) -> Result<Vec<Binary<'a>>, &'static str> {
+    if keys.len() > 2 {
+        return Err("oversized scenic generation batch");
+    }
+    keys.into_iter()
+        .map(|((x, y, z), level)| {
+            let key = wyram_core::scenery::TileKey::new([x, y, z], level)
+                .map_err(|_| "invalid scenic tile key")?;
+            let tile = g.0.scenic_tile(key)?;
+            Ok(binary_from_bytes(env, &tile.encode()))
+        })
+        .collect()
+}
 #[derive(NifMap)]
 struct ColumnWire {
     height: i32,
