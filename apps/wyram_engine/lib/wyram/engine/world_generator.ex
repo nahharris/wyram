@@ -5,6 +5,17 @@ defmodule Wyram.Engine.WorldGenerator do
   alias Wyram.WorldGen.{Biome, Config}
   @field_order [:continentalness, :erosion, :tectonics, :temperature, :humidity, :detail]
 
+  def scenery_planes(nil, _, _), do: %{}
+
+  def scenery_planes(config, blocks, render) do
+    config.biomes
+    |> Enum.reject(&is_nil(&1.water))
+    |> Map.new(fn biome ->
+      id = handle(biome.water, blocks)
+      {id, config.sea_level + Map.fetch!(render, id).height}
+    end)
+  end
+
   def normalize(nil), do: nil
 
   def normalize(config) do

@@ -1,5 +1,25 @@
 # Benchmarks
 
+`mise run bench:generation` measures generation of the official world's distant
+tile plan at `{672, 300, 672}` and the 9×9 full-height near region around it in a
+fresh headless world. The default uses optimized generation; pass
+`-- -Profile dev` for debug. Three passes per workload record raw elapsed time,
+byte counts and deterministic output hashes, plus the actual loaded native
+profile and library hash. Use `-- -Rounds 1 -Output path.json` for a shorter run
+or a new output path. Default output stays in ignored `.tools/generation-bench`.
+Compare on the same machine with alternating profile order and no concurrent
+builds or games. Generation timings exclude startup and output hashing; they
+do not measure actor streaming, meshing, upload or GPU execution.
+
+Pass `-- -Cache` to measure the same scenery plan through the real saved-edit
+fetch path: no disk store, an empty store, then the persisted store after an owner
+restart. Each round uses a new bounded slot directory, asserts identical bytes
+and output hashes, and verifies every warm tile hits with no misses. Timers
+include sample collection, cache calls and file I/O, but exclude owner startup
+and result hashing. The report records cache occupancy and native provenance.
+These timings still exclude delivery, meshing and drawing; measure those with
+matched game captures before making a game loading claim.
+
 The default render view covers 9 by 9 horizontal chunk columns (radius 4). The game's 512-block height spans 32 vertical layers, so a fully streamed view contains 2,592 chunks. Chunk requests remain nearest-first and transport batches remain capped at 16; increasing distance adds work without increasing mesh-worker or upload throughput.
 
 The [2026-10-03 flight investigation](flight-performance.md) measures real game flight, full-height residency, debug/perf client differences, and bounded concurrency across existing region actors. Reproduce the desktop route with `bench/flight_route.exs` and the byte-parity-checked generation experiment with `bench/worldgen_parallel.exs`. The report ranks follow-up candidates and distinguishes measured bottlenecks from hypotheses.
@@ -8,7 +28,7 @@ The [2026-10-03 flight investigation](flight-performance.md) measures real game 
 
 `mise run bench:mesh` compares the retained simple mesher and greedy mesher on identical empty, solid, terrain and checkerboard chunks. Both implementations run in the same optimized profile, with warmup and 30 alternating-order rounds of 10 iterations. Results contain raw milliseconds per mesh, vertex counts, compiled profile/optimization level, commit and dirty-worktree state. Run `mise run bench:mesh -- -Profile dev` for a separate debug-profile comparison. The benchmark asserts oriented unit-face coverage and color parity before timing. It is an isolated CPU/geometry benchmark, not GPU execution time or full-game throughput. Generated outputs stay under `bench/results/`.
 
-Use `mise run dev:perf` or `mise run dev:agent:perf` for optimized native development with symbols. They share plugin staging/cleanup with debug development and select `native/target/perf/wyram_client.exe`. Ordinary `dev` selects the debug client. An explicit `WYRAM_CLIENT` override remains authoritative for both commands; unset it to use the selected built client. Frame samples record `build_profile` and `opt_level` compiled into the executable; release packaging still uses Cargo's release profile.
+Use `mise run dev:perf` or `mise run dev:agent:perf` for optimized native development with symbols. They share plugin staging/cleanup with debug development and select the `perf` client and terrain-generation library. Ordinary `dev` selects debug builds of both. An explicit `WYRAM_CLIENT` override remains authoritative for both commands; unset it to use the selected built client. Frame samples record `build_profile` and `opt_level` compiled into the executable. The accompanying `.native.json` records the compiled generation profile, optimization level, actual loaded library path and SHA-256. Development libraries have immutable filenames so switching profiles does not overwrite a running game's library. Release packaging uses Cargo's release profile, checks the loaded release library, and excludes development artifacts.
 
 For a repeatable desktop stress route, `bench/renderer_route.exs` performs eight teleports at fixed 800 ms intervals after waiting for the client and warming up for two seconds. It shuts down the isolated engine afterward. Run it with `mise exec -- mix run bench/renderer_route.exs`, setting `WYRAM_DATA_DIR` to a fresh directory containing `plugins/wyram.wyrplug`, `WYRAM_CLIENT` to the chosen executable, and `WYRAM_CLIENT_METRICS` to a new capture path. Use the same plugin, seed, window size, route, profile and machine for baseline/candidate captures. Repeat with alternating order while no builds/tests are running. This stress route is not a walking route or a substitute for GPU timing; issue #8 remains open.
 

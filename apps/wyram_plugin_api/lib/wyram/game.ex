@@ -17,7 +17,15 @@ defmodule Wyram.Game do
       import Kernel, except: [spawn: 1, spawn: 2]
 
       import Wyram.Game,
-        only: [palette: 1, worldgen: 1, player: 1, spawn: 1, spawn: 2, spawn_policy: 1]
+        only: [
+          palette: 1,
+          worldgen: 1,
+          scenery: 1,
+          player: 1,
+          spawn: 1,
+          spawn: 2,
+          spawn_policy: 1
+        ]
 
       @before_compile Wyram.Game
     end
@@ -27,6 +35,12 @@ defmodule Wyram.Game do
 
   defmacro worldgen(module),
     do: put(:worldgen, Entry.module!(module, __CALLER__, "worldgen"), __CALLER__)
+
+  defmacro scenery(options) do
+    env = __CALLER__
+    options = Entry.keyword_options!(options, env, "scenery")
+    put(:scenery, Literal.normalize!(options, env), env)
+  end
 
   defmacro player(module),
     do: put(:player, Entry.module!(module, __CALLER__, "player"), __CALLER__)

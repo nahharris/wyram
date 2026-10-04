@@ -1,5 +1,12 @@
 defmodule Wyram.Engine.ChunkStream do
   @moduledoc "Finite full-height residency, ordered near the observer for bounded transport batches."
+  def view_radius do
+    case Integer.parse(System.get_env("WYRAM_NEAR_VIEW_RADIUS", "4")) do
+      {radius, ""} when radius in 1..10 -> radius
+      _ -> 4
+    end
+  end
+
   def keys({cx, cy, cz}, {low, high}, radius) do
     keys =
       for x <- (cx - radius)..(cx + radius),

@@ -19,6 +19,7 @@ mix test
 if ($LASTEXITCODE -ne 0) { throw 'ExUnit failed' }
 cargo test --manifest-path native/Cargo.toml --workspace --locked
 if ($LASTEXITCODE -ne 0) { throw 'Rust tests failed' }
+& (Join-Path $PSScriptRoot 'test-scenery-wire.ps1')
 & (Join-Path $PSScriptRoot 'test-benchmark.ps1')
 
 cargo run --manifest-path native/Cargo.toml -p wyram_client --locked -- --validate-models .tools/character-models.json

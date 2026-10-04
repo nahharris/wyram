@@ -7,7 +7,15 @@ defmodule Wyram.Game.Config do
   alias Wyram.WorldGen.Config, as: WorldGenConfig
 
   @enforce_keys [:profile, :models, :characters]
-  defstruct [:profile, :models, :characters, palette: nil, worldgen: nil, spawn: :configured]
+  defstruct [
+    :profile,
+    :models,
+    :characters,
+    palette: nil,
+    worldgen: nil,
+    scenery: nil,
+    spawn: :configured
+  ]
 
   @type palette :: %{surface: Ref.t(), soil: Ref.t(), rock: Ref.t()}
   @type t :: %__MODULE__{
@@ -16,10 +24,11 @@ defmodule Wyram.Game.Config do
           models: [Model.t()],
           characters: [Definition.t()],
           worldgen: WorldGenConfig.t() | nil,
+          scenery: Wyram.Scenery.Config.t() | nil,
           spawn: :configured | :surface
         }
 
-  @fields [:palette, :profile, :models, :characters, :worldgen, :spawn]
+  @fields [:palette, :profile, :models, :characters, :worldgen, :scenery, :spawn]
   @bone_fields [:name, :parent, :role, :pivot, :boxes]
   @box_fields [:center, :size, :color]
 
@@ -33,6 +42,7 @@ defmodule Wyram.Game.Config do
          :ok <- valid_generation(palette, Map.get(attrs, :worldgen)),
          :ok <- valid_profile(profile),
          :ok <- valid_worldgen(Map.get(attrs, :worldgen)),
+         :ok <- valid_scenery(Map.get(attrs, :scenery), Map.get(attrs, :worldgen)),
          :ok <- valid_spawn(Map.get(attrs, :spawn, :configured)),
          characters =
            Map.get_lazy(attrs, :characters, fn -> default_characters(models, profile) end),
@@ -44,6 +54,7 @@ defmodule Wyram.Game.Config do
          models: models,
          characters: characters,
          worldgen: Map.get(attrs, :worldgen),
+         scenery: Map.get(attrs, :scenery),
          spawn: Map.get(attrs, :spawn, :configured)
        }}
     end
@@ -81,6 +92,9 @@ defmodule Wyram.Game.Config do
   defp valid_spawn(_), do: {:error, :invalid_spawn_policy}
   defp valid_worldgen(nil), do: :ok
   defp valid_worldgen(value), do: WorldGenConfig.validate(value)
+  defp valid_scenery(nil, _), do: :ok
+  defp valid_scenery(_, nil), do: {:error, :scenery_requires_worldgen}
+  defp valid_scenery(value, _), do: Wyram.Scenery.Config.validate(value)
 
   defp valid_profile(profile) do
     if complete_struct?(profile, Profile),

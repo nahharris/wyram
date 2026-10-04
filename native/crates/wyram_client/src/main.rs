@@ -3,19 +3,23 @@ mod camera;
 mod characters;
 mod chunk_mesh;
 mod chunk_wire;
+mod flight_benchmark;
 mod flight_input;
+mod frame_capture;
 mod frustum;
 mod gpu_timer;
+mod inbound;
 mod meshing;
 mod outbound;
 mod replica;
 mod rig;
+mod scenery;
 mod telemetry;
 mod transparency;
 mod world;
 
 use std::collections::{HashMap, HashSet};
-use std::io::{self, Read};
+use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -34,6 +38,19 @@ use crate::telemetry::{FrameSample, FrameTelemetry};
 use crate::world::{RenderDescriptor, Vertex, VoxelWorld};
 
 #[derive(Debug, Deserialize)]
+struct Hello {
+    colors: HashMap<String, [u8; 3]>,
+    descriptors: HashMap<String, RenderDescriptor>,
+    noncolliding: Vec<u16>,
+    placeable: Vec<u16>,
+    characters: Vec<Snapshot>,
+    #[serde(default)]
+    models: Vec<rig::Source>,
+    #[serde(default)]
+    scenery_planes: HashMap<String, f32>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerPacket {
     CharacterStates {
@@ -46,15 +63,7 @@ enum ServerPacket {
         yaw: f32,
         pitch: f32,
     },
-    Hello {
-        colors: HashMap<String, [u8; 3]>,
-        descriptors: HashMap<String, RenderDescriptor>,
-        noncolliding: Vec<u16>,
-        placeable: Vec<u16>,
-        characters: Vec<Snapshot>,
-        #[serde(default)]
-        models: Vec<rig::Source>,
-    },
+    Hello(Box<Hello>),
     Chunk {
         key: [i32; 3],
         revision: u64,
@@ -66,6 +75,14 @@ enum ServerPacket {
     #[serde(skip)]
     PackedChunks {
         chunks: Vec<chunk_wire::PackedChunk>,
+    },
+    #[serde(skip)]
+    SceneryPlan(scenery::wire::Plan),
+    #[serde(skip)]
+    SceneryTiles(scenery::wire::Batch),
+    NearView {
+        center: [i32; 3],
+        radius: u8,
     },
     Forget {
         key: [i32; 3],
@@ -100,6 +117,11 @@ struct Intent {
 enum ClientPacket {
     Capabilities {
         chunk_protocol: u8,
+        scenery_protocol: u8,
+    },
+    SceneryReady {
+        epoch: u64,
+        delivery: u64,
     },
     Input {
         sequence: u64,
@@ -129,46 +151,33 @@ struct ReceivedPacket {
     queued_at: Instant,
 }
 
-fn start_reader(proxy: EventLoopProxy<UserEvent>) -> std::sync::mpsc::Receiver<ReceivedPacket> {
+fn start_reader(
+    proxy: EventLoopProxy<UserEvent>,
+    credits: outbound::ScenerySender,
+) -> std::sync::mpsc::Receiver<ReceivedPacket> {
     let (sender, receiver) = std::sync::mpsc::sync_channel(32);
     std::thread::spawn(move || {
         let mut input = io::stdin().lock();
-        loop {
-            let mut prefix = [0u8; 4];
-            if input.read_exact(&mut prefix).is_err() {
-                let _ = proxy.send_event(UserEvent::Disconnected);
-                break;
-            }
-            let length = u32::from_be_bytes(prefix) as usize;
-            if length > 4 * 1024 * 1024 {
-                let _ = proxy.send_event(UserEvent::Disconnected);
-                break;
-            }
-            let mut bytes = vec![0u8; length];
-            if input.read_exact(&mut bytes).is_err() {
-                let _ = proxy.send_event(UserEvent::Disconnected);
-                break;
-            }
-            let start = Instant::now();
-            if let Some(packet) = decode_packet(&bytes) {
-                let packet = ReceivedPacket {
-                    packet,
-                    decode_cpu_ms: start.elapsed().as_secs_f64() * 1000.0,
-                    wire_bytes: length,
-                    queued_at: Instant::now(),
-                };
-                if sender.send(packet).is_err() || proxy.send_event(UserEvent::PacketReady).is_err()
-                {
-                    break;
-                }
-            }
-        }
+        let _ = inbound::read(&mut input, sender, &credits, || {
+            proxy.send_event(UserEvent::PacketReady).is_ok()
+        });
+        let _ = proxy.send_event(UserEvent::Disconnected);
     });
     receiver
 }
 
 fn decode_packet(bytes: &[u8]) -> Option<ServerPacket> {
     use base64::Engine;
+    if bytes.starts_with(b"WSP1") || bytes.starts_with(b"WSP2") {
+        return scenery::wire::plan(bytes)
+            .ok()
+            .map(ServerPacket::SceneryPlan);
+    }
+    if bytes.starts_with(b"WST1") {
+        return scenery::wire::batch(bytes)
+            .ok()
+            .map(ServerPacket::SceneryTiles);
+    }
     if bytes.starts_with(b"WYC1") {
         return chunk_wire::decode(bytes)
             .ok()
@@ -187,6 +196,11 @@ fn decode_packet(bytes: &[u8]) -> Option<ServerPacket> {
         }],
         ServerPacket::Chunks { chunks } if chunks.len() <= 16 => chunks,
         ServerPacket::Chunks { .. } => return None,
+        ServerPacket::NearView { center, radius }
+            if radius > 10 || center.iter().any(|v| v.unsigned_abs() > 1_000_000) =>
+        {
+            return None;
+        }
         packet => return Some(packet),
     };
     let chunks = chunks
@@ -215,6 +229,8 @@ struct Graphics {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     blended_pipeline: wgpu::RenderPipeline,
+    scenery_pipeline: wgpu::RenderPipeline,
+    scenery: scenery::gpu::Scene,
     blended: transparency::BlendedMeshes,
     depth: wgpu::TextureView,
     camera: wgpu::Buffer,
@@ -223,6 +239,7 @@ struct Graphics {
     culling: bool,
     gpu_timer: Option<gpu_timer::GpuTimer>,
     characters: wgpu::Buffer,
+    capture: Option<frame_capture::Capture>,
 }
 
 impl Graphics {
@@ -258,6 +275,19 @@ impl Graphics {
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
             .ok_or("GPU surface is unavailable")?;
         config.desired_maximum_frame_latency = 2;
+        let mut capture = frame_capture::Capture::from_env();
+        if capture.is_some() {
+            if surface
+                .get_capabilities(&adapter)
+                .usages
+                .contains(wgpu::TextureUsages::COPY_SRC)
+            {
+                config.usage |= wgpu::TextureUsages::COPY_SRC;
+            } else {
+                eprintln!("Frame capture is unavailable on this surface");
+                capture = None;
+            }
+        }
         surface.configure(&device, &config);
         let culling = std::env::var("WYRAM_FRUSTUM_CULLING").as_deref() != Ok("0");
         if let Some(path) = std::env::var_os("WYRAM_CLIENT_METRICS") {
@@ -267,6 +297,10 @@ impl Graphics {
                 "driver_info": info.driver_info, "width": config.width, "height": config.height,
                 "present_mode": format!("{:?}", config.present_mode), "timestamp_queries": timing,
                 "culling": culling, "mesh_upload_limit": meshing::upload_limit(),
+                "scenery_protocol": std::env::var("WYRAM_SCENERY_PROTOCOL").as_deref()!=Ok("0"),
+                "scenery_protocol_version": scenery_protocol(),
+                "flight_benchmark":std::env::var("WYRAM_FLIGHT_BENCHMARK").as_deref()==Ok("1"),
+                "stationary_benchmark":std::env::var("WYRAM_BENCHMARK_STATIONARY").as_deref()==Ok("1"),
                 "chunk_protocol": std::env::var("WYRAM_CHUNK_PROTOCOL").as_deref() != Ok("0") });
             let path = std::path::Path::new(&path).with_extension("adapter.json");
             match std::fs::File::create_new(path)
@@ -340,7 +374,7 @@ impl Graphics {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32Float,
                     depth_write_enabled: Some(!blended),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    depth_compare: Some(wgpu::CompareFunction::Greater),
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
@@ -350,7 +384,9 @@ impl Graphics {
             })
         };
         let pipeline = make_pipeline(false);
-        let blended_pipeline = make_pipeline(true);
+        let scenery = scenery::gpu::Scene::new(&device);
+        let (scenery_pipeline, blended_pipeline) =
+            scenery.pipelines(&device, &camera_layout, config.format, true);
         let depth = Self::create_depth(&device, &config);
         let characters = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Character vertex batch"),
@@ -365,6 +401,8 @@ impl Graphics {
             config,
             pipeline,
             blended_pipeline,
+            scenery_pipeline,
+            scenery,
             blended: transparency::BlendedMeshes::default(),
             depth,
             camera,
@@ -373,6 +411,7 @@ impl Graphics {
             culling,
             gpu_timer,
             characters,
+            capture,
         })
     }
 
@@ -406,6 +445,7 @@ impl Graphics {
     }
 
     fn replace_mesh(&mut self, key: [i32; 3], vertices: &[Vertex]) {
+        self.scenery.near_ready(key);
         self.blended.replace(key, vertices);
         let opaque: Vec<_> = vertices
             .iter()
@@ -427,12 +467,22 @@ impl Graphics {
         }
     }
 
-    fn render(&mut self, position: Vec3, direction: Vec3, characters: &[Vertex]) -> FrameSample {
+    fn render(
+        &mut self,
+        position: Vec3,
+        direction: Vec3,
+        characters: &[Vertex],
+        scenery_distance: f32,
+    ) -> FrameSample {
         let mut stats = FrameSample::default();
+        if let Some(capture) = &self.capture {
+            capture.poll(&self.device);
+        }
         if let Some(timer) = &mut self.gpu_timer {
             stats.gpu_render_ms = timer.collect(&self.device);
         }
         let blended_start = Instant::now();
+        self.scenery.frame(&self.queue, position, scenery_distance);
         let blended = self.blended.prepare(&self.device, &self.queue, position);
         stats.blended_write_bytes = blended.bytes;
         stats.blended_collect_cpu_ms = blended.collect_ms;
@@ -446,7 +496,7 @@ impl Graphics {
                 .write_buffer(&self.characters, 0, bytemuck::cast_slice(characters));
         }
         let aspect = self.config.width as f32 / self.config.height as f32;
-        let matrix = Mat4::perspective_rh(70f32.to_radians(), aspect, 0.05, 512.0)
+        let matrix = Mat4::perspective_infinite_reverse_rh(70f32.to_radians(), aspect, 0.05)
             * Mat4::look_to_rh(position, direction, Vec3::Y);
         let frustum = frustum::Frustum::new(matrix);
         self.queue.write_buffer(
@@ -498,7 +548,7 @@ impl Graphics {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        load: wgpu::LoadOp::Clear(0.0),
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
@@ -522,16 +572,27 @@ impl Graphics {
                 pass.set_vertex_buffer(0, self.characters.slice(..));
                 pass.draw(0..characters.len() as u32, 0..1);
             }
+            pass.set_pipeline(&self.scenery_pipeline);
+            pass.set_bind_group(1, &self.scenery.group, &[]);
+            (stats.scenery_opaque_draws, stats.scenery_opaque_vertices) =
+                self.scenery.draw(&mut pass, &frustum, self.culling);
             pass.set_pipeline(&self.blended_pipeline);
             self.blended.draw(&mut pass);
         }
         if let Some(timer) = &self.gpu_timer {
             timer.resolve(&mut encoder);
         }
+        let capture = self
+            .capture
+            .as_mut()
+            .and_then(|capture| capture.record(&self.device, &mut encoder, &frame.texture));
         let commands = encoder.finish();
         stats.render_encode_cpu_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
         let submit_start = Instant::now();
         self.queue.submit(Some(commands));
+        if let Some(capture) = capture {
+            capture.submitted();
+        }
         if let Some(timer) = &mut self.gpu_timer {
             timer.submitted();
         }
@@ -549,6 +610,9 @@ struct Game {
     inbound_wire_bytes: usize,
     inbound_queue_max_ms: f64,
     world: VoxelWorld,
+    scenery: scenery::view::View,
+    near_view: Option<([i32; 3], u8)>,
+    scenery_meshing: scenery::pipeline::Pipeline,
     position: Vec3,
     yaw: f32,
     pitch: f32,
@@ -570,6 +634,7 @@ struct Game {
     last_redraw: Instant,
     outbound: Option<outbound::Outbound>,
     outbound_error: Option<outbound::SendError>,
+    benchmark: Option<flight_benchmark::FlightBenchmark>,
 }
 
 impl Game {
@@ -582,6 +647,9 @@ impl Game {
             inbound_wire_bytes: 0,
             inbound_queue_max_ms: 0.0,
             world: VoxelWorld::default(),
+            scenery: scenery::view::View::default(),
+            near_view: None,
+            scenery_meshing: scenery::pipeline::Pipeline::new(),
             position: Vec3::new(0.5, 73.0, 0.5),
             yaw: 0.0,
             pitch: -0.15,
@@ -603,6 +671,7 @@ impl Game {
             last_redraw: Instant::now(),
             outbound: None,
             outbound_error: None,
+            benchmark: flight_benchmark::FlightBenchmark::from_env(),
         }
     }
 
@@ -642,7 +711,7 @@ impl Game {
             f32::from(u8::from(self.pressed.contains(&positive)))
                 - f32::from(u8::from(self.pressed.contains(&negative)))
         };
-        let intent = Intent {
+        let mut intent = Intent {
             forward: axis(KeyCode::KeyW, KeyCode::KeyS),
             right: axis(KeyCode::KeyD, KeyCode::KeyA),
             yaw: self.yaw,
@@ -656,6 +725,14 @@ impl Game {
             rolling: self.pressed.contains(&KeyCode::KeyQ),
             cancel_actions: self.cancel_actions,
         };
+        if let Some(benchmark) = &mut self.benchmark
+            && let Some(replay) =
+                benchmark.sample(self.replica.state.as_ref().is_some_and(|s| !s.unavailable))
+        {
+            intent = replay;
+            self.yaw = replay.yaw;
+            self.pitch = replay.pitch;
+        }
         if force
             || self.last_intent != Some(intent)
             || self.last_input.elapsed() >= Duration::from_millis(100)
@@ -692,7 +769,11 @@ impl Game {
 
     fn step(&mut self) {
         self.update_input(false);
-        self.position = self.replica.sample(&self.world);
+        self.position = self
+            .benchmark
+            .as_ref()
+            .and_then(|b| b.observer())
+            .unwrap_or_else(|| self.replica.sample(&self.world));
     }
     fn edit(&mut self, place: bool) {
         let mut previous = None;
@@ -767,6 +848,12 @@ impl ApplicationHandler<UserEvent> for Game {
                 }
                 self.decode_ms += start.elapsed().as_secs_f64() * 1000.0;
             }
+            UserEvent::Packet(ServerPacket::SceneryPlan(plan)) => {
+                self.scenery.replace(plan);
+            }
+            UserEvent::Packet(ServerPacket::SceneryTiles(batch)) => {
+                self.scenery.accept(batch);
+            }
             UserEvent::Packet(ServerPacket::Teleport {
                 x,
                 y,
@@ -774,16 +861,19 @@ impl ApplicationHandler<UserEvent> for Game {
                 yaw,
                 pitch,
             }) => self.apply_teleport(x, y, z, yaw, pitch),
-            UserEvent::Packet(ServerPacket::Hello {
-                colors,
-                descriptors,
-                noncolliding,
-                placeable,
-                characters,
-                models,
-            }) => {
+            UserEvent::Packet(ServerPacket::Hello(hello)) => {
+                let Hello {
+                    colors,
+                    descriptors,
+                    noncolliding,
+                    placeable,
+                    characters,
+                    models,
+                    scenery_planes,
+                } = *hello;
                 self.world.set_palette(colors);
                 self.world.set_descriptors(descriptors, noncolliding);
+                self.scenery_meshing.set_water(scenery_planes, &self.world);
                 self.placeable = placeable
                     .into_iter()
                     .filter(|id| self.world.has_block_id(*id))
@@ -814,11 +904,15 @@ impl ApplicationHandler<UserEvent> for Game {
                     self.decode_ms += start.elapsed().as_secs_f64() * 1000.0;
                 }
             }
+            UserEvent::Packet(ServerPacket::NearView { center, radius }) => {
+                self.near_view = Some((center, radius));
+            }
             UserEvent::Packet(ServerPacket::Forget { key }) => {
                 self.world.forget(key);
                 if let Some(graphics) = self.graphics.as_mut() {
                     graphics.meshes.remove(&key);
                     graphics.blended.replace(key, &[]);
+                    graphics.scenery.forget_near(key);
                 }
             }
             UserEvent::Disconnected => event_loop.exit(),
@@ -911,6 +1005,14 @@ impl ApplicationHandler<UserEvent> for Game {
                 }
             }
             WindowEvent::RedrawRequested => {
+                if self
+                    .benchmark
+                    .as_ref()
+                    .is_some_and(|bench| bench.finished())
+                {
+                    event_loop.exit();
+                    return;
+                }
                 let start = Instant::now();
                 let frame_ms = (start - self.last_redraw).as_secs_f64() * 1000.0;
                 self.last_redraw = start;
@@ -944,8 +1046,30 @@ impl ApplicationHandler<UserEvent> for Game {
                         .update(&mut self.world, center, |key, vertices| {
                             graphics.replace_mesh(key, vertices)
                         });
-                    let render_stats =
-                        graphics.render(view.position, view.direction, &character_vertices);
+                    let selected =
+                        self.scenery_meshing
+                            .update(&self.scenery, &self.world, |key, mesh| {
+                                graphics.scenery.upload(&graphics.device, key, mesh)
+                            });
+                    if let Some((center, radius)) = self.near_view {
+                        graphics.scenery.near_view(center, radius);
+                    }
+                    graphics.scenery.select(
+                        self.scenery_meshing.ready(),
+                        selected,
+                        &mut graphics.blended,
+                    );
+                    let scenery_distance = self
+                        .scenery
+                        .plan
+                        .as_ref()
+                        .map_or(512.0, |plan| f32::from(plan.distance));
+                    let render_stats = graphics.render(
+                        view.position,
+                        view.direction,
+                        &character_vertices,
+                        scenery_distance,
+                    );
                     let outbound = self
                         .outbound
                         .as_ref()
@@ -966,6 +1090,37 @@ impl ApplicationHandler<UserEvent> for Game {
                         loaded_chunks: self.world.chunk_count(),
                         dirty_chunks: self.world.dirty_count(),
                         in_flight: self.meshing.in_flight(),
+                        observer_position: self.position.to_array(),
+                        approved_flight: self
+                            .replica
+                            .state
+                            .as_ref()
+                            .is_some_and(|s| s.mode == "fly"),
+                        benchmark_elapsed_ms: self
+                            .benchmark
+                            .as_ref()
+                            .map_or(0.0, |b| b.elapsed() * 1000.0),
+                        benchmark_phase: self.benchmark.as_ref().map_or("manual", |b| b.phase()),
+                        scenery_update_cpu_ms: self.scenery_meshing.stats.update_ms,
+                        scenery_worker_mesh_ms: self.scenery_meshing.stats.worker_ms,
+                        scenery_upload_cpu_ms: self.scenery_meshing.stats.upload_ms,
+                        scenery_uploads: self.scenery_meshing.stats.uploads,
+                        scenery_upload_bytes: self.scenery_meshing.stats.upload_bytes,
+                        scenery_stale_meshes: self.scenery_meshing.stats.stale,
+                        scenery_degraded_meshes: self.scenery_meshing.stats.degraded,
+                        scenery_degraded_ready_tiles: self.scenery_meshing.degraded_ready(),
+                        scenery_epoch: self.scenery.plan.as_ref().map_or(0, |p| p.epoch),
+                        scenery_planned_tiles: self
+                            .scenery
+                            .plan
+                            .as_ref()
+                            .map_or(0, |p| p.nodes.len()),
+                        scenery_received_tiles: self.scenery.tiles.len(),
+                        scenery_ready_tiles: self.scenery_meshing.ready().len(),
+                        scenery_selected_tiles: self.scenery_meshing.stats.selected,
+                        scenery_in_flight: self.scenery_meshing.in_flight(),
+                        scenery_failed_tiles: self.scenery_meshing.failed(),
+                        scenery_mesh_reserved_bytes: self.scenery_meshing.ready().values().sum(),
                         outbound_queued: outbound.queued,
                         outbound_sent: outbound.sent,
                         outbound_coalesced_inputs: outbound.coalesced_inputs,
@@ -1004,6 +1159,14 @@ impl ApplicationHandler<UserEvent> for Game {
     }
 }
 
+fn scenery_protocol() -> u8 {
+    match std::env::var("WYRAM_SCENERY_PROTOCOL").as_deref() {
+        Ok("0") => 0,
+        Ok("2") => 2,
+        _ => 3,
+    }
+}
+
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     if args.get(1).is_some_and(|arg| arg == "--validate-models") {
@@ -1023,17 +1186,22 @@ fn main() {
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .expect("event loop creation failed");
-    let inbound = start_reader(event_loop.create_proxy());
     let mut game = Game::new();
-    game.inbound = Some(inbound);
     let proxy = event_loop.create_proxy();
     let (outbound, _worker) = outbound::Outbound::start(io::stdout(), move |error| {
         let _ = proxy.send_event(UserEvent::Disconnected);
         eprintln!("engine connection write failed: {error}");
     });
+    game.inbound = Some(start_reader(
+        event_loop.create_proxy(),
+        outbound.scenery_sender(),
+    ));
     game.outbound = Some(outbound);
     if std::env::var("WYRAM_CHUNK_PROTOCOL").as_deref() != Ok("0") {
-        game.send_packet(ClientPacket::Capabilities { chunk_protocol: 1 });
+        game.send_packet(ClientPacket::Capabilities {
+            chunk_protocol: 1,
+            scenery_protocol: scenery_protocol(),
+        });
     }
     event_loop
         .run_app(&mut game)
@@ -1047,6 +1215,67 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hello_keeps_legacy_compatibility_and_reads_configured_surface_planes() {
+        let hello = serde_json::json!({"type":"hello","colors":{},"descriptors":{},"noncolliding":[],
+            "placeable":[],"characters":[]});
+        let super::ServerPacket::Hello(packet) = serde_json::from_value(hello.clone()).unwrap()
+        else {
+            panic!("hello");
+        };
+        assert!(packet.scenery_planes.is_empty());
+        let mut hello = hello;
+        hello["scenery_planes"] = serde_json::json!({"73":-16.25});
+        let super::ServerPacket::Hello(packet) = serde_json::from_value(hello).unwrap() else {
+            panic!("hello");
+        };
+        assert_eq!(packet.scenery_planes["73"], -16.25);
+    }
+    #[test]
+    fn near_view_boundary_reaches_the_renderer_before_chunk_meshes() {
+        assert!(
+            super::decode_packet(br#"{"type":"near_view","center":[-2,14,3],"radius":10}"#)
+                .is_some()
+        );
+    }
+    #[test]
+    fn background_decode_validates_scenery_packets_before_ui_delivery() {
+        let mut bytes = b"WSP1".to_vec();
+        for value in [3u64, 7, 5] {
+            bytes.extend(value.to_be_bytes());
+        }
+        bytes.extend(1024u16.to_be_bytes());
+        for _ in 0..2 {
+            bytes.extend(67_108_864u32.to_be_bytes());
+        }
+        for value in [1u16, 1, 0] {
+            bytes.extend(value.to_be_bytes());
+        }
+        for value in [-1i32, 0, 2] {
+            bytes.extend(value.to_be_bytes());
+        }
+        bytes.extend([1, 0]);
+        assert!(matches!(
+            super::decode_packet(&bytes),
+            Some(super::ServerPacket::SceneryPlan(_))
+        ));
+        bytes.push(0);
+        assert!(super::decode_packet(&bytes).is_none());
+        let key = wyram_core::scenery::TileKey::new([-1, 0, 2], 1).unwrap();
+        let tile = wyram_core::scenery::LodTile::uniform(key, 0).encode();
+        let mut bytes = b"WST1".to_vec();
+        bytes.extend(3u64.to_be_bytes());
+        bytes.extend(11u64.to_be_bytes());
+        bytes.extend(1u16.to_be_bytes());
+        bytes.extend((tile.len() as u32).to_be_bytes());
+        bytes.extend(tile);
+        assert!(matches!(
+            super::decode_packet(&bytes),
+            Some(super::ServerPacket::SceneryTiles(_))
+        ));
+        bytes.push(0);
+        assert!(super::decode_packet(&bytes).is_none());
+    }
     #[test]
     fn background_decode_preserves_json_packed_parity_and_skips_bad_entries() {
         use base64::Engine;

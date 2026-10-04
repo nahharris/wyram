@@ -84,6 +84,11 @@ pub struct MeshJob {
     snapshot: VoxelWorld,
 }
 
+pub struct Presentation {
+    pub colors: Arc<HashMap<u16, [u8; 3]>>,
+    pub descriptors: Arc<HashMap<u16, RenderDescriptor>>,
+}
+
 impl MeshJob {
     pub fn build(&self) -> Vec<Vertex> {
         let data = &self
@@ -112,6 +117,12 @@ const NEIGHBORS: [[i32; 3]; 6] = [
 ];
 
 impl VoxelWorld {
+    pub fn presentation(&self) -> Presentation {
+        Presentation {
+            colors: Arc::clone(&self.colors),
+            descriptors: Arc::clone(&self.descriptors),
+        }
+    }
     pub fn set_descriptors(
         &mut self,
         descriptors: HashMap<String, RenderDescriptor>,

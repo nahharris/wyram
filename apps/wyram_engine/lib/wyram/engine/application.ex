@@ -9,6 +9,7 @@ defmodule Wyram.Engine.Application do
     LiquidSimulation,
     Paths,
     PluginManager,
+    Scenery,
     World
   }
 
@@ -23,7 +24,10 @@ defmodule Wyram.Engine.Application do
       {Registry, keys: :unique, name: Wyram.Engine.RegionRegistry},
       {DynamicSupervisor, strategy: :one_for_one, name: Wyram.Engine.RegionSupervisor},
       {Task.Supervisor, name: Wyram.Engine.StreamSupervisor},
+      {Task.Supervisor, name: Wyram.Engine.ScenerySupervisor, max_children: 2},
       {World, directory: Path.join(data_dir, "worlds")},
+      {Wyram.Engine.Scenery.Store, directory: Path.join([data_dir, "worlds", "scenery-cache"])},
+      {Scenery, []},
       {LiquidSimulation, []},
       {Characters, []},
       ClientPort

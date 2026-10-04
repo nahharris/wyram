@@ -45,7 +45,24 @@ pub struct Outbound {
     shared: Arc<Shared>,
 }
 
+/// A reader may release bounded scenery delivery without owning writer shutdown.
+pub struct ScenerySender {
+    shared: Arc<Shared>,
+}
+
+impl ScenerySender {
+    pub fn send(&self, epoch: u64, delivery: u64) -> Result<(), SendError> {
+        self.shared
+            .send(ClientPacket::SceneryReady { epoch, delivery })
+    }
+}
+
 impl Outbound {
+    pub fn scenery_sender(&self) -> ScenerySender {
+        ScenerySender {
+            shared: self.shared.clone(),
+        }
+    }
     pub fn start<W, F>(mut output: W, on_error: F) -> (Self, JoinHandle<io::Result<W>>)
     where
         W: Write + Send + 'static,
@@ -53,7 +70,7 @@ impl Outbound {
     {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
-                pending: VecDeque::with_capacity(EDIT_CAPACITY + 2),
+                pending: VecDeque::with_capacity(EDIT_CAPACITY + 3),
                 edits: 0,
                 capabilities_announced: false,
                 closing: false,
@@ -110,7 +127,17 @@ impl Outbound {
     }
 
     pub fn send(&self, packet: ClientPacket) -> Result<(), SendError> {
-        let mut state = self.shared.state.lock().unwrap();
+        self.shared.send(packet)
+    }
+
+    pub fn snapshot(&self) -> Snapshot {
+        self.shared.state.lock().unwrap().stats
+    }
+}
+
+impl Shared {
+    fn send(&self, packet: ClientPacket) -> Result<(), SendError> {
+        let mut state = self.state.lock().unwrap();
         if state.failed || state.closing {
             return Err(SendError::Closed);
         }
@@ -137,6 +164,23 @@ impl Outbound {
                 }
                 state.edits += 1;
             }
+            ClientPacket::SceneryReady { epoch, delivery } => {
+                if let Some(index) = state
+                    .pending
+                    .iter()
+                    .position(|p| matches!(p.packet, ClientPacket::SceneryReady { .. }))
+                {
+                    if let ClientPacket::SceneryReady {
+                        epoch: old_epoch,
+                        delivery: old_delivery,
+                    } = state.pending[index].packet
+                        && (epoch, delivery) <= (old_epoch, old_delivery)
+                    {
+                        return Ok(());
+                    }
+                    state.pending.remove(index);
+                }
+            }
         }
         state.pending.push_back(Pending {
             packet,
@@ -144,12 +188,8 @@ impl Outbound {
         });
         state.stats.queued = state.pending.len();
         drop(state);
-        self.shared.ready.notify_one();
+        self.ready.notify_one();
         Ok(())
-    }
-
-    pub fn snapshot(&self) -> Snapshot {
-        self.shared.state.lock().unwrap().stats
     }
 }
 
@@ -175,6 +215,26 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn reader_credit_handle_does_not_own_writer_shutdown() {
+        let (outbound, worker) = Outbound::start(Vec::new(), |_| panic!("write failed"));
+        let credits = outbound.scenery_sender();
+        credits.send(7, 11).expect("reader can release delivery");
+        drop(credits);
+        outbound
+            .send(edit(1))
+            .expect("reader exit does not close owner");
+        let credits = outbound.scenery_sender();
+        drop(outbound);
+        assert_eq!(credits.send(7, 12), Err(SendError::Closed));
+        let packets = decode(&worker.join().unwrap().unwrap());
+        assert_eq!(packets.len(), 2);
+        assert_eq!(packets[0]["type"], "scenery_ready");
+        assert_eq!(packets[0]["epoch"], 7);
+        assert_eq!(packets[0]["delivery"], 11);
+        assert_eq!(packets[1]["type"], "edit");
+    }
 
     fn edit(x: i32) -> ClientPacket {
         ClientPacket::Edit {
@@ -306,7 +366,10 @@ mod tests {
         entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         for _ in 0..1000 {
             outbound
-                .send(ClientPacket::Capabilities { chunk_protocol: 1 })
+                .send(ClientPacket::Capabilities {
+                    chunk_protocol: 1,
+                    scenery_protocol: 1,
+                })
                 .unwrap();
         }
         assert_eq!(outbound.snapshot().queued, 1);
@@ -350,6 +413,51 @@ mod tests {
         assert_eq!(packets[1]["sequence"], 2);
         assert_eq!(packets[1]["flight_request"], 1);
         assert_eq!(packets[1]["jump"], false);
+    }
+
+    #[test]
+    fn scenery_credits_coalesce_without_displacing_edits_or_input() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (outbound, worker) = Outbound::start(
+            GateWriter {
+                entered: entered_tx,
+                release: release_rx,
+                bytes: Vec::new(),
+            },
+            |_| panic!("unexpected connection failure"),
+        );
+        outbound.send(edit(1)).unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        outbound.send(edit(2)).unwrap();
+        outbound.send(input(1, false)).unwrap();
+        for delivery in 1..=1000 {
+            outbound
+                .send(ClientPacket::SceneryReady { epoch: 3, delivery })
+                .unwrap();
+        }
+        outbound
+            .send(ClientPacket::SceneryReady {
+                epoch: 2,
+                delivery: 1001,
+            })
+            .unwrap();
+        outbound
+            .send(ClientPacket::SceneryReady {
+                epoch: 3,
+                delivery: 1,
+            })
+            .unwrap();
+        assert_eq!(outbound.snapshot().queued, 3);
+        release_tx.send(()).unwrap();
+        drop(outbound);
+        let packets = decode(&worker.join().unwrap().unwrap().bytes);
+        assert_eq!(packets.len(), 4);
+        assert_eq!(packets[1]["x"], 2);
+        assert_eq!(packets[2]["type"], "input");
+        assert_eq!(packets[3]["type"], "scenery_ready");
+        assert_eq!(packets[3]["epoch"], 3);
+        assert_eq!(packets[3]["delivery"], 1000);
     }
 
     struct ClosedWriter;
