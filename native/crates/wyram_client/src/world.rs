@@ -10,7 +10,7 @@ use wyram_core::BLOCK_COUNT;
 use wyram_core::{BYTE_COUNT, CHUNK_SIDE};
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, PartialEq, Pod, Zeroable)]
 pub struct Vertex {
     pub(crate) position: [f32; 3],
     pub(crate) color: [f32; 3],
