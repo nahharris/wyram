@@ -118,3 +118,49 @@ mise exec -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bench-s
 
 Each capture records the actual loaded
 generation profile and library hash alongside client and adapter metadata.
+
+## Persistent scenery cache
+
+The optimized saved-edit fetch fixture uses the same seed-2026, 1,018-tile plan
+at `{672, 300, 672}`. Three rounds each measure fetch without a disk store,
+an empty bounded store, then that store after an owner restart. Native generation
+remains optimized in every case. Sample collection and file I/O are included;
+startup and output hashing are excluded.
+
+| Fetch path | Samples ms | Median ms |
+| --- | --- | ---: |
+| No disk store | 2652.672, 2699.776, 2645.913 | 2652.672 |
+| Empty disk store | 3454.668, 3295.436, 3314.995 | 3314.995 |
+| Restarted warm store | 905.728, 911.155, 906.035 | 906.035 |
+
+Warm fetch is 2.93 times faster than no-store fetch in this fixture; initial
+persistence adds approximately 25% to median fetch time. Every result contains
+6,418,312 identical bytes with deterministic binary-list SHA-256
+`8386acbcfe11da4099495f5ce6296251b1b2ef1db0e67d60de67a17c1b795f28`.
+Each warm round reports 1,018 hits and zero misses after restart; storage occupies
+6,491,616 bytes including headers. Reproduce with
+`mise run bench:generation -- -Cache`. Loaded-NIF tracing tests separately prove
+that cache hits bypass generation and an unrelated saved edit does not miss.
+
+Two stationary desktop cold/warm pairs restart the same isolated world and
+cache within each pair. They use optimized generation and rendering, seed 2026,
+the fixed presentation viewpoint `{672.5, 300, 672.5}`, and the same adapter,
+resolution and FIFO presentation as the profile comparison above. Four
+35-second captures produce identical settled BMPs and geometry: 1,018 ready,
+897 selected, 184,026 opaque vertices, 16,123,488 reserved mesh bytes and 22
+degraded tiles. Failures and dropped samples remain zero; jobs stay at most two
+and uploads at most one per redraw.
+
+All-ready times are 13.062/13.107 seconds cold and 13.057/13.069 seconds warm.
+This does not establish a game loading or FPS improvement. Warm runs record
+1,342/1,326 cache hits and 244/232 misses; these totals include transient plans
+at spawn before the authenticated teleport. Cache occupancy stays below 20 MiB.
+The settled 25–35 second frame p95 ranges are 17.35–17.69 ms cold and
+17.29–17.35 ms warm; GPU p95 ranges are 1.07–1.09 ms and 1.05–1.09 ms. The cache
+reduces repeated generation work, while delivery/meshing/upload still require
+separate phase measurements before identifying the game loading bottleneck.
+
+Raw fixture output is ignored at `.tools/distant-scenery/cache-fetch-perf.json`;
+the accepted game captures and summary are under
+`.tools/scenery-flight/cache-a757fce6ad5049f3b24aa7248ee8f752`. An earlier pair
+failed warm positioning through a stale control endpoint and is excluded.

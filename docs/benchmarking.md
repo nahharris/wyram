@@ -11,6 +11,15 @@ Compare on the same machine with alternating profile order and no concurrent
 builds or games. Generation timings exclude startup and output hashing; they
 do not measure actor streaming, meshing, upload or GPU execution.
 
+Pass `-- -Cache` to measure the same scenery plan through the real saved-edit
+fetch path: no disk store, an empty store, then the persisted store after an owner
+restart. Each round uses a new bounded slot directory, asserts identical bytes
+and output hashes, and verifies every warm tile hits with no misses. Timers
+include sample collection, cache calls and file I/O, but exclude owner startup
+and result hashing. The report records cache occupancy and native provenance.
+These timings still exclude delivery, meshing and drawing; measure those with
+matched game captures before making a game loading claim.
+
 The default render view covers 9 by 9 horizontal chunk columns (radius 4). The game's 512-block height spans 32 vertical layers, so a fully streamed view contains 2,592 chunks. Chunk requests remain nearest-first and transport batches remain capped at 16; increasing distance adds work without increasing mesh-worker or upload throughput.
 
 `mise run bench:outbound` compares synchronous sends with background writer admission using the same 64 ordered edit packets and a receiver that delays each flush by 2 ms. Six rounds alternate order, assert packet count/order, and record raw admission latencies and complete drain time under `bench/results/`. Use `-- -Profile dev` for debug or `-- -Output path.jsonl` for a chosen new output. This measures producer responsiveness under controlled backpressure, not faster engine delivery or ordinary FPS. See [outbound design](outbound-ipc.md) for capacity and failure policy. Frame captures now include outbound queue depth, sent/coalesced counters and lifetime queue/write maxima; `perf:report` prints these separately from frame percentiles.

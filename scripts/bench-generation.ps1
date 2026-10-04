@@ -1,5 +1,5 @@
 param([ValidateSet('dev','perf')][string]$Profile = 'perf',
-  [ValidateRange(1,10)][int]$Rounds = 3, [string]$Output)
+  [ValidateRange(1,10)][int]$Rounds = 3, [string]$Output, [switch]$Cache)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $data = Join-Path $root ('.tools\generation-bench\' + [guid]::NewGuid().ToString('N'))
@@ -42,7 +42,8 @@ try {
   $env:WYRAM_GENERATION_BENCH_ROUNDS = [string]$Rounds
   $env:WYRAM_GENERATION_BENCH_OUTPUT = $Output
   Invoke-WithDevelopmentPlugin -Package (Join-Path $root 'dist\wyram.wyrplug') -DataDirectory $data -Run {
-    mix run bench/native_generation.exs
+    $fixture = if ($Cache) { 'bench/scenery_cache.exs' } else { 'bench/native_generation.exs' }
+    mix run $fixture
     if ($LASTEXITCODE -ne 0) { throw 'Generation benchmark failed' }
   }
 } finally {
