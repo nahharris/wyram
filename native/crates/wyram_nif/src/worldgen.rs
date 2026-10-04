@@ -35,7 +35,7 @@ fn field((scale, octaves, salt): FieldWire) -> Field {
         salt,
     }
 }
-pub struct Generation(Generator);
+pub struct Generation(pub(crate) Generator);
 #[rustler::resource_impl]
 impl rustler::Resource for Generation {}
 #[rustler::nif(schedule = "DirtyCpu")]

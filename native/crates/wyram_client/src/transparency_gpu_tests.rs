@@ -17,29 +17,52 @@ fn resident_blended_draw_matches_vertex_reference_pixels() {
     println!("offscreen adapter: {:?}", adapter.get_info());
     let camera = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Parity camera"),
-        contents: bytemuck::cast_slice(&Mat4::IDENTITY.to_cols_array()),
+        contents: bytemuck::bytes_of(&crate::lod_runtime::CameraUniform::disabled(Mat4::IDENTITY)),
         usage: wgpu::BufferUsages::UNIFORM,
     });
     let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Parity camera layout"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: wgpu::BufferSize::new(64),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(128),
+                },
+                count: None,
             },
-            count: None,
-        }],
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(16),
+                },
+                count: None,
+            },
+        ],
+    });
+    let mask = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Disabled coverage"),
+        contents: &[0; 16],
+        usage: wgpu::BufferUsages::STORAGE,
     });
     let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Parity camera group"),
         layout: &camera_layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: camera.as_entire_binding(),
-        }],
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: mask.as_entire_binding(),
+            },
+        ],
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Parity pipeline layout"),

@@ -28,4 +28,10 @@ defmodule Wyram.Engine.ChunkStream do
       {(x - cx) * (x - cx) + (y - cy) * (y - cy) + (z - cz) * (z - cz), y, x, z}
     end)
   end
+
+  def column_order(keys, {cx, cy, cz}) do
+    Enum.sort_by(keys, fn {x, y, z} = key ->
+      {(x - cx) * (x - cx) + (z - cz) * (z - cz), abs(y - cy), key}
+    end)
+  end
 end

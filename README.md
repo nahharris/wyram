@@ -30,6 +30,8 @@ Use `mise run dev:perf` or `mise run dev:agent:perf` for an optimized native cli
 
 Nearby terrain uses a full-height circle with radius 11 chunks by default. Set `WYRAM_NEAR_VIEW_RADIUS` to an integer from 1 to 11 to reduce the radius. Streaming and mesh uploads use bounded admission to keep movement responsive while new terrain loads.
 
+Progressive distant terrain uses 2³, 4³, 8³ and 16³ block cells out to 2, 4, 8 and 16 times the nearby radius. Cells stay aligned to the world grid; distant summaries do not create simulation regions or collision. See [progressive terrain](docs/progressive-terrain.md) for worker settings and staged visual review.
+
 The [gameplay roadmap](docs/gameplay-plan.md) tracks reusable character movement, models, animations and cameras. Walk/run policy and movement tuning live in the public Elixir character profile; a shared fixed-step Elixir owner now controls position and grounded jumping through batched swept collision, providing the foundation for additional traversal. The game includes two original reusable rigs, state-driven animations, and F5 first/third/front camera switching. External mouse-wheel zoom keeps the character head as the edit origin. Use isolated worktrees and PRs targeting the protected main branch for changes.
 
 ## Plugins

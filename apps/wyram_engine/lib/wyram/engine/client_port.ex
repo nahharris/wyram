@@ -8,6 +8,7 @@ defmodule Wyram.Engine.ClientPort do
     ChunkLoader,
     ChunkStream,
     ChunkWire,
+    LodStreamer,
     Native,
     Paths,
     PluginManager,
@@ -24,6 +25,8 @@ defmodule Wyram.Engine.ClientPort do
   end
 
   def snapshot, do: GenServer.call(__MODULE__, :snapshot)
+
+  def publish_lod(payload), do: GenServer.cast(__MODULE__, {:publish_lod, payload})
 
   @spec await_exit() :: {:ok, non_neg_integer()} | {:error, :client_unavailable}
   def await_exit, do: GenServer.call(__MODULE__, :await_exit, :infinity)
@@ -69,12 +72,14 @@ defmodule Wyram.Engine.ClientPort do
 
     Characters.connect()
     player = Enum.find(Characters.latest(), &(&1.id == "player"))
-    {:noreply, stream(state, center(player))}
+    {:noreply, stream(%{state | player: player}, center(player))}
   end
 
   def handle_info({:stream_batch, ref}, %{stream_ref: ref, port: port} = state)
       when not is_nil(port) do
-    {:noreply, %{state | loader: ChunkLoader.dispatch(state.loader)}}
+    loader = ChunkLoader.dispatch(state.loader)
+    LodStreamer.near_busy(near_busy?(loader))
+    {:noreply, %{state | loader: loader}}
   end
 
   def handle_info({:stream_batch, _}, state), do: {:noreply, state}
@@ -84,7 +89,9 @@ defmodule Wyram.Engine.ClientPort do
 
     send_chunks(state, accepted)
     sent = Enum.reduce(accepted, state.sent, fn {key, _}, acc -> MapSet.put(acc, key) end)
-    {:noreply, %{state | sent: sent, loader: ChunkLoader.dispatch(loader)}}
+    loader = ChunkLoader.dispatch(loader)
+    LodStreamer.near_busy(near_busy?(loader))
+    {:noreply, %{state | sent: sent, loader: loader}}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
@@ -174,6 +181,24 @@ defmodule Wyram.Engine.ClientPort do
   end
 
   @impl true
+  def handle_cast({:publish_lod, payload}, state) do
+    if is_binary(payload),
+      do: send_payload(state.port, payload),
+      else: send_packet(state.port, payload)
+
+    next =
+      case payload do
+        %{type: "lod_config", enabled: true} ->
+          state = %{state | prefetch_radius: state.view_radius + 2}
+          if state.center, do: stream(state, state.center), else: state
+
+        _ ->
+          state
+      end
+
+    {:noreply, next}
+  end
+
   def handle_cast({:publish_chunk, key, revision, data}, state) do
     {loader, accepted} = ChunkLoader.publish(state.loader, key, revision)
 
@@ -182,6 +207,7 @@ defmodule Wyram.Engine.ClientPort do
     end
 
     sent = if accepted, do: MapSet.put(state.sent, key), else: state.sent
+    LodStreamer.invalidate(key)
     {:noreply, %{state | loader: loader, sent: sent}}
   end
 
@@ -196,7 +222,8 @@ defmodule Wyram.Engine.ClientPort do
     send_packet(state.port, %{type: "character_states", characters: batch})
     player = Enum.find(batch, &(&1.id == "player"))
     center = center(player)
-    next = if state.center != center, do: stream(state, center), else: state
+    changed = state.center != center or (state.player && state.player.epoch != player.epoch)
+    next = if changed, do: stream(%{state | player: player}, center), else: state
     {:noreply, %{next | player: player}}
   end
 
@@ -205,9 +232,40 @@ defmodule Wyram.Engine.ClientPort do
     state
   end
 
-  defp handle_packet(%{"type" => "capabilities", "chunk_protocol" => 1} = packet, state) do
+  defp handle_packet(%{"type" => "capabilities"} = packet, state) do
+    chunk_protocol = if packet["chunk_protocol"] == 1, do: 1, else: 0
     forget_protocol = if packet["forget_protocol"] == 1, do: 1, else: 0
-    %{state | chunk_protocol: 1, forget_protocol: forget_protocol}
+    state = %{state | chunk_protocol: chunk_protocol, forget_protocol: forget_protocol}
+
+    if packet["lod_protocol"] == 1 do
+      LodStreamer.configure(packet["available_parallelism"])
+      %{state | lod_protocol: 1}
+    else
+      state
+    end
+  end
+
+  defp handle_packet(%{"type" => "lod_ack", "epoch" => epoch, "tiles" => tiles}, state)
+       when is_integer(epoch) and epoch >= 0 and is_list(tiles) and length(tiles) <= 16 do
+    Enum.each(tiles, &acknowledge_lod_tile(epoch, &1))
+
+    state
+  end
+
+  defp handle_packet(%{"type" => "lod_need", "epoch" => epoch, "keys" => keys}, state)
+       when is_integer(epoch) and epoch >= 0 and is_list(keys) and length(keys) <= 16 do
+    keys =
+      Enum.flat_map(keys, fn
+        [size, x, y, z]
+        when size in [2, 4, 8, 16] and is_integer(x) and is_integer(y) and is_integer(z) ->
+          [{size, x, y, z}]
+
+        _ ->
+          []
+      end)
+
+    LodStreamer.request(epoch, keys)
+    state
   end
 
   defp handle_packet(%{"type" => "edit", "x" => x, "y" => y, "z" => z, "id" => id}, state)
@@ -217,6 +275,13 @@ defmodule Wyram.Engine.ClientPort do
   end
 
   defp handle_packet(_, state), do: state
+
+  defp acknowledge_lod_tile(epoch, [size, x, y, z, revision, ready])
+       when size in [2, 4, 8, 16] and is_integer(x) and is_integer(y) and is_integer(z) and
+              is_integer(revision) and revision >= 0 and is_boolean(ready),
+       do: LodStreamer.acknowledge(epoch, {size, x, y, z}, revision, ready)
+
+  defp acknowledge_lod_tile(_, _), do: :ok
 
   defp initial_state(port) do
     watch =
@@ -241,12 +306,14 @@ defmodule Wyram.Engine.ClientPort do
       stream_ref: nil,
       bounds: World.generation().bounds,
       view_radius: ChunkStream.view_radius(),
+      prefetch_radius: ChunkStream.view_radius(),
       player: nil,
       exit_status: nil,
       exit_waiters: [],
       process_watch: watch,
       chunk_protocol: 0,
-      forget_protocol: 0
+      forget_protocol: 0,
+      lod_protocol: 0
     }
   end
 
@@ -259,7 +326,13 @@ defmodule Wyram.Engine.ClientPort do
   defp stream(%{port: nil} = state, _), do: state
 
   defp stream(state, center) do
-    keys = ChunkStream.keys(center, state.bounds, state.view_radius)
+    keys = ChunkStream.keys(center, state.bounds, state.prefetch_radius)
+
+    keys =
+      if state.prefetch_radius > state.view_radius,
+        do: ChunkStream.column_order(keys, center),
+        else: keys
+
     wanted = MapSet.new(keys)
 
     state.sent
@@ -271,14 +344,19 @@ defmodule Wyram.Engine.ClientPort do
     ref = make_ref()
     send(self(), {:stream_batch, ref})
 
-    %{
+    next = %{
       state
       | center: center,
         sent: MapSet.intersection(state.sent, wanted),
         loader: ChunkLoader.reset(state.loader, keys),
         stream_ref: ref
     }
+
+    LodStreamer.view(center, state.player.epoch, near_busy?(next.loader))
+    next
   end
+
+  defp near_busy?(loader), do: loader.pending != [] or map_size(loader.tasks) != 0
 
   defp send_chunk(port, key, revision, data) do
     send_packet(port, %{

@@ -1,3 +1,4 @@
+mod lod;
 mod process_watch;
 mod worldgen;
 

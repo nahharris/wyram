@@ -76,6 +76,7 @@ pub struct VoxelWorld {
     generations: HashMap<[i32; 3], u64>,
     dirty: HashSet<[i32; 3]>,
     epoch: u64,
+    render_circle: Option<([i32; 2], i32)>,
 }
 
 pub struct MeshJob {
@@ -97,7 +98,7 @@ impl MeshJob {
             self.key,
             &self.snapshot.colors,
             &self.snapshot.descriptors,
-            |p| self.snapshot.block(p[0], p[1], p[2]),
+            |p| self.snapshot.render_block(p),
         )
     }
 }
@@ -112,6 +113,103 @@ const NEIGHBORS: [[i32; 3]; 6] = [
 ];
 
 impl VoxelWorld {
+    pub fn lod_materials(
+        &self,
+    ) -> (
+        Arc<crate::lod_client::LodColors>,
+        Arc<crate::lod_client::LodDescriptors>,
+    ) {
+        (Arc::clone(&self.colors), Arc::clone(&self.descriptors))
+    }
+
+    pub fn set_render_circle(&mut self, center: [i32; 2], radius: i32) {
+        let next = Some((center, radius));
+        if self.render_circle == next {
+            return;
+        }
+        let old = self.render_circle;
+        self.render_circle = next;
+        let keys: Vec<_> = self
+            .chunks
+            .keys()
+            .copied()
+            .filter(|key| {
+                NEIGHBORS.into_iter().any(|offset| {
+                    let column = [key[0] + offset[0], key[2] + offset[2]];
+                    Self::in_circle(old, column) != Self::in_circle(next, column)
+                })
+            })
+            .collect();
+        for key in keys {
+            self.invalidate(key);
+        }
+    }
+
+    fn in_circle(circle: Option<([i32; 2], i32)>, column: [i32; 2]) -> bool {
+        circle.is_none_or(|(center, radius)| {
+            let dx = i64::from(column[0]) - i64::from(center[0]);
+            let dz = i64::from(column[1]) - i64::from(center[1]);
+            dx * dx + dz * dz <= i64::from(radius) * i64::from(radius)
+        })
+    }
+
+    fn render_block(&self, p: [i32; 3]) -> u16 {
+        if Self::in_circle(
+            self.render_circle,
+            [p[0].div_euclid(16), p[2].div_euclid(16)],
+        ) {
+            self.block(p[0], p[1], p[2])
+        } else {
+            0
+        }
+    }
+
+    pub fn lod_near_snapshot(&self, low: [i32; 3], high: [i32; 3]) -> Arc<Self> {
+        let low = low.map(|v| v.div_euclid(16));
+        let high = high.map(|v| v.div_euclid(16));
+        let mut chunks = HashMap::new();
+        for x in low[0]..=high[0] {
+            for z in low[2]..=high[2] {
+                if !Self::in_circle(self.render_circle, [x, z]) {
+                    continue;
+                }
+                for y in low[1]..=high[1] {
+                    let key = [x, y, z];
+                    if let Some(chunk) = self.chunks.get(&key) {
+                        chunks.insert(key, Arc::clone(chunk));
+                    }
+                }
+            }
+        }
+        Arc::new(Self {
+            chunks,
+            colors: Arc::clone(&self.colors),
+            descriptors: Arc::clone(&self.descriptors),
+            ..Self::default()
+        })
+    }
+
+    pub fn lod_boundary_cell(&self, p: [i32; 3]) -> Option<crate::lod_mesh::BoundaryCell> {
+        let chunk = p.map(|v| v.div_euclid(16));
+        if !self.chunks.contains_key(&chunk) {
+            return None;
+        }
+        let id = self.block(p[0], p[1], p[2]);
+        let liquid = id != 0 && self.descriptors.get(&id).is_some_and(|d| d.liquid != 0);
+        Some(crate::lod_mesh::BoundaryCell {
+            origin: p,
+            size: 1,
+            cell: wyram_core::lod::Cell {
+                material: if liquid { 0 } else { id },
+                top_material: if liquid { 0 } else { id },
+                liquid: if liquid { id } else { 0 },
+                coverage: if id != 0 { 255 } else { 0 },
+                solid_height: u8::from(id != 0 && !liquid),
+                liquid_height: u8::from(liquid),
+                reserved: 0,
+            },
+        })
+    }
     pub fn set_descriptors(
         &mut self,
         descriptors: HashMap<String, RenderDescriptor>,
@@ -223,6 +321,7 @@ impl VoxelWorld {
                 colors: Arc::clone(&self.colors),
                 descriptors: Arc::clone(&self.descriptors),
                 noncolliding: Arc::clone(&self.noncolliding),
+                render_circle: self.render_circle,
                 ..Self::default()
             },
         })
@@ -452,6 +551,22 @@ mod tests {
         assert_eq!(world.mesh_job([0, 0, 0]).unwrap().build().len(), 30);
         world.forget([1, 0, 0]);
         assert_eq!(world.mesh_job([0, 0, 0]).unwrap().build().len(), 36);
+    }
+
+    #[test]
+    fn hidden_prefetch_does_not_remove_the_visible_near_boundary_wall() {
+        let mut world = VoxelWorld::default();
+        world.receive_chunk([1, 0, 0], 0, &encoded_block(15));
+        world.receive_chunk([2, 0, 0], 0, &encoded_block(0));
+        assert_eq!(world.mesh_job([1, 0, 0]).unwrap().build().len(), 30);
+        world.set_render_circle([0, 0], 1);
+        let old = world.mesh_job([1, 0, 0]).unwrap();
+        assert_eq!(old.build().len(), 36);
+        assert_eq!(world.block(32, 0, 0), 1);
+        world.set_render_circle([1, 0], 1);
+        assert!(!world.mesh_is_current(old.key, old.generation));
+        assert_eq!(old.build().len(), 36);
+        assert_eq!(world.mesh_job([1, 0, 0]).unwrap().build().len(), 30);
     }
 
     #[test]

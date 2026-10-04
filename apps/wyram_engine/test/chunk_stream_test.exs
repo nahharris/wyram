@@ -45,4 +45,35 @@ defmodule Wyram.Engine.ChunkStreamTest do
     refute Enum.any?(keys, &(elem(&1, 1) in [-13, 20]))
     assert MapSet.new(keys) == MapSet.new(ChunkStream.keys({0, 18, 0}, {-192, 319}, 2))
   end
+
+  test "prefetch ordering completes inner full-height columns before farther columns" do
+    center = {-3, -1, 5}
+
+    keys = for {x, z} <- [{-1, 5}, {-3, 6}, {-3, 5}, {-4, 5}], y <- -2..0, do: {x, y, z}
+
+    assert ChunkStream.column_order(keys, center) == [
+             {-3, -1, 5},
+             {-3, -2, 5},
+             {-3, 0, 5},
+             {-4, -1, 5},
+             {-3, -1, 6},
+             {-4, -2, 5},
+             {-4, 0, 5},
+             {-3, -2, 6},
+             {-3, 0, 6},
+             {-1, -1, 5},
+             {-1, -2, 5},
+             {-1, 0, 5}
+           ]
+  end
+
+  test "baseline chunk ordering stays three-dimensional and deterministic" do
+    assert ChunkStream.keys({-3, -1, 5}, {-16, -1}, 1) == [
+             {-3, -1, 5},
+             {-4, -1, 5},
+             {-3, -1, 4},
+             {-3, -1, 6},
+             {-2, -1, 5}
+           ]
+  end
 end
