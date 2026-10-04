@@ -24,7 +24,12 @@ foreach ($snapshot in $snapshots.Values) {
     if (-not (Test-Path -LiteralPath (Join-Path $snapshot $file))) { throw "Snapshot missing $file" }
   }
 }
-$variables = @('MIX_ENV','MIX_BUILD_PATH','WYRAM_DATA_DIR','WYRAM_CLIENT','WYRAM_CLIENT_METRICS','WYRAM_FLIGHT_PHASES','WYRAM_FLIGHT_HEIGHT_OFFSET','WYRAM_CONTROL_PORT','ELIXIR_ERL_OPTIONS','WYRAM_STREAM_RESPONSIVENESS','WYRAM_FRUSTUM_CULLING','WYRAM_CHUNK_PROTOCOL','WYRAM_MESH_UPLOAD_LIMIT','WYRAM_ROUTE_STARTUP_MS','WYRAM_ROUTE_DRAIN_MS')
+$variables = @('MIX_ENV','MIX_BUILD_PATH','WYRAM_DATA_DIR','WYRAM_CLIENT','WYRAM_CLIENT_METRICS','WYRAM_FLIGHT_PHASES','WYRAM_FLIGHT_HEIGHT_OFFSET','WYRAM_CONTROL_PORT','ELIXIR_ERL_OPTIONS','WYRAM_STREAM_RESPONSIVENESS','WYRAM_FRUSTUM_CULLING','WYRAM_CHUNK_PROTOCOL','WYRAM_MESH_UPLOAD_LIMIT','WYRAM_ROUTE_STARTUP_MS','WYRAM_ROUTE_DRAIN_MS','WYRAM_NEAR_VIEW_RADIUS')
+$baselineMetadata = Get-Content -LiteralPath "$($snapshots.baseline)\metadata.json" -Raw | ConvertFrom-Json
+$candidateMetadata = Get-Content -LiteralPath "$($snapshots.candidate)\metadata.json" -Raw | ConvertFrom-Json
+if ($Workload -eq 'desktop' -and ($baselineMetadata.near_view_shape -ne $candidateMetadata.near_view_shape -or $baselineMetadata.columns -ne $candidateMetadata.columns)) {
+  throw 'Desktop snapshots must have matching view shape and column count'
+}
 $previous = @{}
 foreach ($name in $variables) { $previous[$name] = [Environment]::GetEnvironmentVariable($name,'Process') }
 Push-Location $root
@@ -42,6 +47,7 @@ try {
       $env:WYRAM_FRUSTUM_CULLING = if ($metadata.PSObject.Properties.Name -contains 'frustum_culling') { [string]$metadata.frustum_culling } else { $null }
       $env:WYRAM_CHUNK_PROTOCOL = if ($metadata.PSObject.Properties.Name -contains 'chunk_protocol') { [string]$metadata.chunk_protocol } else { $null }
       $env:WYRAM_MESH_UPLOAD_LIMIT = if ($metadata.PSObject.Properties.Name -contains 'mesh_upload_limit') { [string]$metadata.mesh_upload_limit } else { $null }
+      $env:WYRAM_NEAR_VIEW_RADIUS = if ($metadata.PSObject.Properties.Name -contains 'near_view_radius') { [string]$metadata.near_view_radius } else { '4' }
       $env:MIX_ENV = 'dev'
       $env:MIX_BUILD_PATH = "$snapshot\mix-build\dev"
       $env:WYRAM_DATA_DIR = "$run\data"
@@ -59,7 +65,8 @@ try {
       if ($phases.nif_sha256 -ne $metadata.nif_sha256) { throw 'Loaded NIF differs from the snapshot metadata' }
       if ($Workload -eq 'worldgen') {
         if ($null -eq $inventoryDigest) { $inventoryDigest = $phases.digest }
-        if ($phases.digest -ne $inventoryDigest -or $phases.chunks -ne $metadata.chunks) { throw 'Worldgen output parity failed' }
+        $worldgenChunks = if ($metadata.PSObject.Properties.Name -contains 'worldgen_chunks') { $metadata.worldgen_chunks } else { $metadata.chunks }
+        if ($phases.digest -ne $inventoryDigest -or $phases.chunks -ne $worldgenChunks) { throw 'Worldgen output parity failed' }
       }
     }
   }

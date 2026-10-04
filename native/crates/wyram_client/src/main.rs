@@ -70,6 +70,9 @@ enum ServerPacket {
     Forget {
         key: [i32; 3],
     },
+    ForgetChunks {
+        keys: Vec<[i32; 3]>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,6 +103,7 @@ struct Intent {
 enum ClientPacket {
     Capabilities {
         chunk_protocol: u8,
+        forget_protocol: u8,
     },
     Input {
         sequence: u64,
@@ -118,7 +122,6 @@ enum ClientPacket {
 #[derive(Debug)]
 enum UserEvent {
     PacketReady,
-    Packet(ServerPacket),
     Disconnected,
 }
 
@@ -176,6 +179,7 @@ fn decode_packet(bytes: &[u8]) -> Option<ServerPacket> {
     }
     let packet: ServerPacket = serde_json::from_slice(bytes).ok()?;
     let chunks = match packet {
+        ServerPacket::ForgetChunks { ref keys } if keys.len() > 16 => return None,
         ServerPacket::Chunk {
             key,
             revision,
@@ -573,6 +577,96 @@ struct Game {
 }
 
 impl Game {
+    // FIFO admission is bounded by both time and count. Packet-ready events
+    // only request a redraw, so a burst cannot postpone rendering indefinitely.
+    fn receive_packets(&mut self) {
+        let start = Instant::now();
+        for _ in 0..32 {
+            if start.elapsed() >= Duration::from_millis(1) {
+                break;
+            }
+            let Some(packet) = self.inbound.as_ref().and_then(|r| r.try_recv().ok()) else {
+                break;
+            };
+            self.inbound_decode_ms += packet.decode_cpu_ms;
+            self.inbound_wire_bytes += packet.wire_bytes;
+            self.inbound_queue_max_ms = self
+                .inbound_queue_max_ms
+                .max(packet.queued_at.elapsed().as_secs_f64() * 1000.0);
+            self.apply_server_packet(packet.packet);
+        }
+    }
+
+    fn apply_server_packet(&mut self, packet: ServerPacket) {
+        match packet {
+            ServerPacket::PackedChunks { chunks } => {
+                let start = Instant::now();
+                for chunk in chunks {
+                    self.world
+                        .receive_packed(chunk.key, chunk.revision, chunk.data);
+                }
+                self.decode_ms += start.elapsed().as_secs_f64() * 1000.0;
+            }
+            ServerPacket::Teleport {
+                x,
+                y,
+                z,
+                yaw,
+                pitch,
+            } => self.apply_teleport(x, y, z, yaw, pitch),
+            ServerPacket::Hello {
+                colors,
+                descriptors,
+                noncolliding,
+                placeable,
+                characters,
+                models,
+            } => {
+                self.world.set_palette(colors);
+                self.world.set_descriptors(descriptors, noncolliding);
+                self.placeable = placeable
+                    .into_iter()
+                    .filter(|id| self.world.has_block_id(*id))
+                    .collect();
+                self.selected = self.placeable.first().copied().unwrap_or(0);
+                self.characters.models(models);
+                self.accept_characters(characters);
+            }
+            ServerPacket::CharacterStates { characters } => self.accept_characters(characters),
+            ServerPacket::Chunk {
+                key,
+                revision,
+                data,
+            } => {
+                let start = Instant::now();
+                self.world.receive_chunk(key, revision, &data);
+                self.decode_ms += start.elapsed().as_secs_f64() * 1000.0;
+            }
+            ServerPacket::Chunks { chunks } => {
+                if chunks.len() <= 16 {
+                    let start = Instant::now();
+                    for chunk in chunks {
+                        self.world
+                            .receive_chunk(chunk.key, chunk.revision, &chunk.data);
+                    }
+                    self.decode_ms += start.elapsed().as_secs_f64() * 1000.0;
+                }
+            }
+            ServerPacket::Forget { key } => {
+                self.world.forget(key);
+                if let Some(graphics) = self.graphics.as_mut() {
+                    graphics.meshes.remove(&key);
+                    graphics.blended.replace(key, &[]);
+                }
+            }
+            ServerPacket::ForgetChunks { keys } => {
+                for key in keys {
+                    self.apply_server_packet(ServerPacket::Forget { key });
+                }
+            }
+        }
+    }
+
     fn new() -> Self {
         Self {
             window: None,
@@ -750,81 +844,13 @@ impl ApplicationHandler<UserEvent> for Game {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::PacketReady => {
-                if let Some(packet) = self.inbound.as_ref().and_then(|r| r.try_recv().ok()) {
-                    self.inbound_decode_ms += packet.decode_cpu_ms;
-                    self.inbound_wire_bytes += packet.wire_bytes;
-                    self.inbound_queue_max_ms = self
-                        .inbound_queue_max_ms
-                        .max(packet.queued_at.elapsed().as_secs_f64() * 1000.0);
-                    self.user_event(event_loop, UserEvent::Packet(packet.packet));
-                }
-            }
-            UserEvent::Packet(ServerPacket::PackedChunks { chunks }) => {
-                let start = Instant::now();
-                for chunk in chunks {
-                    self.world
-                        .receive_packed(chunk.key, chunk.revision, chunk.data);
-                }
-                self.decode_ms += start.elapsed().as_secs_f64() * 1000.0;
-            }
-            UserEvent::Packet(ServerPacket::Teleport {
-                x,
-                y,
-                z,
-                yaw,
-                pitch,
-            }) => self.apply_teleport(x, y, z, yaw, pitch),
-            UserEvent::Packet(ServerPacket::Hello {
-                colors,
-                descriptors,
-                noncolliding,
-                placeable,
-                characters,
-                models,
-            }) => {
-                self.world.set_palette(colors);
-                self.world.set_descriptors(descriptors, noncolliding);
-                self.placeable = placeable
-                    .into_iter()
-                    .filter(|id| self.world.has_block_id(*id))
-                    .collect();
-                self.selected = self.placeable.first().copied().unwrap_or(0);
-                self.characters.models(models);
-                self.accept_characters(characters);
-            }
-            UserEvent::Packet(ServerPacket::CharacterStates { characters }) => {
-                self.accept_characters(characters)
-            }
-            UserEvent::Packet(ServerPacket::Chunk {
-                key,
-                revision,
-                data,
-            }) => {
-                let start = Instant::now();
-                self.world.receive_chunk(key, revision, &data);
-                self.decode_ms += start.elapsed().as_secs_f64() * 1000.0;
-            }
-            UserEvent::Packet(ServerPacket::Chunks { chunks }) => {
-                if chunks.len() <= 16 {
-                    let start = Instant::now();
-                    for chunk in chunks {
-                        self.world
-                            .receive_chunk(chunk.key, chunk.revision, &chunk.data);
-                    }
-                    self.decode_ms += start.elapsed().as_secs_f64() * 1000.0;
-                }
-            }
-            UserEvent::Packet(ServerPacket::Forget { key }) => {
-                self.world.forget(key);
-                if let Some(graphics) = self.graphics.as_mut() {
-                    graphics.meshes.remove(&key);
-                    graphics.blended.replace(key, &[]);
+                if let Some(window) = &self.window {
+                    window.request_redraw();
                 }
             }
             UserEvent::Disconnected => event_loop.exit(),
         }
     }
-
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.window.as_ref().map(|window| window.id()) != Some(id) {
             return;
@@ -914,6 +940,7 @@ impl ApplicationHandler<UserEvent> for Game {
                 let start = Instant::now();
                 let frame_ms = (start - self.last_redraw).as_secs_f64() * 1000.0;
                 self.last_redraw = start;
+                self.receive_packets();
                 self.step();
                 let direction = self.direction();
                 let radius = self.replica.state.as_ref().map_or(0.28, |s| s.radius);
@@ -1033,7 +1060,10 @@ fn main() {
     });
     game.outbound = Some(outbound);
     if std::env::var("WYRAM_CHUNK_PROTOCOL").as_deref() != Ok("0") {
-        game.send_packet(ClientPacket::Capabilities { chunk_protocol: 1 });
+        game.send_packet(ClientPacket::Capabilities {
+            chunk_protocol: 1,
+            forget_protocol: 1,
+        });
     }
     event_loop
         .run_app(&mut game)
@@ -1047,6 +1077,43 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unload_batches_are_bounded_and_keep_legacy_support() {
+        let packet = serde_json::json!({"type":"forget_chunks","keys":[[-1,-12,0],[0,19,0]]});
+        assert!(super::decode_packet(&serde_json::to_vec(&packet).unwrap()).is_some());
+        let oversized = serde_json::json!({"type":"forget_chunks","keys":vec![[0,0,0];17]});
+        assert!(super::decode_packet(&serde_json::to_vec(&oversized).unwrap()).is_none());
+        assert!(super::decode_packet(br#"{"type":"forget","key":[0,0,0]}"#).is_some());
+    }
+
+    #[test]
+    fn inbound_bursts_leave_work_for_the_next_frame_in_wire_order() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut game = super::Game::new();
+        let count = 100;
+        for x in 0..count {
+            game.world
+                .receive_packed([x, 0, 0], 0, vec![0; wyram_core::BYTE_COUNT]);
+            sender
+                .send(super::ReceivedPacket {
+                    packet: super::ServerPacket::Forget { key: [x, 0, 0] },
+                    decode_cpu_ms: 0.0,
+                    wire_bytes: 0,
+                    queued_at: std::time::Instant::now(),
+                })
+                .unwrap();
+        }
+        game.inbound = Some(receiver);
+        game.receive_packets();
+        let remaining = game.world.chunk_count();
+        assert!(remaining > 0 && remaining < count as usize);
+        assert!(game.world.mesh_job([0, 0, 0]).is_none());
+        assert!(game.world.mesh_job([count - 1, 0, 0]).is_some());
+        while game.world.chunk_count() > 0 {
+            game.receive_packets();
+        }
+    }
+
     #[test]
     fn background_decode_preserves_json_packed_parity_and_skips_bad_entries() {
         use base64::Engine;

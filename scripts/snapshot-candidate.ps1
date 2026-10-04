@@ -5,7 +5,8 @@ param(
   [ValidateSet('debug','release')][string]$EngineProfile = 'debug',
   [ValidateSet(0,1)][int]$FrustumCulling = 1,
   [ValidateSet(0,1)][int]$ChunkProtocol = 1,
-  [ValidateRange(1,8)][int]$MeshUploadLimit = 8
+  [ValidateRange(1,8)][int]$MeshUploadLimit = 8,
+  [ValidateRange(1,11)][int]$NearViewRadius = 11
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -32,7 +33,14 @@ Copy-Item -LiteralPath $nifPath -Destination "$destination\mix-build\dev\lib\wyr
 Copy-Item -LiteralPath $package -Destination "$destination\wyram.wyrplug"
 $commit = git -C $root rev-parse HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Cannot identify snapshot commit' }
-@{commit=$commit; profile=$Profile; engine_profile=$EngineProfile; columns=81; chunks=2592;
+$columns = 0
+foreach ($x in (-$NearViewRadius)..$NearViewRadius) {
+  foreach ($z in (-$NearViewRadius)..$NearViewRadius) {
+    if ($x * $x + $z * $z -le $NearViewRadius * $NearViewRadius) { $columns++ }
+  }
+}
+@{commit=$commit; profile=$Profile; engine_profile=$EngineProfile; columns=$columns; chunks=($columns * 32);
+  near_view_radius=$NearViewRadius; near_view_shape='circle'; worldgen_chunks=2592;
   client_sha256=(Get-Checksum $client); nif_sha256=(Get-Checksum $nifPath);
   frustum_culling=$FrustumCulling; chunk_protocol=$ChunkProtocol; mesh_upload_limit=$MeshUploadLimit
 } | ConvertTo-Json | Set-Content -LiteralPath "$destination\metadata.json" -Encoding UTF8

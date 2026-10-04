@@ -306,7 +306,10 @@ mod tests {
         entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         for _ in 0..1000 {
             outbound
-                .send(ClientPacket::Capabilities { chunk_protocol: 1 })
+                .send(ClientPacket::Capabilities {
+                    chunk_protocol: 1,
+                    forget_protocol: 1,
+                })
                 .unwrap();
         }
         assert_eq!(outbound.snapshot().queued, 1);
