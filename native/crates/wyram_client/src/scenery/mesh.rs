@@ -4,6 +4,22 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use wyram_core::scenery::LodTile;
 
+#[derive(Debug)]
+pub struct Neighbor {
+    pub tile: Arc<LodTile>,
+    // A retained parent does not prove that its selected children cover a face.
+    pub opaque_occlusion: bool,
+}
+
+impl From<Arc<LodTile>> for Neighbor {
+    fn from(tile: Arc<LodTile>) -> Self {
+        Self {
+            tile,
+            opaque_occlusion: true,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Pod, Zeroable)]
 pub struct ProxyVertex {
@@ -62,7 +78,7 @@ pub fn build_with_neighbors(
     descriptors: &HashMap<u16, RenderDescriptor>,
     water: &HashMap<u16, f32>,
     budget: usize,
-    neighbors: &[Arc<LodTile>],
+    neighbors: &[Neighbor],
 ) -> Result<Mesh, &'static str> {
     if tile.occupied() == 0 {
         return Ok(Mesh {
@@ -164,24 +180,32 @@ struct Grid<'a> {
     origin: [f32; 3],
     descriptors: &'a HashMap<u16, RenderDescriptor>,
     water: &'a HashMap<u16, f32>,
-    neighbors: &'a [Arc<LodTile>],
+    neighbors: &'a [Neighbor],
 }
 
 impl Grid<'_> {
+    fn neighbor(&self, p: [i32; 3]) -> Option<&Neighbor> {
+        if p.iter().all(|&v| (0..self.side as i32).contains(&v)) {
+            return None;
+        }
+        let world: [f32; 3] =
+            std::array::from_fn(|i| self.origin[i] + (p[i] as f32 + 0.5) * self.step);
+        self.neighbors
+            .iter()
+            .filter(|neighbor| {
+                let tile = &neighbor.tile;
+                let low = tile.key().origin().map(|v| v as f32);
+                let width = f32::from(tile.key().scale()) * 16.0;
+                (0..3).all(|i| world[i] >= low[i] && world[i] < low[i] + width)
+            })
+            .min_by_key(|neighbor| neighbor.tile.key().level())
+    }
     fn get(&self, p: [i32; 3]) -> u16 {
         if p.iter().any(|&v| !(0..self.side as i32).contains(&v)) {
             let world: [f32; 3] =
                 std::array::from_fn(|i| self.origin[i] + (p[i] as f32 + 0.5) * self.step);
-            let neighbor = self
-                .neighbors
-                .iter()
-                .filter(|tile| {
-                    let low = tile.key().origin().map(|v| v as f32);
-                    let width = f32::from(tile.key().scale()) * 16.0;
-                    (0..3).all(|i| world[i] >= low[i] && world[i] < low[i] + width)
-                })
-                .min_by_key(|tile| tile.key().level());
-            return neighbor.map_or(0, |tile| {
+            return self.neighbor(p).map_or(0, |neighbor| {
+                let tile = &neighbor.tile;
                 let low = tile.key().origin().map(|v| v as f32);
                 let half = f32::from(tile.key().scale()) * 0.5;
                 let p: [usize; 3] =
@@ -227,8 +251,10 @@ impl Grid<'_> {
         let adjacent = std::array::from_fn(|i| p[i] + offset[i]);
         let other = self.get(adjacent);
         let od = self.descriptor(other);
+        let opaque_occlusion = self.neighbor(adjacent).is_none_or(|n| n.opaque_occlusion);
         let top = self.height(p, material);
         let same = other != 0
+            && (od.opacity != 255 || opaque_occlusion)
             && if d.liquid != 0 {
                 od.liquid == d.liquid
             } else {
@@ -248,7 +274,7 @@ impl Grid<'_> {
         if (same && side && lower >= top)
             || (same && offset[1] == 1 && top == 1.0)
             || (same && offset[1] == -1 && other_height == 1.0)
-            || (!same && other != 0 && od.opacity == 255 && other_height == 1.0)
+            || (!same && other != 0 && od.opacity == 255 && opaque_occlusion && other_height == 1.0)
         {
             return None;
         }
@@ -284,7 +310,7 @@ fn build_grid(
     water: &HashMap<u16, f32>,
     side: usize,
     budget: usize,
-    neighbors: &[Arc<LodTile>],
+    neighbors: &[Neighbor],
 ) -> Option<Mesh> {
     let (cells, top) = grid(tile, side);
     let grid = Grid {
@@ -481,6 +507,40 @@ mod tests {
     }
 
     #[test]
+    fn refining_liquid_neighbors_only_retain_walls_when_the_summary_is_opaque() {
+        let left = LodTile::uniform(TileKey::new([-1, -1, -1], 2).unwrap(), 17);
+        let right = Arc::new(LodTile::uniform(TileKey::new([0, -1, -1], 2).unwrap(), 17));
+        for opacity in [160, 255] {
+            let descriptors = HashMap::from([(
+                17,
+                RenderDescriptor {
+                    opacity,
+                    emissive: false,
+                    height: 1.0,
+                    liquid: 1,
+                },
+            )]);
+            let mesh = build_with_neighbors(
+                &left,
+                &colors(),
+                &descriptors,
+                &HashMap::from([(17, 0.75)]),
+                2 << 20,
+                &[Neighbor {
+                    tile: Arc::clone(&right),
+                    opaque_occlusion: false,
+                }],
+            )
+            .unwrap();
+            assert_eq!(
+                mesh.vertices.iter().any(|v| v.normal[0] == 127),
+                opacity == 255,
+                "opaque liquid summaries cannot prove child coverage; translucent water keeps shared-wall culling"
+            );
+        }
+    }
+
+    #[test]
     fn adjacent_liquid_tiles_hide_their_shared_wall_but_keep_the_outer_surface() {
         let left = Arc::new(LodTile::uniform(TileKey::new([-1, -1, -1], 1).unwrap(), 17));
         let right = Arc::new(LodTile::uniform(TileKey::new([0, -1, -1], 1).unwrap(), 17));
@@ -500,7 +560,7 @@ mod tests {
             &desc,
             &planes,
             1 << 20,
-            &[Arc::clone(&right)],
+            &[Arc::clone(&right).into()],
         )
         .unwrap();
         let b = build_with_neighbors(
@@ -509,7 +569,7 @@ mod tests {
             &desc,
             &planes,
             1 << 20,
-            &[Arc::clone(&left)],
+            &[Arc::clone(&left).into()],
         )
         .unwrap();
         assert!(

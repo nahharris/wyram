@@ -23,14 +23,18 @@ struct Forest {
     budget: usize,
 }
 
-fn neighbor_keys(key: TileKey, wanted: &HashSet<TileKey>) -> Vec<TileKey> {
+fn neighbor_keys(
+    key: TileKey,
+    wanted: &HashSet<TileKey>,
+    refined: &HashSet<TileKey>,
+) -> Vec<(TileKey, bool)> {
     let mut neighbors = Vec::new();
     for (offset, _, _) in crate::chunk_mesh::FACES {
         let position = std::array::from_fn(|i| key.position()[i] + offset[i]);
         let mut adjacent = TileKey::new(position, key.level()).unwrap();
         loop {
             if wanted.contains(&adjacent) {
-                neighbors.push(adjacent);
+                neighbors.push((adjacent, !refined.contains(&adjacent)));
                 break;
             }
             if adjacent.level() >= 6 {
@@ -39,7 +43,7 @@ fn neighbor_keys(key: TileKey, wanted: &HashSet<TileKey>) -> Vec<TileKey> {
             adjacent = adjacent.parent().unwrap();
         }
     }
-    neighbors.sort_by_key(|key| (key.level(), key.position()));
+    neighbors.sort_by_key(|(key, _)| (key.level(), key.position()));
     neighbors.dedup();
     neighbors
 }
@@ -92,17 +96,28 @@ impl Forest {
             budget: (plan.mesh_bytes / chosen.len().max(1)).min(MAX_JOB_BYTES),
         }
     }
-    fn selected(&self, ready: &HashMap<TileKey, usize>) -> Vec<TileKey> {
-        fn visit(f: &Forest, i: usize, ready: &HashMap<TileKey, usize>, out: &mut Vec<TileKey>) {
+    fn selected(
+        &self,
+        ready: &HashMap<TileKey, usize>,
+        blocked: &HashSet<TileKey>,
+    ) -> Vec<TileKey> {
+        fn visit(
+            f: &Forest,
+            i: usize,
+            ready: &HashMap<TileKey, usize>,
+            blocked: &HashSet<TileKey>,
+            out: &mut Vec<TileKey>,
+        ) {
             let node = &f.nodes[i];
             if !node.children.is_empty()
+                && !blocked.contains(&node.key)
                 && node
                     .children
                     .iter()
                     .all(|&c| ready.contains_key(&f.nodes[c].key))
             {
                 for &child in &node.children {
-                    visit(f, child, ready, out);
+                    visit(f, child, ready, blocked, out);
                 }
             } else if ready.contains_key(&node.key) {
                 out.push(node.key);
@@ -110,7 +125,7 @@ impl Forest {
         }
         let mut selected = Vec::new();
         for &root in &self.roots {
-            visit(self, root, ready, &mut selected);
+            visit(self, root, ready, blocked, &mut selected);
         }
         selected
     }
@@ -124,14 +139,14 @@ struct Job {
     descriptors: Arc<HashMap<u16, RenderDescriptor>>,
     water: Arc<HashMap<u16, f32>>,
     budget: usize,
-    neighbors: Vec<Arc<LodTile>>,
+    neighbors: Vec<mesh::Neighbor>,
 }
 struct ResultMesh {
     key: TileKey,
     generation: u64,
     mesh: Result<Mesh, &'static str>,
     mesh_ms: f64,
-    neighbors: Vec<TileKey>,
+    neighbors: Vec<(TileKey, bool)>,
     budget: usize,
 }
 
@@ -155,10 +170,11 @@ pub struct Pipeline {
     in_flight: HashMap<TileKey, u64>,
     deferred: VecDeque<ResultMesh>,
     ready: HashMap<TileKey, usize>,
-    ready_neighbors: HashMap<TileKey, Vec<TileKey>>,
+    ready_neighbors: HashMap<TileKey, Vec<(TileKey, bool)>>,
     degraded: HashMap<TileKey, usize>,
     dirty: HashSet<TileKey>,
     planned: HashSet<TileKey>,
+    refined: HashSet<TileKey>,
     failed: HashSet<TileKey>,
     forest: Forest,
     epoch: u64,
@@ -200,7 +216,13 @@ impl Pipeline {
                                 generation: job.generation,
                                 mesh,
                                 mesh_ms: start.elapsed().as_secs_f64() * 1000.0,
-                                neighbors: job.neighbors.iter().map(|tile| tile.key()).collect(),
+                                neighbors: job
+                                    .neighbors
+                                    .iter()
+                                    .map(|neighbor| {
+                                        (neighbor.tile.key(), neighbor.opaque_occlusion)
+                                    })
+                                    .collect(),
                                 budget: job.budget,
                             })
                             .is_err()
@@ -223,6 +245,7 @@ impl Pipeline {
             degraded: HashMap::new(),
             dirty: HashSet::new(),
             planned: HashSet::new(),
+            refined: HashSet::new(),
             failed: HashSet::new(),
             forest: Forest::default(),
             epoch: 0,
@@ -289,6 +312,12 @@ impl Pipeline {
             let mut forest = Forest::new(plan);
             forest.budget = forest.allowance(view, plan.mesh_bytes);
             self.planned = plan.nodes.iter().map(|node| node.key).collect();
+            self.refined = plan
+                .nodes
+                .iter()
+                .filter(|node| !node.children.is_empty())
+                .map(|node| node.key)
+                .collect();
             if self.content != content || palette_changed {
                 self.generation += 1;
                 self.ready.clear();
@@ -306,7 +335,7 @@ impl Pipeline {
                 .retain(|key, _| self.ready.contains_key(key));
             self.dirty.retain(|key| self.ready.contains_key(key));
             for (&key, neighbors) in &self.ready_neighbors {
-                if *neighbors != neighbor_keys(key, &self.planned) {
+                if *neighbors != neighbor_keys(key, &self.planned, &self.refined) {
                     self.dirty.insert(key);
                 }
             }
@@ -347,7 +376,7 @@ impl Pipeline {
             let result = self.deferred.pop_front().unwrap();
             if result.generation != self.generation
                 || !self.forest.wanted.contains(&result.key)
-                || result.neighbors != neighbor_keys(result.key, &self.planned)
+                || result.neighbors != neighbor_keys(result.key, &self.planned, &self.refined)
             {
                 self.in_flight.remove(&result.key);
                 self.stats.stale += 1;
@@ -405,9 +434,14 @@ impl Pipeline {
             let Some(tile) = view.tiles.get(&key) else {
                 continue;
             };
-            let neighbors = neighbor_keys(key, &self.planned)
+            let neighbors = neighbor_keys(key, &self.planned, &self.refined)
                 .iter()
-                .map(|key| view.tiles.get(key).cloned())
+                .map(|(key, opaque_occlusion)| {
+                    view.tiles.get(key).map(|tile| mesh::Neighbor {
+                        tile: Arc::clone(tile),
+                        opaque_occlusion: *opaque_occlusion,
+                    })
+                })
                 .collect::<Option<Vec<_>>>();
             let Some(neighbors) = neighbors else {
                 continue;
@@ -429,7 +463,18 @@ impl Pipeline {
             self.in_flight.insert(key, self.generation);
         }
         debug_assert!(self.ready.values().sum::<usize>() <= plan.mesh_bytes);
-        let selected = self.forest.selected(&self.ready);
+        // Old neighboring meshes can still have walls removed by this parent.
+        // Complete children may replace it only after those boundaries are safe.
+        let blocked = self
+            .dirty
+            .iter()
+            .filter_map(|key| self.ready_neighbors.get(key))
+            .flat_map(|neighbors| neighbors.iter())
+            .filter_map(|(key, opaque_occlusion)| {
+                (*opaque_occlusion && self.refined.contains(key)).then_some(*key)
+            })
+            .collect();
+        let selected = self.forest.selected(&self.ready, &blocked);
         self.stats.selected = selected.len();
         self.stats.update_ms = start.elapsed().as_secs_f64() * 1000.0;
         selected
@@ -611,6 +656,183 @@ mod tests {
     }
 
     #[test]
+    fn children_wait_for_a_neighbor_to_stop_using_the_retained_parent_as_an_occluder() {
+        let mut p = plan(4 << 20);
+        let refined = p.nodes[0].key;
+        let coarse = TileKey::new([-2, 0, -1], 2).unwrap();
+        p.roots.push(p.nodes.len());
+        p.nodes.push(Node {
+            key: coarse,
+            children: vec![],
+        });
+        let mut view = View::default();
+        view.replace(p);
+        let p = view.plan.as_ref().unwrap();
+        for node in &p.nodes {
+            view.tiles
+                .insert(node.key, Arc::new(LodTile::uniform(node.key, 42)));
+        }
+        let world = VoxelWorld::default();
+        let mut pipeline = Pipeline::new();
+        pipeline.epoch = p.epoch;
+        pipeline.content = Some((p.content, p.stamp));
+        pipeline.forest = Forest::new(p);
+        pipeline.planned = p.nodes.iter().map(|node| node.key).collect();
+        pipeline.refined = HashSet::from([refined]);
+        let palette = world.presentation();
+        pipeline.colors = palette.colors;
+        pipeline.descriptors = palette.descriptors;
+        pipeline.ready = p.nodes.iter().map(|node| (node.key, 0)).collect();
+        // All children are resident, but the coarse neighbor's old mesh still
+        // hid its boundary using the parent's occupancy. Its replacement is busy.
+        pipeline
+            .ready_neighbors
+            .insert(coarse, vec![(refined, true)]);
+        pipeline.dirty.insert(coarse);
+        pipeline.in_flight.insert(coarse, pipeline.generation);
+        let selected = pipeline.update(&view, &world, |_, _| {
+            panic!("replacement has not completed")
+        });
+        assert!(
+            selected.contains(&refined),
+            "the parent remains until its neighbor is safe"
+        );
+        assert_eq!(selected.len(), 2);
+        pipeline.in_flight.remove(&coarse);
+        pipeline
+            .ready_neighbors
+            .insert(coarse, vec![(refined, false)]);
+        pipeline.dirty.remove(&coarse);
+        let selected = pipeline.update(&view, &world, |_, _| panic!("all meshes are resident"));
+        assert!(!selected.contains(&refined));
+        assert_eq!(selected.len(), 9);
+    }
+
+    #[test]
+    fn refining_a_neighbor_preserves_the_coarse_boundary_at_its_child_opening() {
+        let coarse = TileKey::new([-1, 0, 0], 2).unwrap();
+        let adjacent = TileKey::new([0, 0, 0], 2).unwrap();
+        let mut data = vec![0; wyram_core::BYTE_COUNT];
+        data = wyram_core::write_block(&data, 1, 1, 1, 42).unwrap();
+        let air = vec![0; wyram_core::BYTE_COUNT];
+        let leaves: Vec<_> = (0..8)
+            .map(|i| {
+                LodTile::from_chunk(
+                    TileKey::new([i & 1, (i >> 1) & 1, i >> 2], 0).unwrap(),
+                    if i == 0 { &data } else { &air },
+                )
+                .unwrap()
+            })
+            .collect();
+        let fine = LodTile::reduce(std::array::from_fn(|i| &leaves[i])).unwrap();
+        let children: Vec<_> = (0..8)
+            .map(|i| {
+                let key = TileKey::new([i & 1, (i >> 1) & 1, i >> 2], 1).unwrap();
+                if i == 0 {
+                    fine.clone()
+                } else {
+                    LodTile::uniform(key, 0)
+                }
+            })
+            .collect();
+        let parent = LodTile::reduce(std::array::from_fn(|i| &children[i])).unwrap();
+        let mut initial = plan(4 << 20);
+        initial.nodes = vec![
+            Node {
+                key: coarse,
+                children: vec![],
+            },
+            Node {
+                key: adjacent,
+                children: vec![],
+            },
+        ];
+        initial.roots = vec![0, 1];
+        let mut view = View::default();
+        view.replace(initial);
+        view.tiles
+            .insert(coarse, Arc::new(LodTile::uniform(coarse, 42)));
+        view.tiles.insert(adjacent, Arc::new(parent));
+        let world = VoxelWorld::default();
+        let mut pipeline = Pipeline::new();
+        let mut meshes = HashMap::new();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while pipeline.ready.len() < 2 {
+            assert!(Instant::now() < deadline);
+            pipeline.update(&view, &world, |key, mesh| {
+                meshes.insert(key, mesh);
+            });
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let mut next = plan(4 << 20);
+        next.epoch = 2;
+        next.nodes = vec![
+            Node {
+                key: coarse,
+                children: vec![],
+            },
+            Node {
+                key: adjacent,
+                children: (2..10).collect(),
+            },
+        ];
+        next.nodes.extend(children.iter().map(|tile| Node {
+            key: tile.key(),
+            children: vec![],
+        }));
+        next.roots = vec![0, 1];
+        view.replace(next);
+        for child in children {
+            view.tiles.insert(child.key(), Arc::new(child));
+        }
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            assert!(Instant::now() < deadline);
+            let selected = pipeline.update(&view, &world, |key, mesh| {
+                meshes.insert(key, mesh);
+            });
+            assert!(
+                pipeline.ready.contains_key(&coarse),
+                "old coverage stays during replacement"
+            );
+            assert!(pipeline.in_flight.len() <= WORKERS);
+            assert!(pipeline.stats.uploads <= 1);
+            assert!(pipeline.ready.values().sum::<usize>() <= 4 << 20);
+            if selected.len() == 9 && pipeline.in_flight.is_empty() && pipeline.dirty.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // The selected fine solid occupies x=[1,2]; x=[0,1] is air. Its
+        // retained parent can no longer justify hiding any of the x=0 wall.
+        let area: f32 = meshes[&coarse]
+            .vertices
+            .as_chunks::<6>()
+            .0
+            .iter()
+            .filter(|quad| quad[0].normal[0] == 127)
+            .map(|quad| {
+                let low = [1, 2].map(|axis| {
+                    quad.iter()
+                        .map(|v| v.base.position[axis])
+                        .fold(f32::INFINITY, f32::min)
+                });
+                let high = [1, 2].map(|axis| {
+                    quad.iter()
+                        .map(|v| v.base.position[axis])
+                        .fold(f32::NEG_INFINITY, f32::max)
+                });
+                (high[0] - low[0]) * (high[1] - low[1])
+            })
+            .sum();
+        assert_eq!(
+            area,
+            64.0 * 64.0,
+            "the selected opening exposes the entire coarse wall"
+        );
+    }
+
+    #[test]
     fn planned_neighbors_arrive_before_meshing_and_camera_changes_refresh_dependencies() {
         let root = TileKey::new([0, 0, 0], 2).unwrap();
         let adjacent = TileKey::new([1, 0, 0], 2).unwrap();
@@ -645,7 +867,7 @@ mod tests {
             pipeline.update(&view, &world, |_, _| {});
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        assert_eq!(pipeline.ready_neighbors[&root], vec![adjacent]);
+        assert_eq!(pipeline.ready_neighbors[&root], vec![(adjacent, true)]);
         let mut next = plan(1 << 20);
         next.epoch = 2;
         next.nodes = vec![Node {
@@ -682,9 +904,9 @@ mod tests {
         for child in &p.nodes[1..8] {
             ready.insert(child.key, 0);
         }
-        assert_eq!(f.selected(&ready), vec![root]);
+        assert_eq!(f.selected(&ready, &HashSet::new()), vec![root]);
         ready.insert(p.nodes[8].key, 0);
-        let selected = f.selected(&ready);
+        let selected = f.selected(&ready, &HashSet::new());
         assert_eq!(
             selected,
             p.nodes[1..].iter().map(|n| n.key).collect::<Vec<_>>()

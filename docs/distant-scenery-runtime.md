@@ -110,12 +110,19 @@ Queued, active and completed jobs share a two-job limit. The renderer admits at
 most one nonempty upload per redraw, with a maximum 2 MiB payload. Content changes
 reject obsolete results without freeing their work slots prematurely. A parent
 stays selected until all eight replacement children are ready, including empty
-children. Camera changes reuse wanted immutable tile data and resident meshes.
+children, and neighboring meshes no longer use that retained parent to hide
+opaque boundaries. Camera changes reuse wanted immutable tile data and resident meshes.
 
 Meshing reads adjacent planned tiles, or their planned ancestors, to suppress
 shared walls. It waits for these immutable summaries in the work scheduler;
 rendering and gameplay never wait for a synchronous actor request. A changed
 neighbor plan schedules a replacement while keeping the previous mesh available.
+A parent that can refine does not prove its children's opaque face coverage,
+so its summary cannot suppress those external walls. Refinement eligibility is
+part of mesh dependencies, including camera changes that keep the same tile keys.
+This conservatively retains opaque walls while translucent liquid summaries
+continue to suppress shared water walls. Tests exercise a negative-coordinate
+coarse wall reopened by a finer child's air gap and reversed worker completion.
 Different sample resolutions can still approximate the two sides of a boundary
 differently; the neighbor data is not a guarantee of exact surface agreement.
 
