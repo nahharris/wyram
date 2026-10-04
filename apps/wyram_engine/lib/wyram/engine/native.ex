@@ -30,6 +30,7 @@ defmodule Wyram.Engine.Native do
 
   def compile_generator(_seed, _settings), do: :erlang.nif_error(:nif_not_loaded)
   def generate_world_chunks(_resource, _keys), do: :erlang.nif_error(:nif_not_loaded)
+  def generate_scenic_tiles(_resource, _keys), do: :erlang.nif_error(:nif_not_loaded)
   def sample_world(_resource, _positions), do: :erlang.nif_error(:nif_not_loaded)
   def generator_spawn(_resource), do: :erlang.nif_error(:nif_not_loaded)
   def surface_heights(_resource, _positions), do: :erlang.nif_error(:nif_not_loaded)

@@ -46,7 +46,21 @@ impl LodCell {
         self.mixed_materials
     }
 
-    fn reduce(children: [Self; 8]) -> Self {
+    pub(crate) fn uniform(material: u16, scale: u16) -> Self {
+        let occupied = if material == 0 {
+            0
+        } else {
+            u32::from(scale).pow(3)
+        };
+        Self {
+            material,
+            occupied,
+            child_mask: if occupied > 0 && scale > 1 { 255 } else { 0 },
+            mixed_materials: false,
+        }
+    }
+
+    pub(crate) fn reduce(children: [Self; 8]) -> Self {
         let mut result = Self::default();
         let mut weights = [(0u16, 0u32); 8];
         let mut used = 0;
@@ -139,24 +153,11 @@ pub struct LodTile {
 
 impl LodTile {
     pub fn uniform(key: TileKey, material: u16) -> Self {
-        let occupied = if material == 0 {
-            0
-        } else {
-            u32::from(key.scale()).pow(3)
-        };
+        let cell = LodCell::uniform(material, key.scale());
         Self {
             key,
-            cells: Cells::Uniform(LodCell {
-                material,
-                occupied,
-                child_mask: if occupied > 0 && key.level > 0 {
-                    255
-                } else {
-                    0
-                },
-                mixed_materials: false,
-            }),
-            occupied: u64::from(occupied) * BLOCK_COUNT as u64,
+            cells: Cells::Uniform(cell),
+            occupied: u64::from(cell.occupied) * BLOCK_COUNT as u64,
         }
     }
 
@@ -227,7 +228,7 @@ impl LodTile {
         Ok(Self::from_cells(parent, cells))
     }
 
-    fn from_cells(key: TileKey, cells: Vec<LodCell>) -> Self {
+    pub(crate) fn from_cells(key: TileKey, cells: Vec<LodCell>) -> Self {
         let occupied = cells.iter().map(|cell| u64::from(cell.occupied)).sum();
         let first = cells[0];
         let cells = if cells.iter().all(|&cell| cell == first) {
