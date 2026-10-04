@@ -210,3 +210,79 @@ Ignored raw captures are `cache-65d8eed082b04079b946c090de69ca5e` (baseline),
 `.tools/scenery-flight`. The phase summary is
 `.tools/distant-scenery/loading-summary.json`. `bench:scenery` records the same
 arrival/readiness counters for new captures; the report keeps old files readable.
+
+## Bounded background delivery credit
+
+The two-tile scenery stream previously waited for UI acceptance before releasing
+each delivery credit. A 1,018-tile plan required 509 UI round trips. The reader
+now validates the current epoch, wanted keys and increasing delivery, then
+releases credit after admission to the existing 32-packet queue and event-loop
+notification. A full queue still blocks the reader before credit. The renderer
+performs no pipe I/O; server delivery, generation, mesh-job and upload bounds
+remain fixed.
+
+Eight stationary game captures use the optimized renderer and generation,
+seed 2026, fixed viewpoint `{672.5, 300, 672.5}`, default policy, RTX 4050 Laptop
+Vulkan adapter, 2,240 by 1,260 resolution and FIFO presentation. A baseline
+cold/warm pair precedes two candidate cold/warm pairs; another baseline pair
+follows to check drift. The actual generation DLL has the same SHA-256 in all
+eight captures. No builds or tests run during capture. The temporary baseline
+sources are restored byte-for-byte before validation.
+
+| Delivery credit | All received, seconds | All ready, seconds |
+| --- | --- | --- |
+| UI baseline, first cold/warm pair | 8.610 / 8.606 | 9.543 / 9.539 |
+| Reader admission, two cold runs | 2.348 / 2.318 | 4.081 / 4.018 |
+| Reader admission, two warm runs | 0.591 / 0.582 | 3.076 / 3.066 |
+| Repeated UI baseline, cold/warm | 8.598 / 8.633 | 9.531 / 9.566 |
+
+Across the two baseline pairs, median cold readiness is 9.537 seconds and warm
+readiness is 9.553 seconds. Candidate medians are 4.049 seconds cold and 3.071
+seconds warm: approximately 58% and 68% less loading time on this route. Warm
+disk reuse now affects game loading after removing the UI delivery bottleneck.
+All runs finish with 1,018 received and ready tiles, 897 selected tiles, 2,592
+near chunks, no failed tiles or dropped samples, at most two mesh jobs, one
+nonempty upload per redraw, and mesh reservation below the 64 MiB limit.
+
+Settled image and geometry parity is not claimed for this change. Faster data
+arrival changes the existing mesh-allowance and quality-rebuild decisions.
+The four baseline images are identical, with 22 degraded tiles, 184,026 opaque
+vertices and 16,123,488 reserved bytes. Both candidate cold images match each
+other and differ from baseline in 22 bottom-edge pixels out of 2,822,400;
+they retain 18 degraded tiles and approximately 17.45 MB of reserved geometry.
+Their opaque vertex counts differ off-screen: 201,966 and 192,030. Both candidate
+warm images match each other, with two degraded tiles, 233,574 opaque vertices
+and 21,988,752 reserved bytes; 80,458 pixels (2.85%) differ from baseline in the
+right-hand distant terrain and shore. Cold and warm candidate images were
+visually inspected. Arrival-independent settled quality remains a separate
+acceptance task.
+
+Settled frame p95 is 17.34–17.65 ms for baseline and 17.39–18.21 ms for candidate;
+GPU p95 is 1.08–1.12 ms versus 1.13 ms cold and 1.33 ms warm. The candidate
+draws more geometry. These captures verify faster loading, without establishing
+a steady FPS improvement or broad visual acceptance.
+
+Regressions exercise credit before UI work, withholding credit at full queue
+capacity, receiver exit during blocked admission, event-loop/writer failure,
+malformed framing, unknown keys, stale epochs/plans, duplicate deliveries and
+content changes. Reader and UI share the same acceptance state machine. A
+dedicated credit handle leaves shutdown with the outbound owner.
+
+Ignored raw captures are `cache-c274932ea7ec4b838d3e60d7659193c5` (baseline),
+`cache-7136b3ea94434ce5ba7a0f538ea0e3fc` (candidate), and
+`cache-b819cf8784c646c6bf78250b87cf1e46` (baseline confirmation), under
+`.tools/scenery-flight`. Analysis is `.tools/distant-scenery/credit-summary.json`;
+`bench:scenery` exports the same reception/readiness phase counters.
+
+A subsequent 95-second approved-flight replay exercises the reader-credit path
+through 49 observed scenery epochs while rising, travelling about 275 units
+outward, and returning. It finishes with all 1,018 tiles received and ready,
+897 selected tiles and 2,592 near chunks, with no failed tiles or dropped samples.
+Jobs stay at most two, nonempty uploads at most one, and peak mesh reservation
+is 19,916,544 bytes. Queues and meshes settle before exit. The final image was
+inspected and still exhibits coarse terrain/shore approximations. This is a
+moving-view boundedness check, not broad visual acceptance. The near-only
+control follows a different authoritative path (about 21 units less altitude),
+so its timing and image are not a matched rendering comparison. Both cases
+load the same optimized generation DLL. Raw captures and `validation.json` are
+under `.tools/scenery-flight/0196a3c134014f87929f658334cd7991`.

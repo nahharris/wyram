@@ -116,8 +116,22 @@ The native reader validates complete sibling groups, unique keys, root coverage
 of every declared node, supported coordinate extents, byte limits and tile cells
 before sending packets to the UI thread. The view cache accepts only current,
 wanted tiles and preserves immutable data across camera-only changes. A new
-content identity clears it, including after a service or world restart. Credits
-coalesce in one outbound slot without displacing gameplay edits or input.
+content identity clears it, including after a service or world restart.
+
+The reader releases delivery credit after a decoded batch passes current-epoch,
+wanted-key and increasing-delivery validation, enters the existing 32-packet
+queue, and successfully notifies the event loop. It does not wait for UI
+acceptance or meshing. A full queue blocks the reader before credit; malformed,
+unknown or stale data cannot release server work. Reader and UI share the same
+acceptance rules, while only the UI retains tile payloads. The reader retains
+one bounded set of wanted keys. Two-tile wire batches, one unacknowledged server
+delivery, the queue capacity, and mesh/upload limits remain fixed.
+
+Credits coalesce in one outbound slot without displacing gameplay edits or
+input. A reader credit handle does not own writer shutdown: reader exit leaves
+the outbound owner usable, while owner shutdown rejects further credits. Queue,
+event-loop or writer failure ends reader admission. The renderer performs no
+pipe I/O and never waits for a synchronous actor request.
 
 The repository test script exercises real Windows pipe framing and a matched
 Elixir-to-native fixture containing known edits at negative coordinates,
@@ -244,6 +258,12 @@ and depth handling are connected. Tests cover synthetic caves, detached islands,
 negative positions, budget fallback, complete replacement, and GPU near coverage
 and global translucent ordering. Actual generated terrain still requires visual
 acceptance, particularly mixed-resolution shorelines and representative materials.
+
+Settled proxy quality still depends on data arrival: degraded meshes rebuild
+when their allowance doubles, so an intermediate allocation can survive after
+the final occupancy set is known. Cold and warm reader-credit captures retain
+different degraded-tile counts despite the same plan and policy. Arrival-independent
+settled quality and its rebuild cost remain to be validated.
 
 Visual and performance validation must exercise cold loading, warm reuse,
 camera movement, edited terrain, rapid view changes, negative coordinates,
