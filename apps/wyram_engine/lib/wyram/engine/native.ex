@@ -1,5 +1,11 @@
 defmodule Wyram.Engine.Native do
   @moduledoc "Packed voxel operations implemented in Rust."
+  # Shared core changes must rebuild the NIF, even when its wrapper is unchanged.
+  for path <-
+        Path.wildcard(Path.expand("../../../../../native/crates/wyram_core/src/**/*.rs", __DIR__)) do
+    @external_resource path
+  end
+
   use Rustler, otp_app: :wyram_engine, crate: :wyram_nif
 
   @spec generate_chunk(
