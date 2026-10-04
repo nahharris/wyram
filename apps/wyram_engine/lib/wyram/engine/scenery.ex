@@ -38,7 +38,7 @@ defmodule Wyram.Engine.Scenery do
          config: config,
          model: model,
          world_ref: Process.monitor(GenServer.whereis(world)),
-         supervisor: Keyword.get(options, :supervisor, Wyram.Engine.StreamSupervisor),
+         supervisor: Keyword.get(options, :supervisor, Wyram.Engine.ScenerySupervisor),
          fetch: Keyword.get(options, :fetch, &Fetch.run/2),
          loader: Loader.new(config),
          client: nil,
@@ -48,7 +48,8 @@ defmodule Wyram.Engine.Scenery do
          epoch: 0,
          content_id: System.unique_integer([:positive, :monotonic]),
          sent: MapSet.new(),
-         waiting: nil
+         waiting: nil,
+         retry: nil
        }}
     else
       :ignore
@@ -132,7 +133,13 @@ defmodule Wyram.Engine.Scenery do
     {:noreply, work(%{state | loader: loader})}
   end
 
+  def handle_info({:scenery_work, token}, %{retry: {_, token}} = state),
+    do: {:noreply, work(%{state | retry: nil})}
+
+  def handle_info({:scenery_work, _}, state), do: {:noreply, state}
+
   defp release_view(state) do
+    if state.retry, do: Process.cancel_timer(elem(state.retry, 0))
     empty = %{nodes: %{}, order: [], roots: []}
     loader = Loader.reset(state.loader, empty, content(state))
 
@@ -144,7 +151,8 @@ defmodule Wyram.Engine.Scenery do
         plan: nil,
         loader: loader,
         waiting: nil,
-        sent: MapSet.new()
+        sent: MapSet.new(),
+        retry: nil
     }
   end
 
@@ -192,7 +200,16 @@ defmodule Wyram.Engine.Scenery do
     model = state.model
     fetch = state.fetch
     loader = Loader.dispatch(state.loader, state.supervisor, fn keys -> fetch.(model, keys) end)
-    deliver(%{state | loader: loader})
+    next = deliver(%{state | loader: loader})
+
+    if next.retry == nil and loader.pending != [] and
+         map_size(loader.tasks) < state.config.workers do
+      token = make_ref()
+      timer = Process.send_after(self(), {:scenery_work, token}, 25)
+      %{next | retry: {timer, token}}
+    else
+      next
+    end
   end
 
   defp deliver(%{waiting: waiting} = state) when not is_nil(waiting), do: state

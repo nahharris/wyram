@@ -141,6 +141,32 @@ defmodule Wyram.Engine.Scenery.LoaderTest do
   end
 
   defp key(x), do: %Key{position: {x, 0, 0}, level: 1}
+
+  test "jobs left by a stopped owner still occupy generation slots", %{supervisor: supervisor} do
+    owner = self()
+
+    for _ <- 1..2 do
+      Task.Supervisor.start_child(supervisor, fn ->
+        send(owner, {:orphan, self()})
+        receive do: (:finish -> :ok)
+      end)
+    end
+
+    assert_receive {:orphan, one}
+    assert_receive {:orphan, two}
+    loader = Loader.new(Config.new!(%{})) |> Loader.reset(plan([key(0)]), 0)
+
+    fetch = fn _ ->
+      send(owner, :new_work)
+      {:ok, [empty(key(0))]}
+    end
+
+    assert Loader.dispatch(loader, supervisor, fetch) == loader
+    refute_receive :new_work, 10
+    send(one, :finish)
+    send(two, :finish)
+  end
+
   defp plan(keys), do: %{nodes: Map.new(keys, &{&1, []}), order: keys}
 
   defp empty(%Key{position: {x, y, z}, level: level}),

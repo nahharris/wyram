@@ -23,7 +23,7 @@ defmodule Wyram.Engine.Scenery.Loader do
     busy = loader.tasks |> Map.values() |> Enum.flat_map(& &1.keys) |> MapSet.new()
     keys = loader.pending |> Enum.reject(&MapSet.member?(busy, &1)) |> Enum.take(2)
 
-    if keys == [] do
+    if keys == [] or length(Task.Supervisor.children(supervisor)) >= loader.config.workers do
       loader
     else
       task = Task.Supervisor.async_nolink(supervisor, fn -> fetch.(keys) end)

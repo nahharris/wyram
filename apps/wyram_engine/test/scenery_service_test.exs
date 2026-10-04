@@ -36,7 +36,37 @@ defmodule Wyram.Engine.Scenery.ServiceTest do
         )
       )
 
-    {:ok, service: service, model: model}
+    {:ok, service: service, model: model, supervisor: supervisor}
+  end
+
+  test "retired service jobs hold worker slots and the new view resumes after they exit", %{
+    service: service,
+    supervisor: supervisor
+  } do
+    owner = self()
+
+    retired =
+      for _ <- 1..2 do
+        {:ok, pid} =
+          Task.Supervisor.start_child(supervisor, fn ->
+            send(owner, {:retired_started, self()})
+            receive do: (:stop -> :ok)
+          end)
+
+        assert_receive {:retired_started, ^pid}
+        pid
+      end
+
+    Scenery.view(service, self(), {0, 0, 0})
+    assert_receive {:scenery_plan, _, _, _, _}
+    refute_receive {:started, _, _, _}, 40
+    assert length(Task.Supervisor.children(supervisor)) == 2
+    send(hd(retired), :stop)
+    assert_receive {:started, worker, 0, _}, 1000
+    assert Process.alive?(worker)
+    assert length(Task.Supervisor.children(supervisor)) == 2
+    send(List.last(retired), :stop)
+    assert_receive {:started, _, 0, _}, 1000
   end
 
   test "generation and delivery remain bounded until the client acknowledges", %{service: service} do
