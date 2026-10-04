@@ -3,7 +3,9 @@ mod camera;
 mod characters;
 mod chunk_mesh;
 mod chunk_wire;
+mod flight_benchmark;
 mod flight_input;
+mod frame_capture;
 mod frustum;
 mod gpu_timer;
 mod meshing;
@@ -250,6 +252,7 @@ struct Graphics {
     culling: bool,
     gpu_timer: Option<gpu_timer::GpuTimer>,
     characters: wgpu::Buffer,
+    capture: Option<frame_capture::Capture>,
 }
 
 impl Graphics {
@@ -285,6 +288,19 @@ impl Graphics {
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
             .ok_or("GPU surface is unavailable")?;
         config.desired_maximum_frame_latency = 2;
+        let mut capture = frame_capture::Capture::from_env();
+        if capture.is_some() {
+            if surface
+                .get_capabilities(&adapter)
+                .usages
+                .contains(wgpu::TextureUsages::COPY_SRC)
+            {
+                config.usage |= wgpu::TextureUsages::COPY_SRC;
+            } else {
+                eprintln!("Frame capture is unavailable on this surface");
+                capture = None;
+            }
+        }
         surface.configure(&device, &config);
         let culling = std::env::var("WYRAM_FRUSTUM_CULLING").as_deref() != Ok("0");
         if let Some(path) = std::env::var_os("WYRAM_CLIENT_METRICS") {
@@ -294,6 +310,9 @@ impl Graphics {
                 "driver_info": info.driver_info, "width": config.width, "height": config.height,
                 "present_mode": format!("{:?}", config.present_mode), "timestamp_queries": timing,
                 "culling": culling, "mesh_upload_limit": meshing::upload_limit(),
+                "scenery_protocol": std::env::var("WYRAM_SCENERY_PROTOCOL").as_deref()!=Ok("0"),
+                "flight_benchmark":std::env::var("WYRAM_FLIGHT_BENCHMARK").as_deref()==Ok("1"),
+                "stationary_benchmark":std::env::var("WYRAM_BENCHMARK_STATIONARY").as_deref()==Ok("1"),
                 "chunk_protocol": std::env::var("WYRAM_CHUNK_PROTOCOL").as_deref() != Ok("0") });
             let path = std::path::Path::new(&path).with_extension("adapter.json");
             match std::fs::File::create_new(path)
@@ -404,6 +423,7 @@ impl Graphics {
             culling,
             gpu_timer,
             characters,
+            capture,
         })
     }
 
@@ -467,6 +487,9 @@ impl Graphics {
         scenery_distance: f32,
     ) -> FrameSample {
         let mut stats = FrameSample::default();
+        if let Some(capture) = &self.capture {
+            capture.poll(&self.device);
+        }
         if let Some(timer) = &mut self.gpu_timer {
             stats.gpu_render_ms = timer.collect(&self.device);
         }
@@ -571,10 +594,17 @@ impl Graphics {
         if let Some(timer) = &self.gpu_timer {
             timer.resolve(&mut encoder);
         }
+        let capture = self
+            .capture
+            .as_mut()
+            .and_then(|capture| capture.record(&self.device, &mut encoder, &frame.texture));
         let commands = encoder.finish();
         stats.render_encode_cpu_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
         let submit_start = Instant::now();
         self.queue.submit(Some(commands));
+        if let Some(capture) = capture {
+            capture.submitted();
+        }
         if let Some(timer) = &mut self.gpu_timer {
             timer.submitted();
         }
@@ -615,6 +645,7 @@ struct Game {
     last_redraw: Instant,
     outbound: Option<outbound::Outbound>,
     outbound_error: Option<outbound::SendError>,
+    benchmark: Option<flight_benchmark::FlightBenchmark>,
 }
 
 impl Game {
@@ -650,6 +681,7 @@ impl Game {
             last_redraw: Instant::now(),
             outbound: None,
             outbound_error: None,
+            benchmark: flight_benchmark::FlightBenchmark::from_env(),
         }
     }
 
@@ -689,7 +721,7 @@ impl Game {
             f32::from(u8::from(self.pressed.contains(&positive)))
                 - f32::from(u8::from(self.pressed.contains(&negative)))
         };
-        let intent = Intent {
+        let mut intent = Intent {
             forward: axis(KeyCode::KeyW, KeyCode::KeyS),
             right: axis(KeyCode::KeyD, KeyCode::KeyA),
             yaw: self.yaw,
@@ -703,6 +735,14 @@ impl Game {
             rolling: self.pressed.contains(&KeyCode::KeyQ),
             cancel_actions: self.cancel_actions,
         };
+        if let Some(benchmark) = &mut self.benchmark
+            && let Some(replay) =
+                benchmark.sample(self.replica.state.as_ref().is_some_and(|s| !s.unavailable))
+        {
+            intent = replay;
+            self.yaw = replay.yaw;
+            self.pitch = replay.pitch;
+        }
         if force
             || self.last_intent != Some(intent)
             || self.last_input.elapsed() >= Duration::from_millis(100)
@@ -971,6 +1011,14 @@ impl ApplicationHandler<UserEvent> for Game {
                 }
             }
             WindowEvent::RedrawRequested => {
+                if self
+                    .benchmark
+                    .as_ref()
+                    .is_some_and(|bench| bench.finished())
+                {
+                    event_loop.exit();
+                    return;
+                }
                 let start = Instant::now();
                 let frame_ms = (start - self.last_redraw).as_secs_f64() * 1000.0;
                 self.last_redraw = start;
@@ -1045,6 +1093,17 @@ impl ApplicationHandler<UserEvent> for Game {
                         loaded_chunks: self.world.chunk_count(),
                         dirty_chunks: self.world.dirty_count(),
                         in_flight: self.meshing.in_flight(),
+                        observer_position: self.position.to_array(),
+                        approved_flight: self
+                            .replica
+                            .state
+                            .as_ref()
+                            .is_some_and(|s| s.mode == "fly"),
+                        benchmark_elapsed_ms: self
+                            .benchmark
+                            .as_ref()
+                            .map_or(0.0, |b| b.elapsed() * 1000.0),
+                        benchmark_phase: self.benchmark.as_ref().map_or("manual", |b| b.phase()),
                         scenery_update_cpu_ms: self.scenery_meshing.stats.update_ms,
                         scenery_worker_mesh_ms: self.scenery_meshing.stats.worker_ms,
                         scenery_upload_cpu_ms: self.scenery_meshing.stats.upload_ms,
@@ -1126,7 +1185,11 @@ fn main() {
     if std::env::var("WYRAM_CHUNK_PROTOCOL").as_deref() != Ok("0") {
         game.send_packet(ClientPacket::Capabilities {
             chunk_protocol: 1,
-            scenery_protocol: 1,
+            scenery_protocol: if std::env::var("WYRAM_SCENERY_PROTOCOL").as_deref() == Ok("0") {
+                0
+            } else {
+                1
+            },
         });
     }
     event_loop
