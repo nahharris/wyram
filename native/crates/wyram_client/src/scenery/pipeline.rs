@@ -356,9 +356,18 @@ impl Pipeline {
             self.dirty.retain(|key| self.ready.contains_key(key));
         }
         self.degraded.retain(|key, _| self.ready.contains_key(key));
+        let all_known = self
+            .forest
+            .wanted
+            .iter()
+            .all(|key| view.tiles.contains_key(key));
         for (&key, &previous_allowance) in &self.degraded {
-            // Doubling bounds rebuild churn while empty summaries arrive.
-            if allowance >= previous_allowance.saturating_mul(2) {
+            // Doubling bounds churn while summaries arrive. Once every wanted
+            // tile is known, use the final allowance even below that threshold.
+            // A still-degraded result records this allowance and cannot repeat.
+            if allowance > previous_allowance
+                && (all_known || allowance >= previous_allowance.saturating_mul(2))
+            {
                 self.dirty.insert(key);
             }
         }
@@ -509,6 +518,10 @@ impl Drop for Pipeline {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "pipeline_quality_tests.rs"]
+mod quality_tests;
 
 #[cfg(test)]
 mod tests {
