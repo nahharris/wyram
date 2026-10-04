@@ -1,5 +1,6 @@
 pub mod batch;
 pub mod collision;
+pub mod scenery;
 pub mod worldgen;
 pub use collision::PackedWorld;
 
