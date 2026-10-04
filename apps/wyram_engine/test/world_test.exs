@@ -2,6 +2,18 @@ defmodule Wyram.Engine.WorldTest do
   use ExUnit.Case, async: false
 
   alias Wyram.Engine.{Native, Paths, PluginManager, World}
+  alias Wyram.Engine.Scenery.EditView
+
+  test "visual read models expose saved edits without activating region owners" do
+    count = Registry.count(Wyram.Engine.RegionRegistry)
+    model = World.scenery_read_model()
+    assert model.generation == World.generation()
+    assert {:ok, stamp} = EditView.stamp(model.edits)
+    assert stamp == model.stamp
+    assert {:ok, ^stamp, _} = EditView.snapshot(model.edits, [{61_000, 0, 61_000}], stamp)
+    assert :ets.info(model.edits, :owner) == Process.whereis(World)
+    assert Registry.count(Wyram.Engine.RegionRegistry) == count
+  end
 
   test "coordinates outside the native range never create region owners" do
     count = Registry.count(Wyram.Engine.RegionRegistry)
@@ -114,10 +126,18 @@ defmodule Wyram.Engine.WorldTest do
     y = 55
     z = -1600
     old = World.get_block(x, y, z)
+    before = World.scenery_read_model()
     assert old != 0
     assert {:ok, revision} = World.set_block(x, y, z, 0)
     assert World.get_block(x, y, z) == 0
     assert World.get_chunk(-100, 3, -100).revision == revision
+    assert {:error, :stale} = EditView.snapshot(before.edits, [{-100, 3, -100}], before.stamp)
+    after_edit = World.scenery_read_model()
+
+    assert {:ok, _, [{_, saved_data}]} =
+             EditView.snapshot(after_edit.edits, [{-100, 3, -100}], after_edit.stamp)
+
+    assert {:ok, 0} = Native.read_block(saved_data, 0, 7, 0)
     assert File.exists?(Path.join(Paths.data_dir(), "worlds/world.json"))
     assert {:ok, ^old} = Native.read_block(chunk.data, 0, 7, 0)
 
@@ -127,6 +147,11 @@ defmodule Wyram.Engine.WorldTest do
 
     assert {:ok, reloaded} = World.init(directory: Path.join(Paths.data_dir(), "worlds"))
     assert reloaded.edited[{-100, 3, -100}].revision == next_revision
+
+    assert {:ok, 0, [{_, restored_data}]} =
+             EditView.snapshot(reloaded.edit_view, [{-100, 3, -100}], 0)
+
+    assert {:ok, ^old} = Native.read_block(restored_data, 0, 7, 0)
   end
 
   test "regions have separate owners and reload durable edits after a restart" do

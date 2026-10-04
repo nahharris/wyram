@@ -7,8 +7,19 @@ impl Generator {
     /// higher levels estimate occupancy and can omit unsampled small details.
     /// At most 32³ samples and 32² terrain columns are evaluated per tile.
     pub fn scenic_tile(&self, key: TileKey) -> Result<LodTile, &'static str> {
+        self.scenic_tile_with_samples(key, &[])
+    }
+
+    pub(super) fn build_scenic_tile(
+        &self,
+        key: TileKey,
+        overrides: &[(usize, u16)],
+    ) -> Result<LodTile, &'static str> {
         if key.level() == 0 {
-            let bytes = self.chunk(key.position())?;
+            let mut bytes = self.chunk(key.position())?;
+            for &(index, material) in overrides {
+                bytes[index * 2..index * 2 + 2].copy_from_slice(&material.to_le_bytes());
+            }
             return LodTile::from_chunk(key, &bytes).map_err(|_| "invalid scenic chunk");
         }
         if key.level() > 6 {
@@ -65,6 +76,9 @@ impl Generator {
                     samples[(y * side + z) * side + x] = material;
                 }
             }
+        }
+        for &(index, material) in overrides {
+            samples[index] = material;
         }
         let cells = (0..BLOCK_COUNT)
             .map(|at| {

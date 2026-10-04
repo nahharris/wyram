@@ -1,5 +1,6 @@
 mod process_watch;
 mod scenery;
+mod scenery_generation;
 mod worldgen;
 
 use rustler::{Binary, Env, OwnedBinary};

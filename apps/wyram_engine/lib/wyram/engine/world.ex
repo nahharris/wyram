@@ -3,6 +3,7 @@ defmodule Wyram.Engine.World do
   use GenServer
 
   alias Wyram.Engine.{Native, PluginManager, Region, WorldGenerator}
+  alias Wyram.Engine.Scenery.EditView
 
   @region_side 4
   @chunk_side 16
@@ -20,6 +21,9 @@ defmodule Wyram.Engine.World do
   end
 
   def generation, do: GenServer.call(__MODULE__, :generation)
+
+  def scenery_read_model, do: GenServer.call(__MODULE__, :scenery_read_model)
+  def watch_scenery, do: GenServer.call(__MODULE__, {:watch_scenery, self()})
 
   def surface_definitions(definitions) do
     case generation() do
@@ -178,6 +182,7 @@ defmodule Wyram.Engine.World do
     directory = Keyword.fetch!(options, :directory)
     path = Path.join(directory, "world.json")
     versions = PluginManager.plugin_versions()
+    blocks = PluginManager.blocks()
 
     config = PluginManager.worldgen()
     identity = WorldGenerator.identity(config)
@@ -189,9 +194,17 @@ defmodule Wyram.Engine.World do
              config,
              saved.seed,
              PluginManager.palette(),
-             PluginManager.blocks()
+             blocks
            ) do
-      {:ok, Map.merge(saved, %{path: path, generation: generation})}
+      {:ok,
+       Map.merge(saved, %{
+         path: path,
+         generation: generation,
+         blocks: blocks,
+         edit_view: EditView.new(saved.edited),
+         scenery_session: make_ref(),
+         scenery_watchers: %{}
+       })}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -199,6 +212,13 @@ defmodule Wyram.Engine.World do
 
   @impl true
   def handle_call(:generation, _from, state), do: {:reply, state.generation, state}
+
+  def handle_call(:scenery_read_model, _from, state), do: {:reply, read_model(state), state}
+
+  def handle_call({:watch_scenery, pid}, _from, state) when is_pid(pid) do
+    watchers = Map.put_new_lazy(state.scenery_watchers, pid, fn -> Process.monitor(pid) end)
+    {:reply, read_model(state), %{state | scenery_watchers: watchers}}
+  end
 
   def handle_call({:saved_chunks, {rx, rz}}, _from, state) do
     chunks =
@@ -214,9 +234,39 @@ defmodule Wyram.Engine.World do
     next = put_in(state.edited[key], chunk)
 
     case persist(next) do
-      :ok -> {:reply, :ok, next}
-      {:error, reason} -> {:reply, {:error, reason}, state}
+      :ok ->
+        stamp = EditView.put(next.edit_view, key, chunk.data)
+
+        Enum.each(next.scenery_watchers, fn {pid, _} ->
+          send(pid, {:scenery_changed, next.scenery_session, stamp, key})
+        end)
+
+        {:reply, :ok, next}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
+  end
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
+    watchers =
+      if state.scenery_watchers[pid] == ref,
+        do: Map.delete(state.scenery_watchers, pid),
+        else: state.scenery_watchers
+
+    {:noreply, %{state | scenery_watchers: watchers}}
+  end
+
+  defp read_model(state) do
+    {:ok, stamp} = EditView.stamp(state.edit_view)
+
+    %{
+      generation: state.generation,
+      edits: state.edit_view,
+      session: state.scenery_session,
+      stamp: stamp
+    }
   end
 
   defp start_region(region) do
@@ -286,7 +336,7 @@ defmodule Wyram.Engine.World do
       generator: state.generation.identity,
       seed: state.seed,
       plugins: state.plugins,
-      blocks: PluginManager.blocks(),
+      blocks: state.blocks,
       chunks:
         Map.new(state.edited, fn {{cx, cy, cz}, chunk} ->
           {"#{cx},#{cy},#{cz}", %{revision: chunk.revision, data: Base.encode64(chunk.data)}}

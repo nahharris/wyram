@@ -1,0 +1,137 @@
+defmodule Wyram.Engine.Scenery.ServiceTest do
+  use ExUnit.Case, async: true
+  alias Wyram.Engine.Scenery
+  alias Wyram.Engine.Scenery.EditView
+  alias Wyram.Scenery.{Config, Key}
+
+  defmodule ReadModel do
+    use GenServer
+    def init(model), do: {:ok, model}
+    def handle_call({:watch_scenery, _}, _, model), do: {:reply, model, model}
+  end
+
+  setup do
+    owner = self()
+    supervisor = start_supervised!({Task.Supervisor, []})
+    edits = EditView.new(%{})
+    model = %{generation: %{bounds: {0, 15}}, edits: edits, stamp: 0, session: make_ref()}
+    {:ok, world} = GenServer.start_link(ReadModel, model)
+    on_exit(fn -> if Process.alive?(world), do: GenServer.stop(world) end)
+
+    fetch = fn model, keys ->
+      send(owner, {:started, self(), model.stamp, keys})
+      receive do: (:finish -> {:ok, Enum.map(keys, &empty/1)})
+    end
+
+    service =
+      start_supervised!(
+        {Scenery,
+         name: nil,
+         world: world,
+         supervisor: supervisor,
+         config: Config.new!(%{distance: 128, max_level: 1}),
+         fetch: fetch}
+      )
+
+    {:ok, service: service, model: model}
+  end
+
+  test "generation and delivery remain bounded until the client acknowledges", %{service: service} do
+    Scenery.view(service, self(), {0, 0, 0})
+    assert_receive {:scenery_plan, epoch, _, plan, _}
+    assert length(plan.roots) > 4
+    assert_receive {:started, one, 0, keys_one}
+    assert_receive {:started, two, 0, keys_two}
+    refute_receive {:started, _, _, _}, 10
+    send(one, :finish)
+    assert_receive {:scenery_tiles, ^epoch, token, tiles_one}
+    assert Enum.map(tiles_one, &elem(&1, 0)) == keys_one
+    assert_receive {:started, three, 0, _}
+    send(two, :finish)
+    assert_receive {:started, _, 0, _}
+    refute_receive {:scenery_tiles, _, _, _}, 10
+    Scenery.acknowledge(service, epoch, make_ref())
+    refute_receive {:scenery_tiles, _, _, _}, 10
+    Scenery.acknowledge(service, epoch, token)
+    assert_receive {:scenery_tiles, ^epoch, _, tiles_two}
+    assert Enum.map(tiles_two, &elem(&1, 0)) == keys_two
+    assert map_size(:sys.get_state(service).loader.tasks) == 2
+    assert Process.alive?(three)
+  end
+
+  test "view changes discard old work and content changes reject still-wanted old jobs", %{
+    service: service,
+    model: model
+  } do
+    Scenery.view(service, self(), {0, 0, 0})
+    assert_receive {:scenery_plan, first, _, _, _}
+    assert_receive {:started, one, 0, _}
+    assert_receive {:started, two, 0, _}
+    Scenery.view(service, self(), {2048, 0, 2048})
+    assert_receive {:scenery_plan, second, _, _, _}
+    assert second > first
+    refute_receive {:started, _, _, _}, 10
+    send(one, :finish)
+    assert_receive {:started, three, 0, _}
+    refute_receive {:scenery_tiles, _, _, _}, 10
+    EditView.put(model.edits, {128, 0, 128}, :binary.copy(<<0>>, 8192))
+    send(service, {:scenery_changed, model.session, 1, {128, 0, 128}})
+    assert_receive {:scenery_plan, third, 1, _, _}
+    assert third > second
+    send(three, :finish)
+    assert_receive {:started, _, 1, _}
+    send(two, :finish)
+    assert_receive {:started, _, 1, _}
+    refute_receive {:scenery_tiles, _, _, _}, 10
+  end
+
+  test "identical views preserve cache and reader termination releases wanted tiles", %{
+    service: service
+  } do
+    viewer = spawn(fn -> receive do: (:stop -> :ok) end)
+    Scenery.view(service, viewer, {0, 0, 0})
+    :sys.get_state(service)
+    before = :sys.get_state(service)
+    Scenery.view(service, viewer, {0, 0, 0})
+    assert :sys.get_state(service).epoch == before.epoch
+    send(viewer, :stop)
+    monitor = Process.monitor(viewer)
+    assert_receive {:DOWN, ^monitor, :process, ^viewer, _}
+    eventually(fn -> assert :sys.get_state(service).client == nil end)
+    assert :sys.get_state(service).loader.wanted == MapSet.new()
+  end
+
+  test "acknowledgement checks the edit stamp before delivering already cached tiles", %{
+    service: service,
+    model: model
+  } do
+    Scenery.view(service, self(), {0, 0, 0})
+    assert_receive {:scenery_plan, epoch, 0, _, _}
+    assert_receive {:started, one, 0, _}
+    assert_receive {:started, two, 0, _}
+    send(one, :finish)
+    assert_receive {:scenery_tiles, ^epoch, token, _}
+    assert_receive {:started, _, 0, _}
+    send(two, :finish)
+    assert_receive {:started, _, 0, _}
+    EditView.put(model.edits, {0, 0, 0}, :binary.copy(<<0>>, 8192))
+    Scenery.acknowledge(service, epoch, token)
+    assert_receive {:scenery_plan, next, 1, _, _}
+    assert next > epoch
+    refute_receive {:scenery_tiles, ^epoch, _, _}, 10
+  end
+
+  defp eventually(assertion, attempts \\ 50)
+  defp eventually(assertion, 1), do: assertion.()
+
+  defp eventually(assertion, attempts) do
+    assertion.()
+  rescue
+    ExUnit.AssertionError ->
+      Process.sleep(2)
+      eventually(assertion, attempts - 1)
+  end
+
+  defp empty(%Key{position: {x, y, z}, level: level}),
+    do: <<"WSL1", level, 0, 0, 0, x::little-signed-32, y::little-signed-32, z::little-signed-32>>
+end

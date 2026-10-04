@@ -2,6 +2,7 @@
 mod features;
 mod noise;
 mod scenery;
+mod scenic_edits;
 mod settings;
 mod terrain;
 use crate::{BYTE_COUNT, CHUNK_SIDE};

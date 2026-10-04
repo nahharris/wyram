@@ -46,16 +46,41 @@ are removed from the pending list before further dispatch.
 Native output headers and storage lengths must match the requested keys before
 the batch enters the cache. Cell validation belongs to the native generator and
 decoder. Failures do not trigger an unbounded retry loop. These helpers are
-tested independently but are not connected to live world generation yet.
+tested independently and connected to the supervised visual service. The
+service is inactive for games without a scenery policy. Client view requests
+and packed native delivery are not connected yet.
+
+## Edits and delivery
+
+World owns a protected read model containing only known saved chunk edits.
+Workers read at most 256 chunks per snapshot without activating region actors.
+The world publishes each edit and a monotonic content stamp atomically after
+the durable save succeeds. A failed save leaves both unchanged. A world restart
+creates a new session and invalidates the previous read model.
+
+The generator lists only chunks that contain a tile's sample positions. Edited
+chunks are reduced to compact sample-index/material records before generation.
+Each extraction call receives at most 2 MiB of chunk bytes; compact records are
+bounded to 128 KiB per coarse tile. Level one incorporates every edited voxel;
+higher levels incorporate edits at their stratified sample positions and may
+miss unsampled thin additions or removals. Reads check the content stamp before
+and after collection and generation, discarding obsolete results.
+
+The service owns one plan and retains at most the configured number of cached
+tiles. It runs at most two generation jobs, each containing at most two tiles,
+and keeps only one unacknowledged two-tile delivery to the current client.
+Camera changes retain running jobs against the worker limit. Content changes
+invalidate the encoded cache and outstanding delivery. Viewer termination
+releases wanted tiles. Individual generation failures do not retry indefinitely.
 
 ## Remaining runtime gates
 
-World-owned edit snapshots and invalidation must be connected before scenery
-can be enabled. Distant queries must not activate gameplay regions or obtain
-authority over collision, liquids, or characters. Coarse generation must read
-known edits at its sample points and disclose its approximation limits.
+Distant queries must not activate gameplay regions or obtain authority over
+collision, liquids, or characters. The read model and native sample path now
+cover durable known edits, including restored saves. Persistent cache identity,
+storage budgets, and incremental tile invalidation remain to be implemented.
 
-The service, packed IPC, bounded native decode/meshing, renderer residency,
+Live view requests, packed IPC, bounded native decode/meshing, renderer residency,
 parent replacement, near-geometry clipping, and depth handling still need
 implementation. A parent must stay visible until all replacement children are
 ready. Empty children count as ready. Memory pressure must retain usable coarse
