@@ -1,5 +1,7 @@
 # World generation foundation
 
+This document describes implemented generation contracts. The [world vision](game-design/world-vision.md) guides environment and scale authoring, and the [game design roadmap](game-design/roadmap.md) separates generated landscapes from playable frontier depth.
+
 Wyram uses sea level **Y=0** in a **512-block** world: **-192 through 319**, inclusive. Chunk coordinates span **-12 through 19** vertically. The datum, bounds and sea level belong to the selected game plugin, rather than the renderer. The first palette is wilderness; desert, jungle, snow, fire and transition biomes will be authored separately.
 
 ## Pipeline and ownership
