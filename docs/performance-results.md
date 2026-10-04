@@ -164,3 +164,49 @@ Raw fixture output is ignored at `.tools/distant-scenery/cache-fetch-perf.json`;
 the accepted game captures and summary are under
 `.tools/scenery-flight/cache-a757fce6ad5049f3b24aa7248ee8f752`. An earlier pair
 failed warm positioning through a stale control endpoint and is excluded.
+
+## Empty-tile mesh scheduling
+
+Frame captures now distinguish the active view epoch, planned tiles, received
+tiles and mesh-ready tiles. Four stationary baseline games receive all 1,018
+tiles at 8.616–8.646 seconds, but finish meshing at 13.050–13.078 seconds. Completed
+workers report 643–674 ms of total CPU work and uploads 26–29 ms. Empty tiles
+still consumed the two worker slots and frame-driven completion rounds.
+
+The scheduler now completes decoded empty tiles directly, without neighbor
+availability or a worker roundtrip. An empty replacement still clears old GPU
+geometry. Missing data keeps the parent selected, and retired occupied jobs
+retain their slots until their results are drained. Occupied jobs and nonempty
+uploads keep the existing limits.
+
+Two candidate cold/warm pairs use the same isolated world policy, optimized
+native builds, seed, viewpoint, resolution and adapter as the four baseline
+games. A further baseline pair runs afterward to check drift; its published
+scheduler source is restored temporarily and the candidate source is restored
+byte-for-byte before validation.
+
+| Scheduling | All received, seconds | All ready, seconds | Tail after reception, seconds |
+| --- | --- | --- | --- |
+| Baseline, four runs | 8.616–8.646 | 13.050–13.078 | 4.432–4.434 |
+| Empty completion, four runs | 8.619–8.654 | 9.553–9.587 | 0.933–0.934 |
+| Repeated baseline, two runs | 8.611–8.614 | 13.044–13.048 | 4.433 |
+
+The first four baseline runs have median all-ready time 13.061 seconds; the
+candidate median is 9.567 seconds, approximately 27% less loading time on this
+route. Every settled image has SHA-256
+`9b54474259e63c04eacae768d5dd37bd191128c8dbe46c9943dd93b100e8e34f`,
+with identical final geometry: 897 selected tiles, 184,026 opaque vertices,
+16,123,488 reserved mesh bytes and 22 degraded tiles. All runs finish with
+1,018 ready tiles and 2,592 near chunks, no failures or dropped samples, at most
+two mesh jobs and one nonempty upload per redraw. Candidate completed-worker
+CPU totals remain 678–689 ms; this is a scheduling improvement rather than faster
+meshing arithmetic. Data reception remains about 8.6 seconds and is the next
+loading phase to investigate. No steady FPS or broader visual-quality claim is
+made from these stationary runs.
+
+Ignored raw captures are `cache-65d8eed082b04079b946c090de69ca5e` (baseline),
+`cache-6c4aed8caa8042e0ad68b07b81a0dcc4` (candidate), and
+`cache-237fc61e77294173b6e1b8969a291490` (baseline confirmation), under
+`.tools/scenery-flight`. The phase summary is
+`.tools/distant-scenery/loading-summary.json`. `bench:scenery` records the same
+arrival/readiness counters for new captures; the report keeps old files readable.

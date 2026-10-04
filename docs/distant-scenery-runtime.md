@@ -143,6 +143,12 @@ stays selected until all eight replacement children are ready, including empty
 children, and neighboring meshes no longer use that retained parent to hide
 opaque boundaries. Camera changes reuse wanted immutable tile data and resident meshes.
 
+Decoded empty tiles complete directly without occupying a mesh-worker slot or
+waiting for neighboring data. Their empty replacement clears prior GPU geometry
+and counts toward sibling readiness. Missing tile data still retains the parent.
+Retired occupied jobs keep their slots until their results are drained; empty
+completion does not increase the two-job or one-nonempty-upload limits.
+
 Meshing reads adjacent planned tiles, or their planned ancestors, to suppress
 shared walls. It waits for these immutable summaries in the work scheduler;
 rendering and gameplay never wait for a synchronous actor request. A changed
@@ -197,6 +203,14 @@ inspect slower cold loads after they settle; the supported range is 35 through
 120 seconds. The GPU capture delay is the requested duration minus five seconds.
 Keep cold completion time separate from steady rendering cost, and check tile
 readiness before treating the image or timing interval as settled.
+
+Frame diagnostics record the current scenery epoch, planned tile count and
+received tile count separately from mesh-ready tiles. The report includes each
+epoch's first all-received and all-ready frame, at frame resolution. Old captures
+remain readable without these fields. A mesh policy that prunes planned groups
+can leave the all-ready timestamp unset; compare the counts before interpreting
+it as incomplete work. These counters distinguish data arrival from mesh and
+upload completion, without renderer calls to service actors.
 
 The default benchmark uses optimized builds of both the client and generation
 library. Pass `-NativeProfile dev` to keep the optimized client while measuring

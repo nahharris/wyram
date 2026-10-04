@@ -420,20 +420,38 @@ impl Pipeline {
             }
         }
         for node in &plan.nodes {
-            if self.in_flight.len() >= WORKERS {
-                break;
-            }
             let key = node.key;
             if !self.forest.wanted.contains(&key)
                 || (self.ready.contains_key(&key) && !self.dirty.contains(&key))
                 || self.failed.contains(&key)
-                || self.in_flight.contains_key(&key)
             {
                 continue;
             }
             let Some(tile) = view.tiles.get(&key) else {
                 continue;
             };
+            if tile.occupied() == 0 {
+                // Empty immutable data needs no neighbor read or mesh job.
+                // Clear old GPU geometry while retaining any retired job slot.
+                self.ready.insert(key, 0);
+                self.ready_neighbors
+                    .insert(key, neighbor_keys(key, &self.planned, &self.refined));
+                self.degraded.remove(&key);
+                self.dirty.remove(&key);
+                let upload_start = Instant::now();
+                upload(
+                    key,
+                    Mesh {
+                        vertices: Vec::new(),
+                        side: 32,
+                    },
+                );
+                self.stats.upload_ms += upload_start.elapsed().as_secs_f64() * 1000.0;
+                continue;
+            }
+            if self.in_flight.len() >= WORKERS || self.in_flight.contains_key(&key) {
+                continue;
+            }
             let neighbors = neighbor_keys(key, &self.planned, &self.refined)
                 .iter()
                 .map(|(key, opaque_occlusion)| {
@@ -518,6 +536,124 @@ mod tests {
     }
 
     #[test]
+    fn decoded_empty_siblings_complete_without_jobs_but_missing_data_keeps_the_parent() {
+        let mut view = View::default();
+        view.replace(plan(1 << 20));
+        let nodes = &view.plan.as_ref().unwrap().nodes;
+        let parent = nodes[0].key;
+        let missing = nodes[8].key;
+        for node in &nodes[..8] {
+            view.tiles
+                .insert(node.key, Arc::new(LodTile::uniform(node.key, 0)));
+        }
+        let mut pipeline = Pipeline::new();
+        let world = VoxelWorld::default();
+        let mut cleared = Vec::new();
+        let selected = pipeline.update(&view, &world, |key, mesh| {
+            assert!(mesh.vertices.is_empty());
+            cleared.push(key);
+        });
+        assert_eq!(selected, vec![parent]);
+        assert_eq!(pipeline.ready.len(), 8);
+        assert_eq!(cleared.len(), 8);
+        assert_eq!(pipeline.in_flight(), 0);
+        assert_eq!(pipeline.stats.uploads, 0);
+        view.tiles
+            .insert(missing, Arc::new(LodTile::uniform(missing, 0)));
+        let selected = pipeline.update(&view, &world, |key, mesh| {
+            assert_eq!(key, missing);
+            assert!(mesh.vertices.is_empty());
+        });
+        assert_eq!(selected.len(), 8);
+        assert!(!selected.contains(&parent));
+        assert_eq!(pipeline.ready.len(), 9);
+        assert_eq!(pipeline.in_flight(), 0);
+    }
+
+    #[test]
+    fn empty_tiles_do_not_wait_for_neighbors_or_displace_occupied_jobs() {
+        let keys = [0, 1, 4, 8].map(|x| TileKey::new([x, 0, 0], 2).unwrap());
+        let mut p = plan(1 << 20);
+        p.nodes = keys
+            .iter()
+            .map(|&key| Node {
+                key,
+                children: vec![],
+            })
+            .collect();
+        p.roots = (0..keys.len()).collect();
+        let mut view = View::default();
+        view.replace(p);
+        for (key, material) in [(keys[0], 0), (keys[2], 42), (keys[3], 42)] {
+            view.tiles
+                .insert(key, Arc::new(LodTile::uniform(key, material)));
+        }
+        let mut pipeline = Pipeline::new();
+        let selected = pipeline.update(&view, &VoxelWorld::default(), |key, mesh| {
+            assert_eq!(key, keys[0]);
+            assert!(mesh.vertices.is_empty());
+        });
+        assert_eq!(selected, vec![keys[0]]);
+        assert_eq!(pipeline.ready[&keys[0]], 0);
+        assert_eq!(pipeline.in_flight(), 2);
+        assert!(pipeline.in_flight.contains_key(&keys[2]));
+        assert!(pipeline.in_flight.contains_key(&keys[3]));
+    }
+
+    #[test]
+    fn empty_new_content_clears_geometry_while_old_jobs_keep_their_slots() {
+        let key = TileKey::new([0, 0, 0], 2).unwrap();
+        let mut p = plan(1 << 20);
+        p.nodes = vec![Node {
+            key,
+            children: vec![],
+        }];
+        p.roots = vec![0];
+        let mut view = View::default();
+        view.replace(p);
+        view.tiles.insert(key, Arc::new(LodTile::uniform(key, 42)));
+        let mut pipeline = Pipeline::new();
+        let world = VoxelWorld::default();
+        pipeline.update(&view, &world, |_, _| panic!("first occupied dispatch"));
+        assert_eq!(pipeline.in_flight(), 1);
+        let mut next = plan(1 << 20);
+        next.nodes = vec![Node {
+            key,
+            children: vec![],
+        }];
+        next.roots = vec![0];
+        next.epoch = 2;
+        next.content = 8;
+        view.replace(next);
+        view.tiles.insert(key, Arc::new(LodTile::uniform(key, 0)));
+        let mut cleared = 0;
+        let selected = pipeline.update(&view, &world, |uploaded_key, mesh| {
+            assert_eq!(uploaded_key, key);
+            assert!(mesh.vertices.is_empty(), "old content cannot reappear");
+            cleared += 1;
+        });
+        assert_eq!(selected, vec![key]);
+        assert_eq!(cleared, 1);
+        assert_eq!(pipeline.ready[&key], 0);
+        assert!(pipeline.in_flight() <= 1);
+        assert_eq!(
+            pipeline.in_flight() + pipeline.stats.stale,
+            1,
+            "a retired slot is released only after its result is drained"
+        );
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while pipeline.in_flight() != 0 {
+            assert!(Instant::now() < deadline);
+            pipeline.update(&view, &world, |_, _| {
+                panic!("empty geometry already cleared")
+            });
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(pipeline.ready[&key], 0);
+        assert_eq!(pipeline.stats.uploads, 0);
+    }
+
+    #[test]
     fn known_empty_tiles_release_their_equal_mesh_allowance() {
         let mut view = View::default();
         view.replace(plan(4 << 20));
@@ -528,8 +664,11 @@ mod tests {
             );
         }
         let mut pipeline = Pipeline::new();
-        pipeline.update(&view, &VoxelWorld::default(), |_, _| {
-            panic!("initial dispatch")
+        pipeline.update(&view, &VoxelWorld::default(), |_, mesh| {
+            assert!(
+                mesh.vertices.is_empty(),
+                "occupied tiles still dispatch jobs"
+            );
         });
         assert_eq!(
             pipeline.forest.budget, MAX_JOB_BYTES,
