@@ -2,7 +2,9 @@
 
 This branch is an integration in progress. The published data and rendering
 foundations are combined with the optimized 9×9 near-chunk streaming pipeline.
-Distant drawing is not enabled yet.
+Distant drawing is enabled by the official game composition. The current
+implementation is experimental; actual game captures and resource measurements
+are part of its acceptance work.
 
 ## Public policy
 
@@ -23,8 +25,9 @@ children; it is not just the number of eventual draw calls.
 
 The cache policy must accommodate the maximum encoded tile size for every
 planned node. Fixed map metadata and transient work buffers also contribute to
-actual memory use. The mesh field is reserved for the renderer's admission
-budget; no mesh residency manager is connected yet.
+actual memory use. The mesh field bounds admitted renderer geometry, including
+blended vertex/index allocation slack. It does not describe total process memory
+or temporary allocations retained by the GPU driver.
 
 ## Planning and work
 
@@ -89,7 +92,57 @@ coalesce in one outbound slot without displacing gameplay edits or input.
 The repository test script exercises real Windows pipe framing and a matched
 Elixir-to-native fixture containing known edits at negative coordinates,
 complete refinement, camera reuse and content invalidation. It verifies data
-transport and cache behavior; it does not render terrain.
+transport and cache behavior. Separate native GPU tests exercise the drawing path.
+
+## Drawing and replacement
+
+Two native workers build volumetric proxy meshes from occupancy masks. Greedy
+faces preserve disconnected geometry and cave openings at the available sample
+resolution. A mesh that exceeds its per-node allowance is rebuilt at a coarser
+resolution. The planner reserves enough space for a minimal proxy for each node;
+parents remain resident so memory pressure can preserve coarse coverage.
+
+Queued, active and completed jobs share a two-job limit. The renderer admits at
+most one nonempty upload per redraw, with a maximum 2 MiB payload. Content changes
+reject obsolete results without freeing their work slots prematurely. A parent
+stays selected until all eight replacement children are ready, including empty
+children. Camera changes reuse wanted immutable tile data and resident meshes.
+
+Meshing reads adjacent planned tiles, or their planned ancestors, to suppress
+shared walls. It waits for these immutable summaries in the work scheduler;
+rendering and gameplay never wait for a synchronous actor request. A changed
+neighbor plan schedules a replacement while keeping the previous mesh available.
+Different sample resolutions can still approximate the two sides of a boundary
+differently; the neighbor data is not a guarantee of exact surface agreement.
+
+Completed near meshes, including empty meshes, populate a bounded GPU coverage
+mask. Distant fragments covered by those chunks are discarded. Missing near
+meshes retain their distant fallback. Near and distant translucent faces share
+one camera-sorted index stream. Ocean cap heights come from generator metadata
+and public material descriptors. Reverse infinite depth handles distant bounds;
+horizontal fog and a hard cutoff limit the configured view range.
+
+## Reproducible game diagnostics
+
+`mise run bench:scenery` runs isolated optimized games with and without distant
+drawing, reversing the order on the second round. It uses fresh ignored saves,
+ordinary inputs approved by Elixir, frame/GPU metrics, and one asynchronous GPU
+capture per game. Each game exits automatically. Output goes under
+`.tools/scenery-flight`; no generated captures or saves belong in Git.
+
+For stationary captures, run:
+
+```powershell
+mise exec -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bench-scenery.ps1 -Rounds 1 -Stationary
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scenery-perf-report.ps1 -Directory <run-directory>
+```
+
+The stationary mode positions the player through the authenticated local control
+API. The flight route uses wall-clock inputs, so different authoritative tick
+rates can produce different paths. Check the recorded positions before treating
+those runs as matched camera comparisons. `redraw_cpu_ms` includes surface
+acquisition waits; it is not a measure of pure renderer computation. FIFO
+presentation can hold both cases near 60 Hz despite different GPU costs.
 
 ## Remaining runtime gates
 
@@ -98,11 +151,11 @@ collision, liquids, or characters. The read model and native sample path now
 cover durable known edits, including restored saves. Persistent cache identity,
 storage budgets, and incremental tile invalidation remain to be implemented.
 
-Bounded native meshing, renderer residency,
-parent replacement, near-geometry clipping, and depth handling still need
-implementation. A parent must stay visible until all replacement children are
-ready. Empty children count as ready. Memory pressure must retain usable coarse
-coverage rather than cause repeated child eviction and regeneration.
+Bounded native meshing, renderer residency, parent replacement, near clipping,
+and depth handling are connected. Tests cover synthetic caves, detached islands,
+negative positions, budget fallback, complete replacement, and GPU near coverage
+and global translucent ordering. Actual generated terrain still requires visual
+acceptance, particularly mixed-resolution shorelines and representative materials.
 
 Visual and performance validation must exercise cold loading, warm reuse,
 camera movement, edited terrain, rapid view changes, negative coordinates,

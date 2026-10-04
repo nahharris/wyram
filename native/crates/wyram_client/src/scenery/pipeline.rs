@@ -23,6 +23,27 @@ struct Forest {
     budget: usize,
 }
 
+fn neighbor_keys(key: TileKey, wanted: &HashSet<TileKey>) -> Vec<TileKey> {
+    let mut neighbors = Vec::new();
+    for (offset, _, _) in crate::chunk_mesh::FACES {
+        let position = std::array::from_fn(|i| key.position()[i] + offset[i]);
+        let mut adjacent = TileKey::new(position, key.level()).unwrap();
+        loop {
+            if wanted.contains(&adjacent) {
+                neighbors.push(adjacent);
+                break;
+            }
+            if adjacent.level() >= 6 {
+                break;
+            }
+            adjacent = adjacent.parent().unwrap();
+        }
+    }
+    neighbors.sort_by_key(|key| (key.level(), key.position()));
+    neighbors.dedup();
+    neighbors
+}
+
 impl Forest {
     fn new(plan: &Plan) -> Self {
         let limit = plan.mesh_bytes / MIN_TILE_BYTES;
@@ -90,12 +111,14 @@ struct Job {
     descriptors: Arc<HashMap<u16, RenderDescriptor>>,
     water: Arc<HashMap<u16, f32>>,
     budget: usize,
+    neighbors: Vec<Arc<LodTile>>,
 }
 struct ResultMesh {
     key: TileKey,
     generation: u64,
     mesh: Result<Mesh, &'static str>,
     mesh_ms: f64,
+    neighbors: Vec<TileKey>,
 }
 
 #[derive(Default)]
@@ -118,6 +141,9 @@ pub struct Pipeline {
     in_flight: HashMap<TileKey, u64>,
     deferred: VecDeque<ResultMesh>,
     ready: HashMap<TileKey, usize>,
+    ready_neighbors: HashMap<TileKey, Vec<TileKey>>,
+    dirty: HashSet<TileKey>,
+    planned: HashSet<TileKey>,
     failed: HashSet<TileKey>,
     forest: Forest,
     epoch: u64,
@@ -145,12 +171,13 @@ impl Pipeline {
                         };
                         let key = job.tile.key();
                         let start = Instant::now();
-                        let mesh = mesh::build(
+                        let mesh = mesh::build_with_neighbors(
                             &job.tile,
                             &job.colors,
                             &job.descriptors,
                             &job.water,
                             job.budget,
+                            &job.neighbors,
                         );
                         if results
                             .send(ResultMesh {
@@ -158,6 +185,7 @@ impl Pipeline {
                                 generation: job.generation,
                                 mesh,
                                 mesh_ms: start.elapsed().as_secs_f64() * 1000.0,
+                                neighbors: job.neighbors.iter().map(|tile| tile.key()).collect(),
                             })
                             .is_err()
                         {
@@ -175,6 +203,9 @@ impl Pipeline {
             in_flight: HashMap::new(),
             deferred: VecDeque::new(),
             ready: HashMap::new(),
+            ready_neighbors: HashMap::new(),
+            dirty: HashSet::new(),
+            planned: HashSet::new(),
             failed: HashSet::new(),
             forest: Forest::default(),
             epoch: 0,
@@ -210,6 +241,8 @@ impl Pipeline {
             self.water = Arc::new(planes);
             self.generation += 1;
             self.ready.clear();
+            self.ready_neighbors.clear();
+            self.dirty.clear();
             self.failed.clear();
         }
     }
@@ -233,9 +266,12 @@ impl Pipeline {
         let content = Some((plan.content, plan.stamp));
         if self.epoch != plan.epoch || palette_changed {
             let forest = Forest::new(plan);
+            self.planned = plan.nodes.iter().map(|node| node.key).collect();
             if self.content != content || palette_changed {
                 self.generation += 1;
                 self.ready.clear();
+                self.ready_neighbors.clear();
+                self.dirty.clear();
                 self.failed.clear();
             }
             if self.forest.budget != forest.budget {
@@ -243,6 +279,14 @@ impl Pipeline {
             }
             self.ready
                 .retain(|key, bytes| forest.wanted.contains(key) && *bytes <= forest.budget);
+            self.ready_neighbors
+                .retain(|key, _| self.ready.contains_key(key));
+            self.dirty.retain(|key| self.ready.contains_key(key));
+            for (&key, neighbors) in &self.ready_neighbors {
+                if *neighbors != neighbor_keys(key, &self.planned) {
+                    self.dirty.insert(key);
+                }
+            }
             self.failed.retain(|key| forest.wanted.contains(key));
             self.forest = forest;
             self.epoch = plan.epoch;
@@ -262,7 +306,10 @@ impl Pipeline {
         let mut uploaded = false;
         for _ in 0..self.deferred.len() {
             let result = self.deferred.pop_front().unwrap();
-            if result.generation != self.generation || !self.forest.wanted.contains(&result.key) {
+            if result.generation != self.generation
+                || !self.forest.wanted.contains(&result.key)
+                || result.neighbors != neighbor_keys(result.key, &self.planned)
+            {
                 self.in_flight.remove(&result.key);
                 self.stats.stale += 1;
                 self.stats.worker_ms += result.mesh_ms;
@@ -280,6 +327,8 @@ impl Pipeline {
                     uploaded |= !mesh.vertices.is_empty();
                     self.in_flight.remove(&result.key);
                     self.ready.insert(result.key, mesh.bytes());
+                    self.ready_neighbors.insert(result.key, result.neighbors);
+                    self.dirty.remove(&result.key);
                     self.stats.worker_ms += result.mesh_ms;
                     self.stats.degraded += usize::from(mesh.side < 32);
                     self.stats.uploads += usize::from(!mesh.vertices.is_empty());
@@ -303,13 +352,20 @@ impl Pipeline {
             }
             let key = node.key;
             if !self.forest.wanted.contains(&key)
-                || self.ready.contains_key(&key)
+                || (self.ready.contains_key(&key) && !self.dirty.contains(&key))
                 || self.failed.contains(&key)
                 || self.in_flight.contains_key(&key)
             {
                 continue;
             }
             let Some(tile) = view.tiles.get(&key) else {
+                continue;
+            };
+            let neighbors = neighbor_keys(key, &self.planned)
+                .iter()
+                .map(|key| view.tiles.get(key).cloned())
+                .collect::<Option<Vec<_>>>();
+            let Some(neighbors) = neighbors else {
                 continue;
             };
             let job = Job {
@@ -319,6 +375,7 @@ impl Pipeline {
                 descriptors: Arc::clone(&self.descriptors),
                 water: Arc::clone(&self.water),
                 budget: self.forest.budget,
+                neighbors,
             };
             self.sender
                 .as_ref()
@@ -369,6 +426,70 @@ mod tests {
             }))
             .collect(),
         }
+    }
+
+    #[test]
+    fn planned_neighbors_arrive_before_meshing_and_camera_changes_refresh_dependencies() {
+        let root = TileKey::new([0, 0, 0], 2).unwrap();
+        let adjacent = TileKey::new([1, 0, 0], 2).unwrap();
+        let mut view = View::default();
+        let mut p = plan(1 << 20);
+        p.nodes = vec![
+            Node {
+                key: root,
+                children: vec![],
+            },
+            Node {
+                key: adjacent,
+                children: vec![],
+            },
+        ];
+        p.roots = vec![0, 1];
+        view.replace(p);
+        view.tiles
+            .insert(root, Arc::new(LodTile::uniform(root, 17)));
+        let world = VoxelWorld::default();
+        let mut pipeline = Pipeline::new();
+        pipeline.update(&view, &world, |_, _| panic!("initial dispatch only"));
+        assert!(
+            pipeline.in_flight.is_empty(),
+            "planned neighbor has not arrived"
+        );
+        view.tiles
+            .insert(adjacent, Arc::new(LodTile::uniform(adjacent, 17)));
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while pipeline.ready.len() < 2 {
+            assert!(Instant::now() < deadline);
+            pipeline.update(&view, &world, |_, _| {});
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(pipeline.ready_neighbors[&root], vec![adjacent]);
+        let mut next = plan(1 << 20);
+        next.epoch = 2;
+        next.nodes = vec![Node {
+            key: root,
+            children: vec![],
+        }];
+        next.roots = vec![0];
+        view.replace(next);
+        pipeline.update(&view, &world, |_, _| {
+            panic!("changed view dispatches a replacement")
+        });
+        assert!(
+            pipeline.ready.contains_key(&root),
+            "old coverage remains while its wall is rebuilt"
+        );
+        assert!(pipeline.dirty.contains(&root));
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while pipeline.dirty.contains(&root) {
+            assert!(Instant::now() < deadline);
+            pipeline.update(&view, &world, |key, mesh| {
+                assert_eq!(key, root);
+                assert!(mesh.vertices.iter().any(|v| v.normal[0] == 127));
+            });
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(pipeline.ready_neighbors[&root].is_empty());
     }
     #[test]
     fn incomplete_siblings_keep_the_parent_and_empty_completions_count_as_ready() {

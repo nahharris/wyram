@@ -1,6 +1,7 @@
 use crate::world::{RenderDescriptor, Vertex};
 use bytemuck::{Pod, Zeroable};
 use std::collections::HashMap;
+use std::sync::Arc;
 use wyram_core::scenery::LodTile;
 
 #[repr(C)]
@@ -44,12 +45,24 @@ impl Mesh {
     }
 }
 
-pub fn build(
+#[cfg(test)]
+fn build(
     tile: &LodTile,
     colors: &HashMap<u16, [u8; 3]>,
     descriptors: &HashMap<u16, RenderDescriptor>,
     water: &HashMap<u16, f32>,
     budget: usize,
+) -> Result<Mesh, &'static str> {
+    build_with_neighbors(tile, colors, descriptors, water, budget, &[])
+}
+
+pub fn build_with_neighbors(
+    tile: &LodTile,
+    colors: &HashMap<u16, [u8; 3]>,
+    descriptors: &HashMap<u16, RenderDescriptor>,
+    water: &HashMap<u16, f32>,
+    budget: usize,
+    neighbors: &[Arc<LodTile>],
 ) -> Result<Mesh, &'static str> {
     if tile.occupied() == 0 {
         return Ok(Mesh {
@@ -58,7 +71,7 @@ pub fn build(
         });
     }
     for side in [32, 16, 8, 4, 2, 1] {
-        if let Some(mesh) = build_grid(tile, colors, descriptors, water, side, budget) {
+        if let Some(mesh) = build_grid(tile, colors, descriptors, water, side, budget, neighbors) {
             return Ok(mesh);
         }
     }
@@ -119,12 +132,36 @@ struct Grid<'a> {
     origin: [f32; 3],
     descriptors: &'a HashMap<u16, RenderDescriptor>,
     water: &'a HashMap<u16, f32>,
+    neighbors: &'a [Arc<LodTile>],
 }
 
 impl Grid<'_> {
     fn get(&self, p: [i32; 3]) -> u16 {
         if p.iter().any(|&v| !(0..self.side as i32).contains(&v)) {
-            return 0;
+            let world: [f32; 3] =
+                std::array::from_fn(|i| self.origin[i] + (p[i] as f32 + 0.5) * self.step);
+            let neighbor = self
+                .neighbors
+                .iter()
+                .filter(|tile| {
+                    let low = tile.key().origin().map(|v| v as f32);
+                    let width = f32::from(tile.key().scale()) * 16.0;
+                    (0..3).all(|i| world[i] >= low[i] && world[i] < low[i] + width)
+                })
+                .min_by_key(|tile| tile.key().level());
+            return neighbor.map_or(0, |tile| {
+                let low = tile.key().origin().map(|v| v as f32);
+                let half = f32::from(tile.key().scale()) * 0.5;
+                let p: [usize; 3] =
+                    std::array::from_fn(|i| ((world[i] - low[i]) / half).floor() as usize);
+                let cell = tile.cell(p.map(|v| v / 2)).unwrap();
+                let octant = (p[0] % 2) | ((p[1] % 2) << 1) | ((p[2] % 2) << 2);
+                if cell.child_mask() & (1 << octant) != 0 {
+                    cell.material()
+                } else {
+                    0
+                }
+            });
         }
         self.cells[(p[1] as usize * self.side + p[2] as usize) * self.side + p[0] as usize]
     }
@@ -198,6 +235,7 @@ fn build_grid(
     water: &HashMap<u16, f32>,
     side: usize,
     budget: usize,
+    neighbors: &[Arc<LodTile>],
 ) -> Option<Mesh> {
     let grid = Grid {
         cells: grid(tile, side),
@@ -206,6 +244,7 @@ fn build_grid(
         origin: tile.key().origin().map(|v| v as f32),
         descriptors,
         water,
+        neighbors,
     };
     let mut mesh = Mesh {
         vertices: Vec::new(),
@@ -312,6 +351,55 @@ mod tests {
     use wyram_core::scenery::TileKey;
     fn colors() -> HashMap<u16, [u8; 3]> {
         HashMap::from([(42, [40, 180, 30]), (17, [20, 80, 180])])
+    }
+
+    #[test]
+    fn adjacent_liquid_tiles_hide_their_shared_wall_but_keep_the_outer_surface() {
+        let left = Arc::new(LodTile::uniform(TileKey::new([-1, -1, -1], 1).unwrap(), 17));
+        let right = Arc::new(LodTile::uniform(TileKey::new([0, -1, -1], 1).unwrap(), 17));
+        let desc = HashMap::from([(
+            17,
+            RenderDescriptor {
+                opacity: 160,
+                emissive: false,
+                height: 1.0,
+                liquid: 1,
+            },
+        )]);
+        let planes = HashMap::from([(17, 0.75)]);
+        let a = build_with_neighbors(
+            &left,
+            &colors(),
+            &desc,
+            &planes,
+            1 << 20,
+            &[Arc::clone(&right)],
+        )
+        .unwrap();
+        let b = build_with_neighbors(
+            &right,
+            &colors(),
+            &desc,
+            &planes,
+            1 << 20,
+            &[Arc::clone(&left)],
+        )
+        .unwrap();
+        assert!(
+            a.vertices.iter().all(|v| v.normal[0] != 127),
+            "the shared liquid wall must disappear"
+        );
+        assert!(b.vertices.iter().all(|v| v.normal[0] != -127));
+        assert!(
+            a.vertices.iter().any(|v| v.normal[0] == -127),
+            "the outer surface remains"
+        );
+        assert!(
+            a.vertices
+                .iter()
+                .filter(|v| v.normal[1] == 127)
+                .all(|v| v.base.position[1] == 0.75)
+        );
     }
 
     #[test]
