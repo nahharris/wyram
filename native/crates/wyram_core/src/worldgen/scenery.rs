@@ -1,10 +1,11 @@
-use super::{Generator, features};
+use super::{Generator, features, scenic_edits::sample_y};
 use crate::scenery::{LodCell, LodTile, TileKey, reduce_top};
 use crate::{BLOCK_COUNT, CHUNK_SIDE};
 
 impl Generator {
     /// Eight stratified world-rule samples per cell. Level one is exact;
     /// higher levels estimate occupancy and can omit unsampled small details.
+    /// The sea-level stratum samples its surface if the midpoint would miss it.
     /// At most 32³ volume samples and 32² terrain columns are evaluated per tile,
     /// plus at most two geological surface evaluations per column.
     pub fn scenic_tile(&self, key: TileKey) -> Result<LodTile, &'static str> {
@@ -53,7 +54,11 @@ impl Generator {
                 let column = self.column(px, pz);
                 let mut decorations = None;
                 for y in 0..side {
-                    let py = sample_origin[1] + y as i32 * step;
+                    let py = sample_y(
+                        sample_origin[1] + y as i32 * step,
+                        step,
+                        self.settings.sea_level,
+                    );
                     if py < low || py > high {
                         continue;
                     }

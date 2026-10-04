@@ -7,6 +7,47 @@ fn key(position: [i32; 3], level: u8) -> TileKey {
 }
 
 #[test]
+fn sea_surface_edits_use_the_actual_sample_chunk_after_crossing_a_chunk_boundary() {
+    let mut settings = Settings {
+        relief: 0,
+        islands: None,
+        carvers: vec![],
+        terrain: wyram_core::worldgen::Terrain {
+            roughness: 0.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    settings.biomes[0].elevation_offset = -32;
+    settings.biomes[0].water = 17;
+    settings.biomes[0].features.clear();
+    let generator = Generator::new(2026, settings).unwrap();
+    let tile_key = key([0, 0, 0], 6);
+    let chunks = generator.scenic_sample_chunks(tile_key).unwrap();
+    assert!(
+        chunks.contains(&[1, 0, 1]),
+        "the sea sample at [16,0,16] belongs to the lower chunk"
+    );
+    assert!(
+        !chunks.contains(&[1, 1, 1]),
+        "the displaced center at y=16 is not sampled"
+    );
+    let chunk = generator.chunk([1, 0, 1]).unwrap();
+    let cleared = write_block(&chunk, 0, 0, 0, 0).unwrap();
+    let overrides = generator
+        .extract_scenic_samples(tile_key, &[([1, 0, 1], &cleared)])
+        .unwrap();
+    assert_eq!(overrides, [0, 0, 0, 0]);
+    let edited = generator
+        .scenic_tile_with_samples(tile_key, &overrides)
+        .unwrap();
+    let cell = edited.cell([0, 0, 0]).unwrap();
+    assert_eq!(cell.material(), 17);
+    assert_eq!(cell.child_mask(), 0x32);
+    assert_eq!(cell.occupied(), 3 * 32u32.pow(3));
+}
+
+#[test]
 fn edited_level_one_matches_reduction_of_exact_edited_chunks() {
     let generator = Generator::new(41, Settings::default()).expect("generator");
     let tile_key = key([-1, -1, -1], 1);
@@ -86,8 +127,11 @@ fn coarse_samples_have_unique_chunk_keys_and_extract_the_exact_world_space_sampl
             let local = [index % 32, index / 1024, index / 32 % 32];
             let step = i64::from(tile_key.scale() / 2);
             let origin = tile_key.origin();
-            let p: [i64; 3] =
+            let mut p: [i64; 3] =
                 std::array::from_fn(|axis| origin[axis] + step / 2 + local[axis] as i64 * step);
+            if origin[1] + local[1] as i64 * step <= 0 && p[1] > 0 {
+                p[1] = 0;
+            }
             assert_eq!(p.map(|v| v.div_euclid(16) as i32), chunk_key);
             let p = p.map(|v| v.rem_euclid(16) as usize);
             assert_eq!(
@@ -99,6 +143,54 @@ fn coarse_samples_have_unique_chunk_keys_and_extract_the_exact_world_space_sampl
             .scenic_tile_with_samples(tile_key, &encoded)
             .expect("coarse edit");
         assert_eq!(LodTile::decode(&tile.encode()).expect("decode"), tile);
+    }
+}
+
+#[test]
+fn sea_stratum_addressing_handles_negative_levels_and_keeps_lower_midpoints() {
+    let data: Vec<_> = (1..=4096u16).flat_map(u16::to_le_bytes).collect();
+    for sea_level in [-17, -16, -1, 0, 15, 16] {
+        let settings = Settings {
+            sea_level,
+            ..Default::default()
+        };
+        let generator = Generator::new(7, settings).unwrap();
+        for level in [2, 4, 6] {
+            let width = 16 * (1 << level);
+            let tile_key = key([-1, sea_level.div_euclid(width), -1], level);
+            let origin = tile_key.origin().map(|v| v as i32);
+            let step = 1 << (level - 1);
+            let row = (sea_level - origin[1]).div_euclid(step);
+            let center = origin[1] + row * step + step / 2;
+            let sample = [
+                origin[0] + step / 2,
+                center.min(sea_level),
+                origin[2] + step / 2,
+            ];
+            let chunk = sample.map(|v| v.div_euclid(16));
+            assert!(
+                generator
+                    .scenic_sample_chunks(tile_key)
+                    .unwrap()
+                    .contains(&chunk)
+            );
+            let encoded = generator
+                .extract_scenic_samples(tile_key, &[(chunk, &data)])
+                .unwrap();
+            let index = (row * 1024) as u16;
+            let record = encoded
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .find(|record| u16::from_le_bytes([record[0], record[1]]) == index)
+                .unwrap();
+            let p = sample.map(|v| v.rem_euclid(16) as usize);
+            assert_eq!(
+                u16::from_le_bytes([record[2], record[3]]),
+                read_block(&data, p[0], p[1], p[2]).unwrap(),
+                "sea={sea_level} level={level}"
+            );
+        }
     }
 }
 

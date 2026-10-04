@@ -4,7 +4,7 @@ defmodule Wyram.Engine.Scenery.FetchTest do
   alias Wyram.Engine.{Native, WorldGenerator}
   alias Wyram.Engine.Scenery.{EditView, Fetch}
   alias Wyram.Scenery.Key
-  alias Wyram.WorldGen.{Biome, Config}
+  alias Wyram.WorldGen.{Biome, Config, Terrain}
 
   setup do
     stone = Ref.new!("game", "stone")
@@ -58,6 +58,49 @@ defmodule Wyram.Engine.Scenery.FetchTest do
     assert actual == expected
     {:ok, [unmodified]} = Native.generate_scenic_tiles(generation.resource, [wire(key)])
     refute actual == unmodified
+  end
+
+  test "saved sea surface edits follow the shifted sample across chunk boundaries" do
+    stone = Ref.new!("game", "stone")
+    water = Ref.new!("game", "water")
+
+    config =
+      Config.new!(%{
+        relief: 0,
+        terrain: Terrain.new!(%{roughness: 0.0}),
+        islands: nil,
+        carvers: [],
+        biomes: [
+          Biome.new!(%{
+            id: "ocean",
+            surface: stone,
+            soil: stone,
+            rock: stone,
+            water: water,
+            elevation_offset: -32
+          })
+        ]
+      })
+
+    {:ok, generation} =
+      WorldGenerator.compile(config, 2026, [], %{"game:stone" => 42, "game:water" => 17})
+
+    {:ok, key} = Key.new({0, 0, 0}, 6)
+    {:ok, chunk_keys} = Native.scenic_sample_chunks(generation.resource, wire(key))
+    assert {1, 0, 1} in chunk_keys
+    refute {1, 1, 1} in chunk_keys
+    [{{1, 0, 1}, original}] = WorldGenerator.chunks(generation, [{1, 0, 1}])
+    {:ok, edited} = Native.write_block(original, 0, 0, 0, 0)
+    table = EditView.new(%{{1, 0, 1} => %{data: edited}})
+    assert {:ok, [actual]} = Fetch.run(%{generation: generation, edits: table, stamp: 0}, [key])
+
+    assert <<"WSL1", 6, 2, 0, 0, 0::little-32, 0::little-32, 0::little-32, 17::little-16,
+             98_304::little-32, 0x32, 0, _::binary>> = actual
+
+    {:ok, [unmodified]} = Native.generate_scenic_tiles(generation.resource, [wire(key)])
+
+    assert <<"WSL1", 6, 2, 0, 0, 0::little-32, 0::little-32, 0::little-32, 17::little-16,
+             131_072::little-32, 0x33, 0, _::binary>> = unmodified
   end
 
   test "obsolete or deleted read models cannot publish results and work is bounded", %{

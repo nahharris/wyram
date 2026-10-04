@@ -69,6 +69,11 @@ higher levels incorporate edits at their stratified sample positions and may
 miss unsampled thin additions or removals. Reads check the content stamp before
 and after collection and generation, discarding obsolete results.
 
+The sea-containing sample stratum moves a midpoint above sea level down to the
+sea-level voxel. Lower midpoints stay unchanged. This retains thin sea layers
+without increasing the sample count. Edit collection follows the shifted
+positions, including chunk-boundary crossings at higher levels.
+
 The service owns one plan and retains at most the configured number of cached
 tiles. It runs at most two generation jobs, each containing at most two tiles,
 and keeps only one unacknowledged two-tile delivery to the current client.
@@ -130,7 +135,9 @@ Completed near meshes, including empty meshes, populate a bounded GPU coverage
 mask. Distant fragments covered by those chunks are discarded. Missing near
 meshes retain their distant fallback. Near and distant translucent faces share
 one camera-sorted index stream. Ocean cap heights come from generator metadata
-and public material descriptors. Reverse infinite depth handles distant bounds;
+and public material descriptors. A sampled water cap containing that plane uses
+its configured height even when the plane is near the bottom of the coarse
+cell; water away from it uses the local material height. Reverse infinite depth handles distant bounds;
 horizontal fog and a hard cutoff limit the configured view range.
 
 Cells can carry a separate top-surface color material. Reduction votes over the

@@ -118,13 +118,19 @@ fn coarse_cells_match_a_separate_world_space_sample_oracle() {
                     let mut weights = std::collections::BTreeMap::<u16, u32>::new();
                     let mut mask = 0u8;
                     for octant in 0..8 {
-                        let sample = std::array::from_fn(|axis| {
+                        let mut sample = std::array::from_fn(|axis| {
                             (origin[axis]
                                 + p[axis] as i64 * scale
                                 + scale / 4
                                 + ((octant >> axis) & 1) as i64 * (scale / 2))
                                 as i32
                         });
+                        let stratum_bottom = origin[1]
+                            + p[1] as i64 * scale
+                            + ((octant >> 1) & 1) as i64 * (scale / 2);
+                        if stratum_bottom <= 0 && sample[1] > 0 {
+                            sample[1] = 0;
+                        }
                         let material = generator.voxel(sample);
                         if material != 0 {
                             mask |= 1 << octant;
@@ -219,5 +225,40 @@ fn benchmark_scenic_generation() {
             "level {level} sampled mean: {:.5} ms",
             start.elapsed().as_secs_f64() * 1000.0 / 12.0
         );
+    }
+}
+
+#[test]
+fn coarse_samples_preserve_the_thin_sea_level_layer_in_the_upper_tile() {
+    let mut settings = Settings {
+        relief: 0,
+        islands: None,
+        carvers: vec![],
+        terrain: wyram_core::worldgen::Terrain {
+            roughness: 0.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    settings.biomes[0].elevation_offset = -32;
+    settings.biomes[0].water = 17;
+    settings.biomes[0].features.clear();
+    let generator = Generator::new(2026, settings).unwrap();
+    assert_eq!(
+        generator.voxel([-1, 0, -1]),
+        17,
+        "the exact sea surface exists"
+    );
+    for level in 2..=6 {
+        let tile_key = key([-1, 0, -1], level);
+        let tile = generator.scenic_tile(tile_key).unwrap();
+        let cell = tile.cell([0, 0, 0]).unwrap();
+        assert_eq!(
+            cell.material(),
+            17,
+            "level={level} must retain the sea surface's stratum"
+        );
+        assert_eq!(cell.child_mask(), 0x33);
+        assert_eq!(cell.occupied(), 4 * u32::from(tile_key.scale() / 2).pow(3));
     }
 }

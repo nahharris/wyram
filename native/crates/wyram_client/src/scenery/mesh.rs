@@ -236,7 +236,7 @@ impl Grid<'_> {
         let bottom = self.origin[1] + p[1] as f32 * self.step;
         if let Some(&plane) = self.water.get(&id)
             && plane >= bottom
-            && (plane - bottom - self.step).abs() <= self.step * 0.5 + 1.0
+            && plane <= bottom + self.step + 1.0
         {
             return (plane - bottom) / self.step;
         }
@@ -504,6 +504,89 @@ mod tests {
         assert!(top.iter().all(|v| v.base.position[1] == 0.75
             && v.base.opacity == 160.0 / 255.0
             && v.base.color == [20.0 / 255.0, 80.0 / 255.0, 180.0 / 255.0]));
+    }
+
+    #[test]
+    fn generated_vertical_water_tiles_have_one_surface_at_the_world_plane() {
+        use wyram_core::worldgen::{Generator, Settings, Terrain};
+        let mut settings = Settings {
+            relief: 0,
+            islands: None,
+            carvers: vec![],
+            terrain: Terrain {
+                roughness: 0.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        settings.biomes[0].elevation_offset = -32;
+        settings.biomes[0].water = 17;
+        settings.biomes[0].features.clear();
+        let generator = Generator::new(2026, settings).unwrap();
+        let descriptors = HashMap::from([(
+            17,
+            RenderDescriptor {
+                opacity: 160,
+                emissive: false,
+                height: 0.75,
+                liquid: 1,
+            },
+        )]);
+        let planes = HashMap::from([(17, 0.75)]);
+        for level in 2..=6 {
+            let lower = Arc::new(
+                generator
+                    .scenic_tile(TileKey::new([-1, -1, -1], level).unwrap())
+                    .unwrap(),
+            );
+            let upper = Arc::new(
+                generator
+                    .scenic_tile(TileKey::new([-1, 0, -1], level).unwrap())
+                    .unwrap(),
+            );
+            let lower_mesh = build_with_neighbors(
+                &lower,
+                &colors(),
+                &descriptors,
+                &planes,
+                2 << 20,
+                &[Arc::clone(&upper).into()],
+            )
+            .unwrap();
+            let upper_mesh = build_with_neighbors(
+                &upper,
+                &colors(),
+                &descriptors,
+                &planes,
+                2 << 20,
+                &[Arc::clone(&lower).into()],
+            )
+            .unwrap();
+            let surface: Vec<_> = upper_mesh
+                .vertices
+                .iter()
+                .filter(|v| v.normal[1] == 127 && v.base.opacity < 1.0)
+                .collect();
+            assert!(!surface.is_empty(), "level={level} must have a sea surface");
+            assert!(
+                surface.iter().all(|v| v.base.position[1] == 0.75),
+                "level={level} must keep the plane even near the bottom of a coarse cell"
+            );
+            assert!(
+                lower_mesh
+                    .vertices
+                    .iter()
+                    .all(|v| v.normal[1] != 127 || v.base.opacity == 1.0),
+                "the lower tile cannot add a second water surface"
+            );
+            assert!(
+                upper_mesh
+                    .vertices
+                    .iter()
+                    .all(|v| v.normal[1] != -127 || v.base.opacity == 1.0),
+                "the shared water bottom must be hidden"
+            );
+        }
     }
 
     #[test]

@@ -3,14 +3,25 @@ use crate::BYTE_COUNT;
 use crate::scenery::{LodTile, TileKey};
 use std::collections::{BTreeSet, HashSet};
 
+// Keep the sea surface in its stratum when a midpoint above it would be air.
+// Unit samples stay exact, and midpoints already below the surface stay put.
+pub(super) fn sample_y(center: i32, step: i32, sea_level: i32) -> i32 {
+    if (center - step / 2..center).contains(&sea_level) {
+        sea_level
+    } else {
+        center
+    }
+}
+
 struct Grid {
     origin: [i32; 3],
     side: usize,
     step: i32,
+    sea_level: i32,
 }
 
 impl Grid {
-    fn new(key: TileKey) -> Result<Self, &'static str> {
+    fn new(key: TileKey, sea_level: i32) -> Result<Self, &'static str> {
         if key.level() > 6 {
             return Err("unsupported scenic generation level");
         }
@@ -36,6 +47,7 @@ impl Grid {
             origin: origin.map(|v| v as i32 + offset),
             side: if key.level() == 0 { 16 } else { 32 },
             step,
+            sea_level,
         })
     }
     fn count(&self) -> usize {
@@ -47,9 +59,26 @@ impl Grid {
             index / self.side.pow(2),
             index / self.side % self.side,
         ];
-        std::array::from_fn(|axis| self.origin[axis] + local[axis] as i32 * self.step)
+        let mut position =
+            std::array::from_fn(|axis| self.origin[axis] + local[axis] as i32 * self.step);
+        position[1] = sample_y(position[1], self.step, self.sea_level);
+        position
     }
     fn range(&self, axis: usize, low: i32, high: i32) -> Option<std::ops::RangeInclusive<usize>> {
+        if axis == 1 {
+            // The shifted sea sample can cross a chunk boundary. Its positions
+            // remain ordered, so a bounded scan still yields a contiguous range.
+            let mut matching = (0..self.side).filter(|&index| {
+                let y = sample_y(
+                    self.origin[1] + index as i32 * self.step,
+                    self.step,
+                    self.sea_level,
+                );
+                (low..=high).contains(&y)
+            });
+            let first = matching.next()?;
+            return Some(first..=matching.next_back().unwrap_or(first));
+        }
         let first = -(-(low - self.origin[axis])).div_euclid(self.step);
         let last = (high - self.origin[axis]).div_euclid(self.step);
         let first = first.max(0);
@@ -61,7 +90,7 @@ impl Grid {
 impl Generator {
     /// Distinct chunks containing actual samples, ordered for deterministic bounded reads.
     pub fn scenic_sample_chunks(&self, key: TileKey) -> Result<Vec<[i32; 3]>, &'static str> {
-        let grid = Grid::new(key)?;
+        let grid = Grid::new(key, self.settings.sea_level)?;
         let (low, high) = self.bounds();
         let keys: BTreeSet<_> = (0..grid.count())
             .filter_map(|index| {
@@ -79,7 +108,7 @@ impl Generator {
         if chunks.len() > 256 {
             return Err("oversized scenic edit batch");
         }
-        let grid = Grid::new(key)?;
+        let grid = Grid::new(key, self.settings.sea_level)?;
         let (low, high) = self.bounds();
         let mut seen = HashSet::with_capacity(chunks.len());
         let mut output = Vec::new();
@@ -126,7 +155,7 @@ impl Generator {
         key: TileKey,
         overrides: &[u8],
     ) -> Result<LodTile, &'static str> {
-        let grid = Grid::new(key)?;
+        let grid = Grid::new(key, self.settings.sea_level)?;
         if overrides.len() > grid.count() * 4 || !overrides.len().is_multiple_of(4) {
             return Err("invalid scenic sample overrides");
         }

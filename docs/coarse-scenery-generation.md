@@ -6,6 +6,13 @@ imports the exact generated chunk. Level one evaluates every voxel of its
 placement and support. Levels two through six use eight stratified samples
 per cell and weight each by its represented subcell volume.
 
+Samples normally use each subcell's midpoint. In the stratum containing the
+configured sea level, a midpoint above the sea moves down to the sea-level
+voxel. Midpoints below it stay put. This preserves a thin sea surface that
+would otherwise disappear from the upper tile. Saved-edit collection uses
+these same positions, including when the move crosses a chunk boundary.
+Level zero and level one remain exact.
+
 Every level evaluates at most 32³ samples and 32² terrain columns. Terrain
 columns are reused across vertical samples. Decoration candidates are gathered
 only for a sampled column, with the same anchor placement, biome selection,
@@ -23,9 +30,10 @@ Selection, refinement, transitions and visual validation must account for this.
 
 The engine's dirty-CPU generator operation accepts at most two tile keys per
 call and returns encoded tiles in input order. It uses the existing native
-resource without activating region actors. This slice generates unmodified
-world rules: saved edits, revision invalidation, cache ownership, runtime
-streaming and drawing remain integration work. It is not enabled in the game.
+resource without activating region actors. Runtime integration now incorporates
+known saved edits, revision invalidation, bounded caches, streaming and drawing;
+see [distant scenery integration](distant-scenery-runtime.md) for current limits
+and remaining acceptance work.
 
 An optimized fixture recorded on 2026-10-03 alternated twelve matched pairs.
 Exact level-one generation plus reduction had a median of 3.50180 ms; direct
