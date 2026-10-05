@@ -1,5 +1,6 @@
 //! Version 1 data-driven generation. Elixir resolves policy and refs; native loops own packed operations.
 mod features;
+mod lod_generation;
 mod noise;
 mod settings;
 mod terrain;

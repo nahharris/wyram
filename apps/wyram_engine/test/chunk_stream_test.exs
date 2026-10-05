@@ -2,6 +2,18 @@ defmodule Wyram.Engine.ChunkStreamTest do
   use ExUnit.Case, async: true
   alias Wyram.Engine.ChunkStream
 
+  test "LOD prefetch preserves the complete baseline near queue before extra work" do
+    center = {-3, -1, 5}
+    bounds = {-192, 319}
+    baseline = ChunkStream.keys(center, bounds, 11)
+    streamed = ChunkStream.streaming_keys(center, bounds, 11, 13)
+    assert Enum.take(streamed, length(baseline)) == baseline
+    assert length(streamed) == 529 * 32
+    assert MapSet.new(streamed) == MapSet.new(ChunkStream.keys(center, bounds, 13))
+    assert length(Enum.uniq(streamed)) == length(streamed)
+    assert ChunkStream.streaming_keys(center, bounds, 11, 11) == baseline
+  end
+
   test "unloads are bounded batches for capable clients and preserve legacy messages" do
     keys = for y <- -12..19, do: {11, y, 0}
     packets = ChunkStream.forget_packets(keys, 1)
@@ -44,5 +56,36 @@ defmodule Wyram.Engine.ChunkStreamTest do
     assert Enum.any?(keys, &(elem(&1, 1) == 19))
     refute Enum.any?(keys, &(elem(&1, 1) in [-13, 20]))
     assert MapSet.new(keys) == MapSet.new(ChunkStream.keys({0, 18, 0}, {-192, 319}, 2))
+  end
+
+  test "prefetch ordering completes inner full-height columns before farther columns" do
+    center = {-3, -1, 5}
+
+    keys = for {x, z} <- [{-1, 5}, {-3, 6}, {-3, 5}, {-4, 5}], y <- -2..0, do: {x, y, z}
+
+    assert ChunkStream.column_order(keys, center) == [
+             {-3, -1, 5},
+             {-3, -2, 5},
+             {-3, 0, 5},
+             {-4, -1, 5},
+             {-3, -1, 6},
+             {-4, -2, 5},
+             {-4, 0, 5},
+             {-3, -2, 6},
+             {-3, 0, 6},
+             {-1, -1, 5},
+             {-1, -2, 5},
+             {-1, 0, 5}
+           ]
+  end
+
+  test "baseline chunk ordering stays three-dimensional and deterministic" do
+    assert ChunkStream.keys({-3, -1, 5}, {-16, -1}, 1) == [
+             {-3, -1, 5},
+             {-4, -1, 5},
+             {-3, -1, 4},
+             {-3, -1, 6},
+             {-2, -1, 5}
+           ]
   end
 end

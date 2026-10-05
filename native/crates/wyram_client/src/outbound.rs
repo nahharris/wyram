@@ -1,11 +1,13 @@
 use crate::ClientPacket;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::{self, Write};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
 const EDIT_CAPACITY: usize = 128;
+const LOD_CONTROL_PACKETS: usize = 16;
+const LOD_CONTROL_ITEMS: usize = 16;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SendError {
@@ -114,14 +116,15 @@ impl Outbound {
         if state.failed || state.closing {
             return Err(SendError::Closed);
         }
-        match packet {
-            ClientPacket::Capabilities { .. } => {
+        let packet = match packet {
+            packet @ ClientPacket::Capabilities { .. } => {
                 if state.capabilities_announced {
                     return Ok(());
                 }
                 state.capabilities_announced = true;
+                Some(packet)
             }
-            ClientPacket::Input { .. } => {
+            packet @ ClientPacket::Input { .. } => {
                 if let Some(index) = state
                     .pending
                     .iter()
@@ -130,18 +133,30 @@ impl Outbound {
                     state.pending.remove(index);
                     state.stats.coalesced_inputs += 1;
                 }
+                Some(packet)
             }
-            ClientPacket::Edit { .. } => {
+            packet @ ClientPacket::Edit { .. } => {
                 if state.edits == EDIT_CAPACITY {
                     return Err(SendError::Full);
                 }
                 state.edits += 1;
+                Some(packet)
             }
+            ClientPacket::LodAck { epoch, tiles } => {
+                merge_lod_acks(&mut state.pending, epoch, tiles)?;
+                None
+            }
+            ClientPacket::LodNeed { epoch, keys } => {
+                merge_lod_needs(&mut state.pending, epoch, keys)?;
+                None
+            }
+        };
+        if let Some(packet) = packet {
+            state.pending.push_back(Pending {
+                packet,
+                queued_at: Instant::now(),
+            });
         }
-        state.pending.push_back(Pending {
-            packet,
-            queued_at: Instant::now(),
-        });
         state.stats.queued = state.pending.len();
         drop(state);
         self.shared.ready.notify_one();
@@ -151,6 +166,136 @@ impl Outbound {
     pub fn snapshot(&self) -> Snapshot {
         self.shared.state.lock().unwrap().stats
     }
+}
+
+fn merge_lod_acks(
+    pending: &mut VecDeque<Pending>,
+    epoch: u64,
+    incoming: Vec<(u8, i32, i32, i32, u64, bool)>,
+) -> Result<(), SendError> {
+    let mut unique = HashSet::new();
+    let mut items: Vec<_> = incoming
+        .into_iter()
+        .filter(|item| unique.insert(*item))
+        .collect();
+    let mut existing = HashSet::new();
+    let mut reusable_slots = 0usize;
+    let mut packet_count = 0usize;
+    for queued in pending.iter() {
+        if let ClientPacket::LodAck {
+            epoch: queued_epoch,
+            tiles,
+        } = &queued.packet
+        {
+            packet_count += 1;
+            if *queued_epoch == epoch {
+                reusable_slots += LOD_CONTROL_ITEMS.saturating_sub(tiles.len());
+                existing.extend(tiles.iter().copied());
+            }
+        }
+    }
+    items.retain(|item| !existing.contains(item));
+    if items.is_empty() {
+        return Ok(());
+    }
+    let additional = items
+        .len()
+        .saturating_sub(reusable_slots)
+        .div_ceil(LOD_CONTROL_ITEMS);
+    if packet_count.saturating_add(additional) > LOD_CONTROL_PACKETS {
+        return Err(SendError::Full);
+    }
+
+    for queued in pending.iter_mut() {
+        if let ClientPacket::LodAck {
+            epoch: queued_epoch,
+            tiles,
+        } = &mut queued.packet
+            && *queued_epoch == epoch
+            && tiles.len() < LOD_CONTROL_ITEMS
+        {
+            let count = (LOD_CONTROL_ITEMS - tiles.len()).min(items.len());
+            tiles.extend(items.drain(..count));
+            if items.is_empty() {
+                break;
+            }
+        }
+    }
+    for chunk in items.chunks(LOD_CONTROL_ITEMS) {
+        pending.push_back(Pending {
+            packet: ClientPacket::LodAck {
+                epoch,
+                tiles: chunk.to_vec(),
+            },
+            queued_at: Instant::now(),
+        });
+    }
+    Ok(())
+}
+
+fn merge_lod_needs(
+    pending: &mut VecDeque<Pending>,
+    epoch: u64,
+    incoming: Vec<(u8, i32, i32, i32)>,
+) -> Result<(), SendError> {
+    let mut unique = HashSet::new();
+    let mut items: Vec<_> = incoming
+        .into_iter()
+        .filter(|item| unique.insert(*item))
+        .collect();
+    let mut existing = HashSet::new();
+    let mut reusable_slots = 0usize;
+    let mut packet_count = 0usize;
+    for queued in pending.iter() {
+        if let ClientPacket::LodNeed {
+            epoch: queued_epoch,
+            keys,
+        } = &queued.packet
+        {
+            packet_count += 1;
+            if *queued_epoch == epoch {
+                reusable_slots += LOD_CONTROL_ITEMS.saturating_sub(keys.len());
+                existing.extend(keys.iter().copied());
+            }
+        }
+    }
+    items.retain(|item| !existing.contains(item));
+    if items.is_empty() {
+        return Ok(());
+    }
+    let additional = items
+        .len()
+        .saturating_sub(reusable_slots)
+        .div_ceil(LOD_CONTROL_ITEMS);
+    if packet_count.saturating_add(additional) > LOD_CONTROL_PACKETS {
+        return Err(SendError::Full);
+    }
+
+    for queued in pending.iter_mut() {
+        if let ClientPacket::LodNeed {
+            epoch: queued_epoch,
+            keys,
+        } = &mut queued.packet
+            && *queued_epoch == epoch
+            && keys.len() < LOD_CONTROL_ITEMS
+        {
+            let count = (LOD_CONTROL_ITEMS - keys.len()).min(items.len());
+            keys.extend(items.drain(..count));
+            if items.is_empty() {
+                break;
+            }
+        }
+    }
+    for chunk in items.chunks(LOD_CONTROL_ITEMS) {
+        pending.push_back(Pending {
+            packet: ClientPacket::LodNeed {
+                epoch,
+                keys: chunk.to_vec(),
+            },
+            queued_at: Instant::now(),
+        });
+    }
+    Ok(())
 }
 
 impl Drop for Outbound {
@@ -203,6 +348,20 @@ mod tests {
                 rolling: false,
                 cancel_actions: false,
             },
+        }
+    }
+
+    fn lod_ack(epoch: u64, x: i32) -> ClientPacket {
+        ClientPacket::LodAck {
+            epoch,
+            tiles: vec![(2, x, -3, 4, x as u64 + 1, true)],
+        }
+    }
+
+    fn lod_need(epoch: u64, x: i32) -> ClientPacket {
+        ClientPacket::LodNeed {
+            epoch,
+            keys: vec![(4, x, 5, -6)],
         }
     }
 
@@ -309,6 +468,8 @@ mod tests {
                 .send(ClientPacket::Capabilities {
                     chunk_protocol: 1,
                     forget_protocol: 1,
+                    lod_protocol: 1,
+                    available_parallelism: Some(4),
                 })
                 .unwrap();
         }
@@ -319,6 +480,79 @@ mod tests {
         assert_eq!(packets.len(), 2);
         assert_eq!(packets[1]["type"], "capabilities");
         assert_eq!(packets[1]["chunk_protocol"], 1);
+    }
+
+    #[test]
+    fn blocked_lod_control_coalesces_deduplicates_and_returns_full_without_loss() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (outbound, worker) = Outbound::start(
+            GateWriter {
+                entered: entered_tx,
+                release: release_rx,
+                bytes: Vec::new(),
+            },
+            |_| panic!("unexpected connection failure"),
+        );
+        outbound.send(edit(-1)).unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        for x in 0..256 {
+            outbound.send(lod_ack(7, x)).unwrap();
+            outbound.send(lod_need(7, x)).unwrap();
+        }
+        // Exact retries are harmless even when both bounded control queues are full.
+        outbound.send(lod_ack(7, 0)).unwrap();
+        outbound.send(lod_need(7, 0)).unwrap();
+        assert_eq!(outbound.send(lod_ack(7, 256)), Err(SendError::Full));
+        assert_eq!(outbound.send(lod_need(7, 256)), Err(SendError::Full));
+        assert_eq!(outbound.snapshot().queued, 32);
+
+        release_tx.send(()).unwrap();
+        drop(outbound);
+        let packets = decode(&worker.join().unwrap().unwrap().bytes);
+        let mut acks = std::collections::BTreeSet::new();
+        let mut needs = std::collections::BTreeSet::new();
+        for packet in packets {
+            match packet["type"].as_str().unwrap() {
+                "lod_ack" => {
+                    assert_eq!(packet["epoch"], 7);
+                    let tiles = packet["tiles"].as_array().unwrap();
+                    assert!(!tiles.is_empty() && tiles.len() <= 16);
+                    for tile in tiles {
+                        acks.insert((
+                            tile[0].as_u64().unwrap() as u8,
+                            tile[1].as_i64().unwrap() as i32,
+                            tile[2].as_i64().unwrap() as i32,
+                            tile[3].as_i64().unwrap() as i32,
+                            tile[4].as_u64().unwrap(),
+                            tile[5].as_bool().unwrap(),
+                        ));
+                    }
+                }
+                "lod_need" => {
+                    assert_eq!(packet["epoch"], 7);
+                    let keys = packet["keys"].as_array().unwrap();
+                    assert!(!keys.is_empty() && keys.len() <= 16);
+                    for key in keys {
+                        needs.insert((
+                            key[0].as_u64().unwrap() as u8,
+                            key[1].as_i64().unwrap() as i32,
+                            key[2].as_i64().unwrap() as i32,
+                            key[3].as_i64().unwrap() as i32,
+                        ));
+                    }
+                }
+                "edit" => {}
+                other => panic!("unexpected outbound packet {other}"),
+            }
+        }
+        assert_eq!(acks.len(), 256);
+        assert_eq!(needs.len(), 256);
+        assert!(acks.contains(&(2, 0, -3, 4, 1, true)));
+        assert!(acks.contains(&(2, 255, -3, 4, 256, true)));
+        assert!(needs.contains(&(4, 0, 5, -6)));
+        assert!(needs.contains(&(4, 255, 5, -6)));
     }
 
     #[test]

@@ -17,14 +17,14 @@ impl Frustum {
 
     pub fn intersects_chunk(&self, key: [i32; 3]) -> bool {
         let low = key.map(|c| c as f32 * 16.0);
+        self.intersects_box(low, low.map(|v| v + 16.0))
+    }
+
+    pub fn intersects_box(&self, low: [f32; 3], high: [f32; 3]) -> bool {
         self.0.iter().all(|plane| {
             let normal = plane.truncate();
             let corner = glam::Vec3::from_array(std::array::from_fn(|i| {
-                if normal[i] >= 0.0 {
-                    low[i] + 16.0
-                } else {
-                    low[i]
-                }
+                if normal[i] >= 0.0 { high[i] } else { low[i] }
             }));
             // Keep uncertain boundary boxes, including at large coordinates.
             let error = (normal.abs().dot(corner.abs()) + plane.w.abs()) * f32::EPSILON * 8.0;

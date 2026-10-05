@@ -2,7 +2,7 @@ defmodule Wyram.Engine.Control do
   @moduledoc "Opt-in loopback JSON command socket for local automation."
   use GenServer
 
-  alias Wyram.Engine.{ClientPort, PluginManager, World}
+  alias Wyram.Engine.{ClientPort, LodStreamer, PluginManager, World}
 
   @max_radius 3
   @coordinate_limit 2_147_483_647
@@ -83,7 +83,8 @@ defmodule Wyram.Engine.Control do
       blocks: PluginManager.blocks(),
       regions: Registry.count(Wyram.Engine.RegionRegistry),
       beam_processes: :erlang.system_info(:process_count),
-      beam_memory_bytes: :erlang.memory(:total)
+      beam_memory_bytes: :erlang.memory(:total),
+      lod: LodStreamer.status()
     }
   end
 

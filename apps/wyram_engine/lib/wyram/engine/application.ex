@@ -7,6 +7,7 @@ defmodule Wyram.Engine.Application do
     ClientPort,
     Control,
     LiquidSimulation,
+    LodStreamer,
     Paths,
     PluginManager,
     World
@@ -26,6 +27,7 @@ defmodule Wyram.Engine.Application do
       {World, directory: Path.join(data_dir, "worlds")},
       {LiquidSimulation, []},
       {Characters, []},
+      {LodStreamer, []},
       ClientPort
     ]
 

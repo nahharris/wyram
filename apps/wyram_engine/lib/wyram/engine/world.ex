@@ -2,7 +2,7 @@ defmodule Wyram.Engine.World do
   @moduledoc "Routes chunk operations to region actors and durably records edits."
   use GenServer
 
-  alias Wyram.Engine.{Native, PluginManager, Region, WorldGenerator}
+  alias Wyram.Engine.{LodEdits, Native, PluginManager, Region, WorldGenerator}
 
   @region_side 4
   @chunk_side 16
@@ -20,6 +20,9 @@ defmodule Wyram.Engine.World do
   end
 
   def generation, do: GenServer.call(__MODULE__, :generation)
+
+  def lod_edit_snapshot(tile), do: GenServer.call(__MODULE__, {:lod_edit_snapshot, tile})
+  def lod_revision(tile), do: GenServer.call(__MODULE__, {:lod_revision, tile})
 
   def surface_definitions(definitions) do
     case generation() do
@@ -191,7 +194,12 @@ defmodule Wyram.Engine.World do
              PluginManager.palette(),
              PluginManager.blocks()
            ) do
-      {:ok, Map.merge(saved, %{path: path, generation: generation})}
+      {:ok,
+       Map.merge(saved, %{
+         path: path,
+         generation: generation,
+         lod_edits: LodEdits.new(saved.edited)
+       })}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -199,6 +207,12 @@ defmodule Wyram.Engine.World do
 
   @impl true
   def handle_call(:generation, _from, state), do: {:reply, state.generation, state}
+
+  def handle_call({:lod_edit_snapshot, tile}, _from, state),
+    do: {:reply, LodEdits.snapshot(state.lod_edits, tile, state.edited), state}
+
+  def handle_call({:lod_revision, tile}, _from, state),
+    do: {:reply, LodEdits.revision(state.lod_edits, tile), state}
 
   def handle_call({:saved_chunks, {rx, rz}}, _from, state) do
     chunks =
@@ -212,6 +226,7 @@ defmodule Wyram.Engine.World do
 
   def handle_call({:persist_edit, key, chunk}, _from, state) do
     next = put_in(state.edited[key], chunk)
+    next = %{next | lod_edits: LodEdits.put(state.lod_edits, key)}
 
     case persist(next) do
       :ok -> {:reply, :ok, next}

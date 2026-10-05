@@ -21,6 +21,7 @@ pub struct BlendedMeshes {
     index_capacity: usize,
     count: u32,
     dirty: bool,
+    index_dirty: bool,
     eye: Option<Vec3>,
     vertices: Vec<[Vertex; 6]>,
     centers: Vec<Vec3>,
@@ -37,6 +38,14 @@ struct UploadPlan {
 }
 
 impl BlendedMeshes {
+    pub fn vertex_buffer(&self) -> Option<&wgpu::Buffer> {
+        self.buffer.as_ref()
+    }
+
+    pub fn quad_centers(&self) -> &[Vec3] {
+        &self.centers
+    }
+
     pub fn replace(&mut self, key: [i32; 3], vertices: &[Vertex]) {
         let quads: Vec<_> = vertices
             .as_chunks::<6>()
@@ -46,37 +55,24 @@ impl BlendedMeshes {
             .copied()
             .collect();
         if quads.is_empty() {
-            self.dirty |= self.chunks.remove(&key).is_some();
+            if self.chunks.remove(&key).is_some() {
+                self.dirty = true;
+                self.index_dirty = true;
+            }
         } else if self.chunks.get(&key) != Some(&quads) {
             self.chunks.insert(key, quads);
             self.dirty = true;
+            self.index_dirty = true;
         }
     }
 
     fn prepare_cpu(&mut self, eye: Vec3) -> UploadPlan {
-        if !self.dirty && self.eye == Some(eye) {
+        if !self.dirty && !self.index_dirty && self.eye == Some(eye) {
             return UploadPlan::default();
         }
         let geometry_changed = self.dirty;
-        let collect = Instant::now();
+        let (collect_ms, _) = self.collect_vertices_cpu();
         self.eye = Some(eye);
-        self.dirty = false;
-        if geometry_changed {
-            self.vertices.clear();
-            self.vertices
-                .extend(self.chunks.values().flat_map(|quads| quads.iter().copied()));
-            self.centers.clear();
-            self.centers.extend(self.vertices.iter().map(|quad| {
-                (Vec3::from_array(quad[0].position) + Vec3::from_array(quad[2].position)) * 0.5
-            }));
-        }
-        self.count = u32::try_from(self.vertices.len() * 6)
-            .expect("resident blended vertex count fits GPU indices");
-        let collect_ms = if geometry_changed {
-            collect.elapsed().as_secs_f64() * 1000.0
-        } else {
-            0.0
-        };
         let sort = Instant::now();
         self.order.clear();
         self.order
@@ -103,12 +99,55 @@ impl BlendedMeshes {
             let first = rank as u32 * 6;
             *triangle_pair = [first, first + 1, first + 2, first + 3, first + 4, first + 5];
         }
+        self.index_dirty = false;
         UploadPlan {
             vertices: geometry_changed,
             indices: true,
             collect_ms,
             sort_ms: sort.elapsed().as_secs_f64() * 1000.0,
         }
+    }
+
+    fn collect_vertices_cpu(&mut self) -> (f64, bool) {
+        if !self.dirty {
+            return (0.0, false);
+        }
+        let collect = Instant::now();
+        self.dirty = false;
+        self.vertices.clear();
+        self.vertices
+            .extend(self.chunks.values().flat_map(|quads| quads.iter().copied()));
+        self.centers.clear();
+        self.centers.extend(self.vertices.iter().map(|quad| {
+            (Vec3::from_array(quad[0].position) + Vec3::from_array(quad[2].position)) * 0.5
+        }));
+        self.count = u32::try_from(self.vertices.len() * 6)
+            .expect("resident blended vertex count fits GPU indices");
+        (collect.elapsed().as_secs_f64() * 1000.0, true)
+    }
+
+    pub fn prepare_vertices(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> PrepareStats {
+        let (collect_ms, geometry_changed) = self.collect_vertices_cpu();
+        let mut stats = PrepareStats {
+            collect_ms,
+            quads: self.vertices.len(),
+            ..PrepareStats::default()
+        };
+        if geometry_changed && !self.vertices.is_empty() {
+            let write = Instant::now();
+            stats.bytes = size_of_val(self.vertices.as_slice());
+            upload(
+                device,
+                queue,
+                &mut self.buffer,
+                &mut self.capacity,
+                bytemuck::cast_slice(&self.vertices),
+                wgpu::BufferUsages::VERTEX,
+                "Resident blended faces",
+            );
+            stats.write_ms = write.elapsed().as_secs_f64() * 1000.0;
+        }
+        stats
     }
 
     pub fn prepare(
@@ -315,6 +354,35 @@ mod tests {
         scene.replace([1, 0, 0], &[]);
         scene.prepare_cpu(Vec3::ZERO);
         assert!(scene.vertices.is_empty() && scene.indices.is_empty());
+    }
+
+    #[test]
+    fn vertex_only_collection_defers_near_resort_until_circle_only_prepare() {
+        let mut scene = BlendedMeshes::default();
+        let quad = |x| {
+            [Vertex {
+                position: [x, 0.0, 0.0],
+                color: [0.5; 3],
+                opacity: 0.5,
+            }; 6]
+        };
+        scene.replace([0, 0, 0], &quad(1.0));
+        scene.replace([1, 0, 0], &quad(10.0));
+        scene.prepare_cpu(Vec3::ZERO);
+        let sorted_indices = scene.indices.clone();
+
+        scene.replace([0, 0, 0], &quad(20.0));
+        let (collect_ms, changed) = scene.collect_vertices_cpu();
+        assert!(changed);
+        assert!(collect_ms >= 0.0);
+        assert_eq!(scene.quad_centers()[0].x, 20.0);
+        assert_eq!(scene.indices, sorted_indices, "collection must not resort");
+        assert!(scene.index_dirty);
+
+        let plan = scene.prepare_cpu(Vec3::ZERO);
+        assert!(!plan.vertices, "vertices were already collected");
+        assert!(plan.indices);
+        assert_eq!(scene.indices, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     }
 
     fn fixture() -> Vec<[Vertex; 6]> {

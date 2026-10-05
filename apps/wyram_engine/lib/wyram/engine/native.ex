@@ -33,6 +33,8 @@ defmodule Wyram.Engine.Native do
   def sample_world(_resource, _positions), do: :erlang.nif_error(:nif_not_loaded)
   def generator_spawn(_resource), do: :erlang.nif_error(:nif_not_loaded)
   def surface_heights(_resource, _positions), do: :erlang.nif_error(:nif_not_loaded)
+  def generate_lod_tile(_resource, _key, _liquid_ids), do: :erlang.nif_error(:nif_not_loaded)
+  def apply_lod_edits(_key, _data, _edits, _liquid_ids), do: :erlang.nif_error(:nif_not_loaded)
 
   def read_blocks(_data, _positions), do: :erlang.nif_error(:nif_not_loaded)
   def compare_write_blocks(_data, _edits), do: :erlang.nif_error(:nif_not_loaded)

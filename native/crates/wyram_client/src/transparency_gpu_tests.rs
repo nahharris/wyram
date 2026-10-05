@@ -6,6 +6,34 @@ use wgpu::util::DeviceExt;
 #[test]
 #[ignore = "requires a graphics adapter; manual offscreen rendering parity check"]
 fn resident_blended_draw_matches_vertex_reference_pixels() {
+    render_blended_fixture(None, false, false);
+}
+
+#[test]
+#[ignore = "requires a graphics adapter; manual liquid fog check"]
+fn fully_fogged_liquid_hides_background_without_grain_or_edges() {
+    render_blended_fixture(Some(true), false, false);
+}
+
+#[test]
+#[ignore = "requires a graphics adapter; manual fog bypass check"]
+fn disabling_fog_preserves_lod_coverage_and_liquid_color() {
+    render_blended_fixture(Some(false), false, false);
+}
+
+#[test]
+#[ignore = "requires a graphics adapter; manual partial near readiness check"]
+fn uploaded_near_chunk_is_visible_before_the_full_height_column() {
+    render_blended_fixture(Some(false), true, false);
+}
+
+#[test]
+#[ignore = "requires a graphics adapter; manual vertical chunk boundary check"]
+fn resident_near_top_face_survives_an_unready_chunk_above() {
+    render_blended_fixture(Some(false), true, true);
+}
+
+fn render_blended_fixture(fog_mode: Option<bool>, partial_near: bool, top_face: bool) {
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
@@ -15,31 +43,87 @@ fn resident_blended_draw_matches_vertex_reference_pixels() {
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
         .expect("offscreen parity device");
     println!("offscreen adapter: {:?}", adapter.get_info());
+    let mut uniform = crate::lod_runtime::CameraUniform::disabled(Mat4::IDENTITY);
+    if top_face {
+        // Exact axis permutation keeps the boundary quad away from the clip plane.
+        uniform.matrix = Mat4::from_cols_array(&[
+            1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.5, 1.0,
+        ])
+        .to_cols_array();
+    }
+    if let Some(fog_enabled) = fog_mode {
+        uniform.fog = [1.0, 1.0, 0.0, 1.0];
+        uniform.grid = [-1, -1, 2, 0];
+        uniform.anchor = [0, 0, -1, i32::from(!fog_enabled)];
+        if top_face {
+            uniform.anchor[1] = 1;
+        }
+        if fog_enabled {
+            // This fixture exercises distant fog outside the protected near circle.
+            uniform.grid[3] = 10;
+            uniform.anchor[0] = 10;
+        }
+    }
     let camera = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Parity camera"),
-        contents: bytemuck::cast_slice(&Mat4::IDENTITY.to_cols_array()),
+        contents: bytemuck::bytes_of(&uniform),
         usage: wgpu::BufferUsages::UNIFORM,
     });
     let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Parity camera layout"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: wgpu::BufferSize::new(64),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(128),
+                },
+                count: None,
             },
-            count: None,
-        }],
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(16),
+                },
+                count: None,
+            },
+        ],
+    });
+    let mut columns = [[1.0f32, 1.0, 0.0, f32::from_bits(3)]; 4];
+    if fog_mode == Some(false) {
+        columns[2] = [0.0; 4];
+    }
+    if partial_near {
+        columns[3] = [0.0, 0.0, 0.0, f32::from_bits(if top_face { 1 } else { 2 })];
+    }
+    if top_face {
+        // The horizontal quad spans both negative and positive Z columns.
+        columns[0] = columns[2];
+        columns[1] = columns[3];
+    }
+    let mask = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Disabled coverage"),
+        contents: bytemuck::cast_slice(&columns),
+        usage: wgpu::BufferUsages::STORAGE,
     });
     let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Parity camera group"),
         layout: &camera_layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: camera.as_entire_binding(),
-        }],
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: mask.as_entire_binding(),
+            },
+        ],
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Parity pipeline layout"),
@@ -105,7 +189,11 @@ fn resident_blended_draw_matches_vertex_reference_pixels() {
             [x - 0.55, -0.75, z],
         ]
         .map(|position| Vertex {
-            position,
+            position: if top_face {
+                [position[0], 0.0, -position[1]]
+            } else {
+                position
+            },
             color,
             opacity: 0.5,
         })
@@ -152,9 +240,9 @@ fn resident_blended_draw_matches_vertex_reference_pixels() {
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 0.43,
-                                g: 0.65,
-                                b: 0.86,
+                                r: if fog_mode.is_some() { 0.0 } else { 0.43 },
+                                g: if fog_mode.is_some() { 0.0 } else { 0.65 },
+                                b: if fog_mode.is_some() { 0.0 } else { 0.86 },
                                 a: 1.0,
                             }),
                             store: wgpu::StoreOp::Store,
@@ -225,7 +313,42 @@ fn resident_blended_draw_matches_vertex_reference_pixels() {
             actual == expected,
             "offscreen alpha pixels differ at step {step}"
         );
-        if let Some(previous) = previous {
+        if fog_mode == Some(true) {
+            // All these pixels are covered by water. Full fog must obscure a dark
+            // background with continuous sky color rather than transparent grain.
+            for y in 8..24 {
+                for x in 12..20 {
+                    assert_eq!(
+                        &actual[(y * 32 + x) * 4..(y * 32 + x) * 4 + 4],
+                        &[110, 166, 219, 255]
+                    );
+                }
+            }
+        } else if fog_mode == Some(false) {
+            let pixel = |x: usize, y: usize| &actual[(y * 32 + x) * 4..(y * 32 + x) * 4 + 4];
+            assert_eq!(
+                pixel(12, 12),
+                &[0, 0, 0, 255],
+                "unready coverage must remain hidden without fog"
+            );
+            assert_ne!(
+                pixel(18, 12),
+                &[110, 166, 219, 255],
+                "fog bypass must retain liquid color"
+            );
+            assert_ne!(
+                pixel(18, 12),
+                &[0, 0, 0, 255],
+                "ready coverage must remain visible without fog"
+            );
+            if partial_near && !top_face {
+                assert_eq!(
+                    pixel(18, 20),
+                    &[0, 0, 0, 255],
+                    "unuploaded vertical chunks must not be declared resident"
+                );
+            }
+        } else if let Some(previous) = previous {
             assert!(actual != previous, "fixture must exercise visible changes");
         }
         previous = Some(actual);

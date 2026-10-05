@@ -6,6 +6,15 @@ mod chunk_wire;
 mod flight_input;
 mod frustum;
 mod gpu_timer;
+mod lod_client;
+#[cfg(test)]
+#[path = "lod_control_tests.rs"]
+mod lod_control_tests;
+mod lod_coverage;
+mod lod_mesh;
+mod lod_runtime;
+mod lod_transparency;
+mod lod_wire;
 mod meshing;
 mod outbound;
 mod replica;
@@ -14,7 +23,7 @@ mod telemetry;
 mod transparency;
 mod world;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Read};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -33,9 +42,32 @@ use crate::replica::{Replica, Snapshot};
 use crate::telemetry::{FrameSample, FrameTelemetry};
 use crate::world::{RenderDescriptor, Vertex, VoxelWorld};
 
+const MAX_PENDING_LOD_CONTROL_ITEMS: usize = 1024;
+const LOD_ACK_FRAME_BUDGET: usize = 128;
+type LodAckItem = (u8, i32, i32, i32, u64, bool);
+type LodNeedItem = (u8, i32, i32, i32);
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerPacket {
+    LodConfig {
+        #[serde(flatten)]
+        config: lod_runtime::LodConfig,
+    },
+    LodPlan {
+        epoch: u64,
+        serial: u64,
+        center: [i32; 3],
+        keys: Vec<[i32; 4]>,
+    },
+    LodInvalidate {
+        epoch: u64,
+        tiles: Vec<(u8, i32, i32, i32, u64)>,
+    },
+    #[serde(skip)]
+    LodTiles {
+        batch: lod_wire::WireBatch,
+    },
     CharacterStates {
         characters: Vec<Snapshot>,
     },
@@ -104,6 +136,16 @@ enum ClientPacket {
     Capabilities {
         chunk_protocol: u8,
         forget_protocol: u8,
+        lod_protocol: u8,
+        available_parallelism: Option<usize>,
+    },
+    LodAck {
+        epoch: u64,
+        tiles: Vec<(u8, i32, i32, i32, u64, bool)>,
+    },
+    LodNeed {
+        epoch: u64,
+        keys: Vec<(u8, i32, i32, i32)>,
     },
     Input {
         sequence: u64,
@@ -177,8 +219,35 @@ fn decode_packet(bytes: &[u8]) -> Option<ServerPacket> {
             .ok()
             .map(|chunks| ServerPacket::PackedChunks { chunks });
     }
+    if bytes.starts_with(b"WL01") {
+        return lod_wire::decode(bytes)
+            .ok()
+            .map(|batch| ServerPacket::LodTiles { batch });
+    }
     let packet: ServerPacket = serde_json::from_slice(bytes).ok()?;
     let chunks = match packet {
+        ServerPacket::LodConfig { ref config } if !config.validate() => return None,
+        ServerPacket::LodPlan { ref keys, .. }
+            if keys.len() > 4608
+                || keys.iter().any(|k| {
+                    u8::try_from(k[0])
+                        .ok()
+                        .and_then(|size| {
+                            wyram_core::lod::TileKey::new(size, [k[1], k[2], k[3]]).ok()
+                        })
+                        .is_none()
+                }) =>
+        {
+            return None;
+        }
+        ServerPacket::LodInvalidate { ref tiles, .. }
+            if tiles.len() > 128
+                || tiles
+                    .iter()
+                    .any(|k| wyram_core::lod::TileKey::new(k.0, [k.1, k.2, k.3]).is_err()) =>
+        {
+            return None;
+        }
         ServerPacket::ForgetChunks { ref keys } if keys.len() > 16 => return None,
         ServerPacket::Chunk {
             key,
@@ -219,12 +288,19 @@ struct Graphics {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     blended_pipeline: wgpu::RenderPipeline,
+    lod_pipeline: wgpu::RenderPipeline,
+    lod_blended_pipeline: wgpu::RenderPipeline,
+    character_pipeline: wgpu::RenderPipeline,
     blended: transparency::BlendedMeshes,
+    combined_blended: lod_transparency::CombinedTransparency,
     depth: wgpu::TextureView,
     camera: wgpu::Buffer,
     camera_group: wgpu::BindGroup,
+    coverage_mask: wgpu::Buffer,
     meshes: HashMap<[i32; 3], (wgpu::Buffer, u32)>,
+    near_ready: HashSet<[i32; 3]>,
     culling: bool,
+    fog_enabled: bool,
     gpu_timer: Option<gpu_timer::GpuTimer>,
     characters: wgpu::Buffer,
 }
@@ -283,29 +359,53 @@ impl Graphics {
         let gpu_timer = timing.then(|| gpu_timer::GpuTimer::new(&device, &queue));
         let camera = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera matrix"),
-            contents: bytemuck::cast_slice(&Mat4::IDENTITY.to_cols_array()),
+            contents: bytemuck::bytes_of(&lod_runtime::CameraUniform::disabled(Mat4::IDENTITY)),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Camera layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(64),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(128),
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(16),
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let coverage_mask = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("LOD coverage mask"),
+            size: lod_runtime::MASK_BYTES,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
         let camera_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Camera"),
             layout: &camera_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: coverage_mask.as_entire_binding(),
+                },
+            ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Voxel pipeline layout"),
@@ -313,15 +413,25 @@ impl Graphics {
             immediate_size: 0,
         });
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
-        let make_pipeline = |blended| {
+        let make_pipeline = |blended, lod, character| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Voxel pipeline"),
                 layout: Some(&layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
-                    entry_point: Some("vs_main"),
+                    entry_point: Some(if lod {
+                        "vs_lod"
+                    } else if character {
+                        "vs_character"
+                    } else {
+                        "vs_main"
+                    }),
                     compilation_options: Default::default(),
-                    buffers: &[Some(Vertex::layout())],
+                    buffers: &[Some(if lod {
+                        lod_mesh::LodVertex::layout()
+                    } else {
+                        Vertex::layout()
+                    })],
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
@@ -353,8 +463,11 @@ impl Graphics {
                 cache: None,
             })
         };
-        let pipeline = make_pipeline(false);
-        let blended_pipeline = make_pipeline(true);
+        let pipeline = make_pipeline(false, false, false);
+        let blended_pipeline = make_pipeline(true, false, false);
+        let lod_pipeline = make_pipeline(false, true, false);
+        let lod_blended_pipeline = make_pipeline(true, true, false);
+        let character_pipeline = make_pipeline(false, false, true);
         let depth = Self::create_depth(&device, &config);
         let characters = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Character vertex batch"),
@@ -369,12 +482,19 @@ impl Graphics {
             config,
             pipeline,
             blended_pipeline,
+            lod_pipeline,
+            lod_blended_pipeline,
+            character_pipeline,
             blended: transparency::BlendedMeshes::default(),
+            combined_blended: lod_transparency::CombinedTransparency::default(),
             depth,
             camera,
             camera_group,
+            coverage_mask,
             meshes: HashMap::new(),
+            near_ready: HashSet::new(),
             culling,
+            fog_enabled: std::env::var("WYRAM_LOD_FOG").as_deref() != Ok("0"),
             gpu_timer,
             characters,
         })
@@ -410,6 +530,7 @@ impl Graphics {
     }
 
     fn replace_mesh(&mut self, key: [i32; 3], vertices: &[Vertex]) {
+        self.near_ready.insert(key);
         self.blended.replace(key, vertices);
         let opaque: Vec<_> = vertices
             .iter()
@@ -431,13 +552,23 @@ impl Graphics {
         }
     }
 
-    fn render(&mut self, position: Vec3, direction: Vec3, characters: &[Vertex]) -> FrameSample {
+    fn render(
+        &mut self,
+        position: Vec3,
+        direction: Vec3,
+        characters: &[Vertex],
+        lod: Option<&lod_runtime::LodRuntime>,
+    ) -> FrameSample {
         let mut stats = FrameSample::default();
         if let Some(timer) = &mut self.gpu_timer {
             stats.gpu_render_ms = timer.collect(&self.device);
         }
         let blended_start = Instant::now();
-        let blended = self.blended.prepare(&self.device, &self.queue, position);
+        let blended = if lod.is_some() {
+            self.blended.prepare_vertices(&self.device, &self.queue)
+        } else {
+            self.blended.prepare(&self.device, &self.queue, position)
+        };
         stats.blended_write_bytes = blended.bytes;
         stats.blended_collect_cpu_ms = blended.collect_ms;
         stats.blended_sort_cpu_ms = blended.sort_ms;
@@ -450,14 +581,83 @@ impl Graphics {
                 .write_buffer(&self.characters, 0, bytemuck::cast_slice(characters));
         }
         let aspect = self.config.width as f32 / self.config.height as f32;
-        let matrix = Mat4::perspective_rh(70f32.to_radians(), aspect, 0.05, 512.0)
+        let far = lod.map_or(512.0, |lod| {
+            let horizontal =
+                lod.config.near_radius as f32 * f32::from(lod.config.max_cell_size) * 16.0 + 16.0;
+            let vertical = (position.y - lod.config.min_y as f32)
+                .abs()
+                .max((position.y - lod.config.max_y as f32).abs());
+            horizontal.hypot(vertical) + 16.0
+        });
+        let matrix = Mat4::perspective_rh(70f32.to_radians(), aspect, 0.05, far)
             * Mat4::look_to_rh(position, direction, Vec3::Y);
         let frustum = frustum::Frustum::new(matrix);
-        self.queue.write_buffer(
-            &self.camera,
-            0,
-            bytemuck::cast_slice(&matrix.to_cols_array()),
-        );
+        let far_parts: Vec<_> = lod
+            .into_iter()
+            .flat_map(|lod| {
+                let mut residents: Vec<_> = lod
+                    .client
+                    .residents()
+                    .filter(|r| {
+                        r.epoch == lod.epoch && {
+                            let origin = r.key.origin().expect("resident tile validated");
+                            !self.culling
+                                || frustum.intersects_box(
+                                    origin.map(|v| v as f32),
+                                    origin.map(|v| (v + r.key.span()) as f32),
+                                )
+                        }
+                    })
+                    .collect();
+                residents.sort_by_key(|r| (r.key.cell_size, r.key.position));
+                residents
+                    .into_iter()
+                    .flat_map(|r| r.parts.iter())
+                    .filter(|part| part.blended.is_some())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        if lod.is_some() {
+            let combined = self.combined_blended.prepare(
+                &self.device,
+                &self.queue,
+                position,
+                &self.blended,
+                &far_parts,
+            );
+            stats.blended_sort_cpu_ms += combined.sort_ms;
+            stats.blended_write_cpu_ms += combined.write_ms;
+            stats.blended_write_bytes += combined.bytes;
+            stats.blended_quads = combined.quads;
+        }
+        let mut uniform = lod_runtime::CameraUniform::disabled(matrix);
+        if let Some(lod) = lod {
+            uniform.eye = position.extend(0.0).to_array();
+            uniform.fog = [
+                0.0,
+                1.0,
+                lod.config.near_radius as f32,
+                lod.start.elapsed().as_secs_f32(),
+            ];
+            uniform.anchor = [
+                lod.center[2],
+                lod.config.near_radius as i32,
+                lod.config.min_y.div_euclid(16),
+                i32::from(!self.fog_enabled),
+            ];
+            uniform.grid = [0, 0, 0, lod.center[0]];
+            if let Some(frame) = &lod.coverage_frame {
+                uniform.fog[0] = frame.frontier_radius_blocks;
+                uniform.grid = [
+                    frame.origin_chunk[0],
+                    frame.origin_chunk[1],
+                    frame.side as i32,
+                    lod.center[0],
+                ];
+            }
+        }
+        self.queue
+            .write_buffer(&self.camera, 0, bytemuck::bytes_of(&uniform));
         let acquire_start = Instant::now();
         let acquired = self.surface.get_current_texture();
         stats.surface_acquire_ms = acquire_start.elapsed().as_secs_f64() * 1000.0;
@@ -523,11 +723,47 @@ impl Graphics {
                 stats.opaque_vertices += *count as usize;
             }
             if !characters.is_empty() {
+                pass.set_pipeline(&self.character_pipeline);
                 pass.set_vertex_buffer(0, self.characters.slice(..));
                 pass.draw(0..characters.len() as u32, 0..1);
             }
-            pass.set_pipeline(&self.blended_pipeline);
-            self.blended.draw(&mut pass);
+            if let Some(lod) = lod {
+                pass.set_pipeline(&self.lod_pipeline);
+                let visible = |key: wyram_core::lod::TileKey| {
+                    let origin = key.origin().expect("resident tile validated");
+                    !self.culling
+                        || frustum.intersects_box(
+                            origin.map(|v| v as f32),
+                            origin.map(|v| (v + key.span()) as f32),
+                        )
+                };
+                for resident in lod
+                    .client
+                    .residents()
+                    .filter(|r| r.epoch == lod.epoch && visible(r.key))
+                {
+                    for part in resident.parts {
+                        if let Some((buffer, count)) = &part.opaque {
+                            pass.set_vertex_buffer(0, buffer.slice(..));
+                            pass.draw(0..*count, 0..1);
+                            stats.opaque_draws += 1;
+                            stats.opaque_vertices += *count as usize;
+                        }
+                    }
+                }
+            }
+            if lod.is_some() {
+                self.combined_blended.draw(
+                    &mut pass,
+                    &self.blended,
+                    &far_parts,
+                    &self.blended_pipeline,
+                    &self.lod_blended_pipeline,
+                );
+            } else {
+                pass.set_pipeline(&self.blended_pipeline);
+                self.blended.draw(&mut pass);
+            }
         }
         if let Some(timer) = &self.gpu_timer {
             timer.resolve(&mut encoder);
@@ -553,6 +789,8 @@ struct Game {
     inbound_wire_bytes: usize,
     inbound_queue_max_ms: f64,
     world: VoxelWorld,
+    lod: Option<lod_runtime::LodRuntime>,
+    session_start: Instant,
     position: Vec3,
     yaw: f32,
     pitch: f32,
@@ -574,15 +812,25 @@ struct Game {
     last_redraw: Instant,
     outbound: Option<outbound::Outbound>,
     outbound_error: Option<outbound::SendError>,
+    pending_lod_acks: VecDeque<(u64, LodAckItem)>,
+    pending_lod_needs: VecDeque<(u64, LodNeedItem)>,
+    // Unloaded world data does not imply its last visible GPU mesh can retire.
+    retiring_near: HashMap<[i32; 3], bool>,
+    retirement_queue: VecDeque<[i32; 3]>,
+    retirement_queued: HashSet<[i32; 3]>,
 }
 
 impl Game {
     // FIFO admission is bounded by both time and count. Packet-ready events
     // only request a redraw, so a burst cannot postpone rendering indefinitely.
     fn receive_packets(&mut self) {
+        self.prune_lod_control();
         let start = Instant::now();
         for _ in 0..32 {
-            if start.elapsed() >= Duration::from_millis(1) {
+            if start.elapsed() >= Duration::from_millis(1)
+                || self.pending_lod_acks.len()
+                    >= MAX_PENDING_LOD_CONTROL_ITEMS - LOD_ACK_FRAME_BUDGET
+            {
                 break;
             }
             let Some(packet) = self.inbound.as_ref().and_then(|r| r.try_recv().ok()) else {
@@ -599,9 +847,63 @@ impl Game {
 
     fn apply_server_packet(&mut self, packet: ServerPacket) {
         match packet {
+            ServerPacket::LodConfig { config } => {
+                if config.enabled && self.lod.is_none() {
+                    match lod_runtime::LodRuntime::new(config, self.session_start) {
+                        Ok(lod) => self.lod = Some(lod),
+                        Err(error) => eprintln!("LOD configuration failed: {error}"),
+                    }
+                }
+            }
+            ServerPacket::LodPlan {
+                epoch,
+                serial,
+                center,
+                keys,
+            } => {
+                if let Some(lod) = &mut self.lod {
+                    let teleport = lod.epoch != epoch;
+                    if teleport {
+                        self.retirement_queue.clear();
+                        self.retirement_queued.clear();
+                        for key in self.retiring_near.drain().map(|(key, _)| key) {
+                            if let Some(graphics) = &mut self.graphics {
+                                graphics.meshes.remove(&key);
+                                graphics.near_ready.remove(&key);
+                                graphics.blended.replace(key, &[]);
+                            }
+                        }
+                    }
+                    let keys = keys
+                        .into_iter()
+                        .map(|k| {
+                            wyram_core::lod::TileKey::new(k[0] as u8, [k[1], k[2], k[3]])
+                                .expect("validated plan")
+                        })
+                        .collect();
+                    lod.set_plan(epoch, serial, center, keys, &mut self.world);
+                    if teleport && let Some(graphics) = &self.graphics {
+                        for key in &graphics.near_ready {
+                            lod.near_ready(*key);
+                        }
+                    }
+                }
+            }
+            ServerPacket::LodInvalidate { epoch, tiles } => {
+                if let Some(lod) = &mut self.lod {
+                    lod.invalidate(epoch, &tiles);
+                }
+            }
+            ServerPacket::LodTiles { batch } => {
+                if let Some(lod) = &mut self.lod {
+                    let acks = lod.receive(batch);
+                    self.send_lod_acks(acks);
+                }
+            }
             ServerPacket::PackedChunks { chunks } => {
                 let start = Instant::now();
                 for chunk in chunks {
+                    self.retiring_near.remove(&chunk.key);
                     self.world
                         .receive_packed(chunk.key, chunk.revision, chunk.data);
                 }
@@ -639,6 +941,7 @@ impl Game {
                 data,
             } => {
                 let start = Instant::now();
+                self.retiring_near.remove(&key);
                 self.world.receive_chunk(key, revision, &data);
                 self.decode_ms += start.elapsed().as_secs_f64() * 1000.0;
             }
@@ -646,6 +949,7 @@ impl Game {
                 if chunks.len() <= 16 {
                     let start = Instant::now();
                     for chunk in chunks {
+                        self.retiring_near.remove(&chunk.key);
                         self.world
                             .receive_chunk(chunk.key, chunk.revision, &chunk.data);
                     }
@@ -654,8 +958,16 @@ impl Game {
             }
             ServerPacket::Forget { key } => {
                 self.world.forget(key);
+                if self.lod.is_some() {
+                    self.retiring_near.entry(key).or_insert(false);
+                    if self.retirement_queued.insert(key) {
+                        self.retirement_queue.push_back(key);
+                    }
+                    return;
+                }
                 if let Some(graphics) = self.graphics.as_mut() {
                     graphics.meshes.remove(&key);
+                    graphics.near_ready.remove(&key);
                     graphics.blended.replace(key, &[]);
                 }
             }
@@ -676,6 +988,8 @@ impl Game {
             inbound_wire_bytes: 0,
             inbound_queue_max_ms: 0.0,
             world: VoxelWorld::default(),
+            lod: None,
+            session_start: Instant::now(),
             position: Vec3::new(0.5, 73.0, 0.5),
             yaw: 0.0,
             pitch: -0.15,
@@ -697,6 +1011,11 @@ impl Game {
             last_redraw: Instant::now(),
             outbound: None,
             outbound_error: None,
+            pending_lod_acks: VecDeque::new(),
+            pending_lod_needs: VecDeque::new(),
+            retiring_near: HashMap::new(),
+            retirement_queue: VecDeque::new(),
+            retirement_queued: HashSet::new(),
         }
     }
 
@@ -713,6 +1032,143 @@ impl Game {
             && let Err(error) = outbound.send(packet)
         {
             self.outbound_error = Some(error);
+        }
+    }
+
+    fn send_lod_acks(&mut self, acks: Vec<(u64, wyram_core::lod::TileKey, u64, bool)>) {
+        if self.lod.is_none() {
+            return;
+        }
+        for (epoch, key, revision, ready) in acks {
+            let item = (
+                key.cell_size,
+                key.position[0],
+                key.position[1],
+                key.position[2],
+                revision,
+                ready,
+            );
+            if !self.pending_lod_acks.contains(&(epoch, item))
+                && self.pending_lod_acks.len() < MAX_PENDING_LOD_CONTROL_ITEMS
+            {
+                self.pending_lod_acks.push_back((epoch, item));
+            }
+        }
+    }
+
+    fn queue_lod_needs(&mut self, epoch: u64, keys: Vec<wyram_core::lod::TileKey>) {
+        let Some(current_epoch) = self.lod.as_ref().map(|lod| lod.epoch) else {
+            return;
+        };
+        if epoch != current_epoch {
+            return;
+        }
+        let mut restore = Vec::new();
+        for key in keys {
+            let item = (
+                key.cell_size,
+                key.position[0],
+                key.position[1],
+                key.position[2],
+            );
+            if self.pending_lod_needs.contains(&(epoch, item)) {
+                continue;
+            }
+            if self.pending_lod_needs.len() >= MAX_PENDING_LOD_CONTROL_ITEMS {
+                restore.push(key);
+            } else {
+                self.pending_lod_needs.push_back((epoch, item));
+            }
+        }
+        if !restore.is_empty()
+            && let Some(lod) = &mut self.lod
+        {
+            lod.restore_needs(epoch, restore);
+        }
+    }
+
+    fn prune_lod_control(&mut self) {
+        if let Some(epoch) = self.lod.as_ref().map(|lod| lod.epoch) {
+            self.pending_lod_needs
+                .retain(|(queued_epoch, _)| *queued_epoch == epoch);
+        } else {
+            self.pending_lod_acks.clear();
+            self.pending_lod_needs.clear();
+        }
+    }
+
+    fn retry_lod_control(&mut self) {
+        self.prune_lod_control();
+        let Some(epoch) = self.lod.as_ref().map(|lod| lod.epoch) else {
+            return;
+        };
+        if self.outbound.is_none() {
+            return;
+        }
+
+        while let Some((queued_epoch, _)) = self.pending_lod_acks.front() {
+            let epoch = *queued_epoch;
+            let tiles: Vec<_> = self
+                .pending_lod_acks
+                .iter()
+                .take_while(|(queued_epoch, _)| *queued_epoch == epoch)
+                .take(16)
+                .map(|(_, item)| *item)
+                .collect();
+            let result =
+                self.outbound
+                    .as_ref()
+                    .expect("outbound was checked")
+                    .send(ClientPacket::LodAck {
+                        epoch,
+                        tiles: tiles.clone(),
+                    });
+            match result {
+                Ok(()) => {
+                    for _ in 0..tiles.len() {
+                        self.pending_lod_acks.pop_front();
+                    }
+                }
+                Err(outbound::SendError::Full) => break,
+                Err(error @ outbound::SendError::Closed) => {
+                    self.outbound_error = Some(error);
+                    return;
+                }
+            }
+        }
+
+        while let Some((queued_epoch, _)) = self.pending_lod_needs.front() {
+            if *queued_epoch != epoch {
+                self.pending_lod_needs.pop_front();
+                continue;
+            }
+            let keys: Vec<_> = self
+                .pending_lod_needs
+                .iter()
+                .take_while(|(queued_epoch, _)| *queued_epoch == epoch)
+                .take(16)
+                .map(|(_, item)| *item)
+                .collect();
+            let result =
+                self.outbound
+                    .as_ref()
+                    .expect("outbound was checked")
+                    .send(ClientPacket::LodNeed {
+                        epoch,
+                        keys: keys.clone(),
+                    });
+            match result {
+                Ok(()) => {
+                    for _ in 0..keys.len() {
+                        self.pending_lod_needs.pop_front();
+                    }
+                }
+                Err(outbound::SendError::Full) => break,
+                Err(error @ outbound::SendError::Closed) => {
+                    self.outbound_error = Some(error);
+                    return;
+                }
+            }
         }
     }
 
@@ -969,10 +1425,61 @@ impl ApplicationHandler<UserEvent> for Game {
                     let stats = self
                         .meshing
                         .update(&mut self.world, center, |key, vertices| {
-                            graphics.replace_mesh(key, vertices)
+                            graphics.replace_mesh(key, vertices);
+                            if let Some(lod) = &mut self.lod {
+                                lod.near_ready(key);
+                            }
                         });
-                    let render_stats =
-                        graphics.render(view.position, view.direction, &character_vertices);
+                    let acks = if let Some(lod) = &mut self.lod {
+                        lod.update(
+                            &self.world,
+                            &graphics.device,
+                            &graphics.queue,
+                            &graphics.coverage_mask,
+                            self.world.dirty_count() != 0 || self.meshing.in_flight() != 0,
+                        )
+                    } else {
+                        Vec::new()
+                    };
+                    let needs = self.lod.as_mut().map(|lod| (lod.epoch, lod.drain_needs()));
+                    if let Some(lod) = &mut self.lod {
+                        let retirement_start = Instant::now();
+                        for _ in 0..128.min(self.retirement_queue.len()) {
+                            if retirement_start.elapsed() >= Duration::from_millis(1) {
+                                break;
+                            }
+                            let key = self
+                                .retirement_queue
+                                .pop_front()
+                                .expect("bounded retirement queue");
+                            self.retirement_queued.remove(&key);
+                            let Some(started) = self.retiring_near.get_mut(&key) else {
+                                continue;
+                            };
+                            if !*started
+                                && (!lod.near_geometry_pinned(key)
+                                    || lod.near_replacement_ready(key))
+                            {
+                                lod.forget_near(key);
+                                *started = true;
+                            }
+                            if *started && !lod.near_geometry_pinned(key) {
+                                graphics.meshes.remove(&key);
+                                graphics.near_ready.remove(&key);
+                                graphics.blended.replace(key, &[]);
+                                self.retiring_near.remove(&key);
+                            } else {
+                                self.retirement_queued.insert(key);
+                                self.retirement_queue.push_back(key);
+                            }
+                        }
+                    }
+                    let render_stats = graphics.render(
+                        view.position,
+                        view.direction,
+                        &character_vertices,
+                        self.lod.as_ref(),
+                    );
                     let outbound = self
                         .outbound
                         .as_ref()
@@ -993,6 +1500,26 @@ impl ApplicationHandler<UserEvent> for Game {
                         loaded_chunks: self.world.chunk_count(),
                         dirty_chunks: self.world.dirty_count(),
                         in_flight: self.meshing.in_flight(),
+                        lod_gpu_bytes: self.lod.as_ref().map_or(0, |lod| lod.client.gpu_bytes()),
+                        lod_reserved_gpu_bytes: self
+                            .lod
+                            .as_ref()
+                            .map_or(0, |lod| lod.client.reserved_gpu_bytes()),
+                        lod_encoded_cache_bytes: self
+                            .lod
+                            .as_ref()
+                            .map_or(0, |lod| lod.client.cache_bytes()),
+                        lod_mesh_jobs: self.lod.as_ref().map_or(0, |lod| lod.client.running_jobs()),
+                        lod_pending_tiles: self.lod.as_ref().map_or(0, |lod| lod.pending_tiles()),
+                        lod_resident_tiles: self
+                            .lod
+                            .as_ref()
+                            .map_or(0, |lod| lod.client.residents().count()),
+                        lod_frontier_blocks: self
+                            .lod
+                            .as_ref()
+                            .and_then(|lod| lod.coverage_frame.as_ref())
+                            .map_or(0.0, |frame| frame.frontier_radius_blocks),
                         outbound_queued: outbound.queued,
                         outbound_sent: outbound.sent,
                         outbound_coalesced_inputs: outbound.coalesced_inputs,
@@ -1000,7 +1527,14 @@ impl ApplicationHandler<UserEvent> for Game {
                         outbound_write_max_ms: outbound.write_max_ms,
                         ..render_stats
                     });
+                    self.send_lod_acks(acks);
+                    if let Some((epoch, keys)) = needs
+                        && !keys.is_empty()
+                    {
+                        self.queue_lod_needs(epoch, keys);
+                    }
                 }
+                self.retry_lod_control();
             }
             _ => {}
         }
@@ -1059,12 +1593,12 @@ fn main() {
         eprintln!("engine connection write failed: {error}");
     });
     game.outbound = Some(outbound);
-    if std::env::var("WYRAM_CHUNK_PROTOCOL").as_deref() != Ok("0") {
-        game.send_packet(ClientPacket::Capabilities {
-            chunk_protocol: 1,
-            forget_protocol: 1,
-        });
-    }
+    game.send_packet(ClientPacket::Capabilities {
+        chunk_protocol: u8::from(std::env::var("WYRAM_CHUNK_PROTOCOL").as_deref() != Ok("0")),
+        forget_protocol: 1,
+        lod_protocol: 1,
+        available_parallelism: std::thread::available_parallelism().ok().map(usize::from),
+    });
     event_loop
         .run_app(&mut game)
         .expect("game event loop failed");
@@ -1077,6 +1611,52 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn world_unload_retains_visual_readiness_until_replacement_admission() {
+        let mut game = super::Game::new();
+        let key = [0, 0, 0];
+        game.lod = Some(
+            super::lod_runtime::LodRuntime::new(
+                super::lod_runtime::LodConfig {
+                    protocol: 1,
+                    enabled: true,
+                    generation_workers: 4,
+                    meshing_workers: 4,
+                    parallelism: 22,
+                    worker_budget: 8,
+                    near_radius: 11,
+                    max_cell_size: 2,
+                    min_y: -192,
+                    max_y: 319,
+                },
+                std::time::Instant::now(),
+            )
+            .unwrap(),
+        );
+        game.world
+            .receive_packed(key, 0, vec![0; wyram_core::BYTE_COUNT]);
+        game.lod.as_mut().unwrap().near_ready(key);
+        game.apply_server_packet(super::ServerPacket::Forget { key });
+        assert_eq!(
+            game.world.chunk_count(),
+            0,
+            "simulation data must unload immediately"
+        );
+        assert_eq!(game.retiring_near.get(&key), Some(&false));
+        assert!(game.lod.as_ref().unwrap().near_geometry_pinned(key));
+        game.apply_server_packet(super::ServerPacket::PackedChunks {
+            chunks: vec![super::chunk_wire::PackedChunk {
+                key,
+                revision: 1,
+                data: vec![0; wyram_core::BYTE_COUNT],
+            }],
+        });
+        assert!(
+            !game.retiring_near.contains_key(&key),
+            "a returning chunk cancels retirement"
+        );
+    }
+
     #[test]
     fn unload_batches_are_bounded_and_keep_legacy_support() {
         let packet = serde_json::json!({"type":"forget_chunks","keys":[[-1,-12,0],[0,19,0]]});
