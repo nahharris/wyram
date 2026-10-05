@@ -22,8 +22,9 @@ pub struct CoverageFrame {
     pub origin_chunk: [i32; 2],
     pub center_chunk: [i32; 2],
     pub side: usize,
-    /// `[current_size, previous_size, transition_start_seconds, readiness_bits]`.
-    /// Bit 0 is selected coverage; bit 1 is complete full-detail prefetch.
+    /// `[current_size, previous_size, transition_start_seconds, near_chunk_mask_bits]`.
+    /// The final float preserves a `u32` bit mask: bit N marks near chunk
+    /// `min_y_chunk + N` as resident for this horizontal column.
     pub columns: Vec<[f32; 4]>,
     pub frontier_radius_blocks: f32,
 }
@@ -33,8 +34,7 @@ struct ColumnState {
     current: u8,
     previous: u8,
     transition_start: f32,
-    ready: bool,
-    near_ready: bool,
+    near_mask: u32,
 }
 
 impl ColumnState {
@@ -43,7 +43,7 @@ impl ColumnState {
             f32::from(self.current),
             f32::from(self.previous),
             self.transition_start,
-            f32::from(u8::from(self.ready) | (u8::from(self.near_ready) << 1)),
+            f32::from_bits(self.near_mask),
         ]
     }
 }
@@ -61,6 +61,7 @@ pub struct LodCoverage {
     ready_tile_columns: HashSet<(u8, i32, i32)>,
     desired: HashMap<[i32; 2], u8>,
     states: HashMap<[i32; 2], ColumnState>,
+    deferred: HashSet<[i32; 2]>,
     frame: CoverageFrame,
     missing_by_distance2: BTreeMap<i64, usize>,
     frontier_target: f32,
@@ -75,6 +76,7 @@ impl LodCoverage {
             || config.min_y_chunk > config.max_y_chunk
             || config.columns_per_side == 0
             || config.columns_per_side > 1024
+            || i64::from(config.max_y_chunk) - i64::from(config.min_y_chunk) + 1 > 32
             || !config.frontier_fade_fraction.is_finite()
             || (config.frontier_fade_fraction - 0.2).abs() > f32::EPSILON
             || !config.transition_seconds.is_finite()
@@ -94,6 +96,7 @@ impl LodCoverage {
             ready_tile_columns: HashSet::new(),
             desired: HashMap::new(),
             states: HashMap::new(),
+            deferred: HashSet::new(),
             frame: CoverageFrame {
                 epoch: 0,
                 origin_chunk: [0, 0],
@@ -129,6 +132,7 @@ impl LodCoverage {
             self.ready_tiles.clear();
             self.ready_tile_columns.clear();
             self.states.clear();
+            self.deferred.clear();
         }
         let side = self.frame.side as i32;
         let half = side / 2;
@@ -136,6 +140,11 @@ impl LodCoverage {
         self.frame.center_chunk = center_chunk;
         self.frame.epoch = epoch;
         self.frame.origin_chunk = origin;
+        let [origin_x, origin_z] = origin;
+        let side = self.frame.side as i32;
+        self.deferred.retain(|[x, z]| {
+            *x >= origin_x && *z >= origin_z && *x < origin_x + side && *z < origin_z + side
+        });
         self.frame.columns.fill([0.0; 4]);
         self.missing_by_distance2.clear();
         for z in origin[1]..origin[1] + side {
@@ -150,11 +159,10 @@ impl LodCoverage {
                 self.desired.insert(key, size);
                 let should_refresh = teleported
                     || !previous_desired.contains_key(&key)
-                    || self.states.get(&key).is_none_or(|state| {
-                        state.current > size
-                            || state.current == 0 && size != 0
-                            || state.current == 1 && size != 1
-                    });
+                    || self
+                        .states
+                        .get(&key)
+                        .is_none_or(|state| state.current != size);
                 if should_refresh {
                     self.refresh_column_inner(key, now, false, false);
                 }
@@ -165,7 +173,7 @@ impl LodCoverage {
                         state.previous = state.current;
                         state.transition_start = now;
                     }
-                    (state.gpu(), state.ready)
+                    (state.gpu(), state.current != 0)
                 };
                 if !ready {
                     self.add_missing(key);
@@ -246,6 +254,21 @@ impl LodCoverage {
     /// Returns the current mask and advances only the smooth frontier scalar. Column
     /// transitions are shader-timed, so this path does not rescan the fixed grid.
     pub fn frame(&mut self, now: f32) -> &CoverageFrame {
+        let finished: Vec<_> = self
+            .deferred
+            .iter()
+            .copied()
+            .filter(|column| {
+                self.states.get(column).is_none_or(|state| {
+                    state.current == state.previous
+                        || now - state.transition_start >= self.config.transition_seconds
+                })
+            })
+            .collect();
+        for column in finished {
+            self.deferred.remove(&column);
+            self.refresh_column(column, now);
+        }
         if self.frontier_initialized {
             let dt = (now - self.last_frame_time).clamp(0.0, 0.1);
             let current = self.frame.frontier_radius_blocks;
@@ -260,6 +283,12 @@ impl LodCoverage {
         }
         self.last_frame_time = now;
         &self.frame
+    }
+
+    /// Whether a representation swap is waiting for its active transition to finish.
+    /// The runtime uses this to publish a new frame when time alone makes the swap due.
+    pub fn has_deferred_updates(&self) -> bool {
+        !self.deferred.is_empty()
     }
 
     fn valid_y_chunk(&self, y: i32) -> bool {
@@ -359,6 +388,18 @@ impl LodCoverage {
         self.near_ready_columns.contains(&[x, z])
     }
 
+    fn near_chunk_mask(&self, [x, z]: [i32; 2]) -> u32 {
+        (self.config.min_y_chunk..=self.config.max_y_chunk)
+            .enumerate()
+            .fold(0, |mask, (bit, y)| {
+                if self.near_chunks.contains(&[x, y, z]) {
+                    mask | (1u32 << bit)
+                } else {
+                    mask
+                }
+            })
+    }
+
     fn tile_stack_ready(&self, size: u8, [x, z]: [i32; 2]) -> bool {
         let span_chunks = i32::from(size) * 2;
         let tile_x = x.div_euclid(span_chunks);
@@ -388,6 +429,14 @@ impl LodCoverage {
         0
     }
 
+    fn representation_ready(&self, column: [i32; 2], size: u8) -> bool {
+        match size {
+            1 => self.near_column_ready(column),
+            2 | 4 | 8 | 16 => self.tile_stack_ready(size, column),
+            _ => false,
+        }
+    }
+
     fn refresh_column(&mut self, column: [i32; 2], now: f32) {
         self.refresh_column_inner(column, now, true, true);
     }
@@ -403,33 +452,58 @@ impl LodCoverage {
             return;
         }
         let desired = self.desired_size(column);
-        let current = self.available_size(column, desired);
-        let near_ready = self.near_column_ready(column);
+        let mut current = self.available_size(column, desired);
+        let published = self.states.get(&column).map_or(0, |state| state.current);
+        if current == 0
+            && desired != 0
+            && published != 0
+            && self.representation_ready(column, published)
+        {
+            current = published;
+        }
+        let defer_swap = self.states.get(&column).is_some_and(|state| {
+            current != state.current
+                && state.current != state.previous
+                && now - state.transition_start < self.config.transition_seconds
+                && self.representation_ready(column, state.current)
+        });
+        if defer_swap {
+            current = published;
+            self.deferred.insert(column);
+        } else {
+            self.deferred.remove(&column);
+        }
+        let near_mask = self.near_chunk_mask(column);
         let index = self.index(column).unwrap();
-        let (changed, was_ready, is_ready, gpu) = {
+        let (changed, representation_changed, was_ready, is_ready, gpu) = {
             let state = self.states.entry(column).or_default();
-            if state.current == current
-                && state.ready == (current != 0)
-                && state.near_ready == near_ready
-            {
-                (false, state.ready, state.ready, state.gpu())
+            if state.current == current && state.near_mask == near_mask {
+                let ready = state.current != 0;
+                (false, false, ready, ready, state.gpu())
             } else {
-                let was_ready = state.ready;
                 let old = state.current;
-                state.previous = if old != 0 && current != 0 {
-                    old
-                } else {
-                    current
-                };
-                state.current = current;
-                state.ready = current != 0;
-                state.near_ready = near_ready;
-                state.transition_start = now;
-                (true, was_ready, state.ready, state.gpu())
+                let representation_changed = old != current;
+                if representation_changed {
+                    state.previous = if old != 0 && current != 0 {
+                        old
+                    } else {
+                        current
+                    };
+                    state.current = current;
+                    state.transition_start = now;
+                }
+                state.near_mask = near_mask;
+                (
+                    true,
+                    representation_changed,
+                    old != 0,
+                    current != 0,
+                    state.gpu(),
+                )
             }
         };
         if changed {
-            if update_histogram && was_ready != is_ready {
+            if update_histogram && representation_changed && was_ready != is_ready {
                 if is_ready {
                     self.remove_missing(column);
                 } else {
@@ -461,14 +535,12 @@ impl LodCoverage {
     fn refresh_near_column(&mut self, column: [i32; 2], now: f32) {
         let ready = (self.config.min_y_chunk..=self.config.max_y_chunk)
             .all(|y| self.near_chunks.contains(&[column[0], y, column[1]]));
-        let changed = if ready {
+        if ready {
             self.near_ready_columns.insert(column)
         } else {
             self.near_ready_columns.remove(&column)
         };
-        if changed {
-            self.refresh_column(column, now);
-        }
+        self.refresh_column(column, now);
     }
 
     fn refresh_ready_tile_column(&mut self, key: TileKey, now: f32) {

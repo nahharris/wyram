@@ -214,6 +214,7 @@ fn coarse_to_fine_seam_subtracts_checkerboard_partial_neighbor_volume() {
                 origin: [128, cell_y, cell_z],
                 size: 2,
                 cell,
+                geometry_ready: true,
             })
         } else {
             None
@@ -236,6 +237,7 @@ fn coarse_to_fine_seam_subtracts_checkerboard_partial_neighbor_volume() {
             origin: [124, world[1].div_euclid(4) * 4, world[2].div_euclid(4) * 4],
             size: 4,
             cell: coarse_neighbor,
+            geometry_ready: true,
         })
     };
     let (fine_parts, _) = meshes(&fine, &descriptors, fine_sampler);
@@ -283,6 +285,7 @@ fn full_full_2_to_1_seams_cull_once_on_all_axes_and_both_resolution_sides() {
                         origin: cell_origin,
                         size: neighbor_size,
                         cell: neighbor_cell,
+                        geometry_ready: true,
                     })
                 };
                 let (parts, _) = meshes(&source, &descriptors, sampler);
@@ -301,6 +304,71 @@ fn full_full_2_to_1_seams_cull_once_on_all_axes_and_both_resolution_sides() {
             }
         }
     }
+}
+
+#[test]
+fn unrendered_coarse_neighbor_does_not_cull_fine_boundary_face() {
+    let mut fine = new_tile(2, [0, 0, 0]);
+    set_cell(&mut fine, [31, 0, 0], solid(2, 1, 2));
+    let descriptors = HashMap::from([(1, RenderDescriptor::default())]);
+    let coarse = solid(4, 1, 4);
+    let sampler = |geometry_ready| {
+        move |world: [i32; 3]| {
+            Some(BoundaryCell {
+                origin: [64, world[1].div_euclid(4) * 4, world[2].div_euclid(4) * 4],
+                size: 4,
+                cell: coarse,
+                geometry_ready,
+            })
+        }
+    };
+
+    let (unready_parts, _) = meshes(&fine, &descriptors, sampler(false));
+    let unready_vertices: Vec<_> = unready_parts
+        .into_iter()
+        .flat_map(|part| part.vertices)
+        .collect();
+    let (ready_parts, _) = meshes(&fine, &descriptors, sampler(true));
+    let ready_vertices: Vec<_> = ready_parts
+        .into_iter()
+        .flat_map(|part| part.vertices)
+        .collect();
+
+    assert_eq!(
+        quad_area(&unready_vertices, 0, 64.0),
+        4.0,
+        "sampled coarse data without rendered geometry must leave the fine face visible"
+    );
+    assert_eq!(
+        quad_area(&ready_vertices, 0, 64.0),
+        0.0,
+        "current coarse geometry must still cull the shared fine face"
+    );
+}
+
+#[test]
+fn selected_unready_finer_cell_overrides_coarse_cell_inside_tile_core() {
+    let mut tile = new_tile(4, [0, 0, 0]);
+    set_cell(&mut tile, [0, 0, 0], solid(4, 1, 4));
+    set_cell(&mut tile, [1, 0, 0], solid(4, 1, 4));
+    let descriptors = HashMap::from([(1, RenderDescriptor::default())]);
+    let sampler = |world: [i32; 3]| {
+        (world[0] == 4).then_some(BoundaryCell {
+            origin: [4, 0, 0],
+            size: 2,
+            cell: Cell::default(),
+            geometry_ready: false,
+        })
+    };
+
+    let (parts, _) = meshes(&tile, &descriptors, sampler);
+    let vertices: Vec<_> = parts.into_iter().flat_map(|part| part.vertices).collect();
+
+    assert_eq!(
+        quad_area(&vertices, 0, 4.0),
+        16.0,
+        "the selected finer cell must override opaque coarse source data while its mesh is unready"
+    );
 }
 
 #[test]
@@ -364,6 +432,7 @@ fn equal_liquid_planes_do_not_duplicate_side_water_across_2_to_1_seams() {
                 origin,
                 size: neighbor_size,
                 cell: neighbor,
+                geometry_ready: true,
             })
         };
         let (parts, _) = meshes(&source, &descriptors, sampler);

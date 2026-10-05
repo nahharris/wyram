@@ -6,22 +6,34 @@ use wgpu::util::DeviceExt;
 #[test]
 #[ignore = "requires a graphics adapter; manual offscreen rendering parity check"]
 fn resident_blended_draw_matches_vertex_reference_pixels() {
-    render_blended_fixture(None);
+    render_blended_fixture(None, false, false);
 }
 
 #[test]
 #[ignore = "requires a graphics adapter; manual liquid fog check"]
 fn fully_fogged_liquid_hides_background_without_grain_or_edges() {
-    render_blended_fixture(Some(true));
+    render_blended_fixture(Some(true), false, false);
 }
 
 #[test]
 #[ignore = "requires a graphics adapter; manual fog bypass check"]
 fn disabling_fog_preserves_lod_coverage_and_liquid_color() {
-    render_blended_fixture(Some(false));
+    render_blended_fixture(Some(false), false, false);
 }
 
-fn render_blended_fixture(fog_mode: Option<bool>) {
+#[test]
+#[ignore = "requires a graphics adapter; manual partial near readiness check"]
+fn uploaded_near_chunk_is_visible_before_the_full_height_column() {
+    render_blended_fixture(Some(false), true, false);
+}
+
+#[test]
+#[ignore = "requires a graphics adapter; manual vertical chunk boundary check"]
+fn resident_near_top_face_survives_an_unready_chunk_above() {
+    render_blended_fixture(Some(false), true, true);
+}
+
+fn render_blended_fixture(fog_mode: Option<bool>, partial_near: bool, top_face: bool) {
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
@@ -32,10 +44,25 @@ fn render_blended_fixture(fog_mode: Option<bool>) {
         .expect("offscreen parity device");
     println!("offscreen adapter: {:?}", adapter.get_info());
     let mut uniform = crate::lod_runtime::CameraUniform::disabled(Mat4::IDENTITY);
+    if top_face {
+        // Exact axis permutation keeps the boundary quad away from the clip plane.
+        uniform.matrix = Mat4::from_cols_array(&[
+            1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.5, 1.0,
+        ])
+        .to_cols_array();
+    }
     if let Some(fog_enabled) = fog_mode {
         uniform.fog = [1.0, 1.0, 0.0, 1.0];
         uniform.grid = [-1, -1, 2, 0];
-        uniform.anchor = [0, 0, 0, i32::from(!fog_enabled)];
+        uniform.anchor = [0, 0, -1, i32::from(!fog_enabled)];
+        if top_face {
+            uniform.anchor[1] = 1;
+        }
+        if fog_enabled {
+            // This fixture exercises distant fog outside the protected near circle.
+            uniform.grid[3] = 10;
+            uniform.anchor[0] = 10;
+        }
     }
     let camera = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Parity camera"),
@@ -67,9 +94,17 @@ fn render_blended_fixture(fog_mode: Option<bool>) {
             },
         ],
     });
-    let mut columns = [[1.0f32, 1.0, 0.0, 3.0]; 4];
+    let mut columns = [[1.0f32, 1.0, 0.0, f32::from_bits(3)]; 4];
     if fog_mode == Some(false) {
         columns[2] = [0.0; 4];
+    }
+    if partial_near {
+        columns[3] = [0.0, 0.0, 0.0, f32::from_bits(if top_face { 1 } else { 2 })];
+    }
+    if top_face {
+        // The horizontal quad spans both negative and positive Z columns.
+        columns[0] = columns[2];
+        columns[1] = columns[3];
     }
     let mask = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Disabled coverage"),
@@ -154,7 +189,11 @@ fn render_blended_fixture(fog_mode: Option<bool>) {
             [x - 0.55, -0.75, z],
         ]
         .map(|position| Vertex {
-            position,
+            position: if top_face {
+                [position[0], 0.0, -position[1]]
+            } else {
+                position
+            },
             color,
             opacity: 0.5,
         })
@@ -302,6 +341,13 @@ fn render_blended_fixture(fog_mode: Option<bool>) {
                 &[0, 0, 0, 255],
                 "ready coverage must remain visible without fog"
             );
+            if partial_near && !top_face {
+                assert_eq!(
+                    pixel(18, 20),
+                    &[0, 0, 0, 255],
+                    "unuploaded vertical chunks must not be declared resident"
+                );
+            }
         } else if let Some(previous) = previous {
             assert!(actual != previous, "fixture must exercise visible changes");
         }

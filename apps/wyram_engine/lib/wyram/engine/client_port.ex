@@ -326,12 +326,8 @@ defmodule Wyram.Engine.ClientPort do
   defp stream(%{port: nil} = state, _), do: state
 
   defp stream(state, center) do
-    keys = ChunkStream.keys(center, state.bounds, state.prefetch_radius)
-
     keys =
-      if state.prefetch_radius > state.view_radius,
-        do: ChunkStream.column_order(keys, center),
-        else: keys
+      ChunkStream.streaming_keys(center, state.bounds, state.view_radius, state.prefetch_radius)
 
     wanted = MapSet.new(keys)
 

@@ -2,6 +2,18 @@ defmodule Wyram.Engine.ChunkStreamTest do
   use ExUnit.Case, async: true
   alias Wyram.Engine.ChunkStream
 
+  test "LOD prefetch preserves the complete baseline near queue before extra work" do
+    center = {-3, -1, 5}
+    bounds = {-192, 319}
+    baseline = ChunkStream.keys(center, bounds, 11)
+    streamed = ChunkStream.streaming_keys(center, bounds, 11, 13)
+    assert Enum.take(streamed, length(baseline)) == baseline
+    assert length(streamed) == 529 * 32
+    assert MapSet.new(streamed) == MapSet.new(ChunkStream.keys(center, bounds, 13))
+    assert length(Enum.uniq(streamed)) == length(streamed)
+    assert ChunkStream.streaming_keys(center, bounds, 11, 11) == baseline
+  end
+
   test "unloads are bounded batches for capable clients and preserve legacy messages" do
     keys = for y <- -12..19, do: {11, y, 0}
     packets = ChunkStream.forget_packets(keys, 1)

@@ -642,7 +642,7 @@ impl Graphics {
             uniform.anchor = [
                 lod.center[2],
                 lod.config.near_radius as i32,
-                i32::from(lod.config.max_cell_size),
+                lod.config.min_y.div_euclid(16),
                 i32::from(!self.fog_enabled),
             ];
             uniform.grid = [0, 0, 0, lod.center[0]];
@@ -814,6 +814,10 @@ struct Game {
     outbound_error: Option<outbound::SendError>,
     pending_lod_acks: VecDeque<(u64, LodAckItem)>,
     pending_lod_needs: VecDeque<(u64, LodNeedItem)>,
+    // Unloaded world data does not imply its last visible GPU mesh can retire.
+    retiring_near: HashMap<[i32; 3], bool>,
+    retirement_queue: VecDeque<[i32; 3]>,
+    retirement_queued: HashSet<[i32; 3]>,
 }
 
 impl Game {
@@ -859,6 +863,17 @@ impl Game {
             } => {
                 if let Some(lod) = &mut self.lod {
                     let teleport = lod.epoch != epoch;
+                    if teleport {
+                        self.retirement_queue.clear();
+                        self.retirement_queued.clear();
+                        for key in self.retiring_near.drain().map(|(key, _)| key) {
+                            if let Some(graphics) = &mut self.graphics {
+                                graphics.meshes.remove(&key);
+                                graphics.near_ready.remove(&key);
+                                graphics.blended.replace(key, &[]);
+                            }
+                        }
+                    }
                     let keys = keys
                         .into_iter()
                         .map(|k| {
@@ -888,6 +903,7 @@ impl Game {
             ServerPacket::PackedChunks { chunks } => {
                 let start = Instant::now();
                 for chunk in chunks {
+                    self.retiring_near.remove(&chunk.key);
                     self.world
                         .receive_packed(chunk.key, chunk.revision, chunk.data);
                 }
@@ -925,6 +941,7 @@ impl Game {
                 data,
             } => {
                 let start = Instant::now();
+                self.retiring_near.remove(&key);
                 self.world.receive_chunk(key, revision, &data);
                 self.decode_ms += start.elapsed().as_secs_f64() * 1000.0;
             }
@@ -932,6 +949,7 @@ impl Game {
                 if chunks.len() <= 16 {
                     let start = Instant::now();
                     for chunk in chunks {
+                        self.retiring_near.remove(&chunk.key);
                         self.world
                             .receive_chunk(chunk.key, chunk.revision, &chunk.data);
                     }
@@ -939,10 +957,14 @@ impl Game {
                 }
             }
             ServerPacket::Forget { key } => {
-                if let Some(lod) = &mut self.lod {
-                    lod.forget_near(key);
-                }
                 self.world.forget(key);
+                if self.lod.is_some() {
+                    self.retiring_near.entry(key).or_insert(false);
+                    if self.retirement_queued.insert(key) {
+                        self.retirement_queue.push_back(key);
+                    }
+                    return;
+                }
                 if let Some(graphics) = self.graphics.as_mut() {
                     graphics.meshes.remove(&key);
                     graphics.near_ready.remove(&key);
@@ -991,6 +1013,9 @@ impl Game {
             outbound_error: None,
             pending_lod_acks: VecDeque::new(),
             pending_lod_needs: VecDeque::new(),
+            retiring_near: HashMap::new(),
+            retirement_queue: VecDeque::new(),
+            retirement_queued: HashSet::new(),
         }
     }
 
@@ -1417,6 +1442,37 @@ impl ApplicationHandler<UserEvent> for Game {
                         Vec::new()
                     };
                     let needs = self.lod.as_mut().map(|lod| (lod.epoch, lod.drain_needs()));
+                    if let Some(lod) = &mut self.lod {
+                        let retirement_start = Instant::now();
+                        for _ in 0..128.min(self.retirement_queue.len()) {
+                            if retirement_start.elapsed() >= Duration::from_millis(1) {
+                                break;
+                            }
+                            let key = self
+                                .retirement_queue
+                                .pop_front()
+                                .expect("bounded retirement queue");
+                            self.retirement_queued.remove(&key);
+                            let Some(started) = self.retiring_near.get_mut(&key) else {
+                                continue;
+                            };
+                            if !*started
+                                && (!lod.near_geometry_pinned(key) || lod.near_replacement_ready(key))
+                            {
+                                lod.forget_near(key);
+                                *started = true;
+                            }
+                            if *started && !lod.near_geometry_pinned(key) {
+                                graphics.meshes.remove(&key);
+                                graphics.near_ready.remove(&key);
+                                graphics.blended.replace(key, &[]);
+                                self.retiring_near.remove(&key);
+                            } else {
+                                self.retirement_queued.insert(key);
+                                self.retirement_queue.push_back(key);
+                            }
+                        }
+                    }
                     let render_stats = graphics.render(
                         view.position,
                         view.direction,
@@ -1554,6 +1610,52 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn world_unload_retains_visual_readiness_until_replacement_admission() {
+        let mut game = super::Game::new();
+        let key = [0, 0, 0];
+        game.lod = Some(
+            super::lod_runtime::LodRuntime::new(
+                super::lod_runtime::LodConfig {
+                    protocol: 1,
+                    enabled: true,
+                    generation_workers: 4,
+                    meshing_workers: 4,
+                    parallelism: 22,
+                    worker_budget: 8,
+                    near_radius: 11,
+                    max_cell_size: 2,
+                    min_y: -192,
+                    max_y: 319,
+                },
+                std::time::Instant::now(),
+            )
+            .unwrap(),
+        );
+        game.world
+            .receive_packed(key, 0, vec![0; wyram_core::BYTE_COUNT]);
+        game.lod.as_mut().unwrap().near_ready(key);
+        game.apply_server_packet(super::ServerPacket::Forget { key });
+        assert_eq!(
+            game.world.chunk_count(),
+            0,
+            "simulation data must unload immediately"
+        );
+        assert_eq!(game.retiring_near.get(&key), Some(&false));
+        assert!(game.lod.as_ref().unwrap().near_geometry_pinned(key));
+        game.apply_server_packet(super::ServerPacket::PackedChunks {
+            chunks: vec![super::chunk_wire::PackedChunk {
+                key,
+                revision: 1,
+                data: vec![0; wyram_core::BYTE_COUNT],
+            }],
+        });
+        assert!(
+            !game.retiring_near.contains_key(&key),
+            "a returning chunk cancels retirement"
+        );
+    }
+
     #[test]
     fn unload_batches_are_bounded_and_keep_legacy_support() {
         let packet = serde_json::json!({"type":"forget_chunks","keys":[[-1,-12,0],[0,19,0]]});

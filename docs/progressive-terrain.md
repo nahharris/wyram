@@ -26,7 +26,11 @@ Available parallelism is resolved once from the smaller of the native client's C
 
 Encoded tile caches are capped at 256 MiB. Distant GPU geometry has a separate 256 MiB allowance, including 32 MiB reserved for transparent indices. Transport batches are at most 1 MiB, and meshes split into bounded parts. A tile becomes GPU-ready only after every part is resident, including a valid empty completion. Replacements keep the prior mesh until completion.
 
-The renderer protects the nearby circle, uses a two-chunk transition buffer and a 200 ms complementary fade, and applies the same fog to opaque and liquid terrain. Fog reveals a conservative contiguous frontier of complete GPU-ready columns across the full height; its outermost 20% fades into the sky. Ordinary movement retains coverage and prefetches boundaries. Teleport epochs reset coverage.
+The renderer protects GPU-ready nearby chunks and uses a two-chunk transition buffer and a 200 ms complementary fade. Uploaded nearby chunks draw immediately; full-height completion governs distant coverage and the fog frontier rather than delaying nearby drawing. Nearby streaming preserves the accepted distance ordering before admitting prefetch chunks. Distant meshing can admit one job while nearby work remains busy, within the existing budgets.
+
+Requested detail and published coverage are separate: movement retains an existing resident representation until its replacement is complete, then swaps the affected columns. GPU geometry referenced by published coverage or an active fade stays resident under pressure. Neighbor source data can cull a face only when matching geometry is resident; otherwise the boundary remains closed until a targeted remesh. Teleport epochs reset coverage.
+
+Fog uses the same color and opacity rule for opaque and liquid distant terrain. It reveals a conservative contiguous frontier of complete GPU-ready columns across the full height; its outermost 20% fades into the sky. Protected nearby chunks preserve their normal appearance.
 
 ## Verification and visual acceptance
 

@@ -203,6 +203,7 @@ impl VoxelWorld {
         let id = self.block(p[0], p[1], p[2]);
         let liquid = id != 0 && self.descriptors.get(&id).is_some_and(|d| d.liquid != 0);
         Some(crate::lod_mesh::BoundaryCell {
+            geometry_ready: true,
             origin: p,
             size: 1,
             cell: wyram_core::lod::Cell {

@@ -123,6 +123,9 @@ pub struct BoundaryCell {
     pub origin: [i32; 3],
     pub size: u8,
     pub cell: Cell,
+    /// Whether the sampled neighbor's geometry is current and eligible to draw.
+    /// Tile data can be available before the coverage state exposes its mesh.
+    pub geometry_ready: bool,
 }
 
 /// Build a tile in bounded, deterministic parts using actual neighboring boxes at seams.
@@ -478,6 +481,7 @@ fn build_liquid_faces(
             origin,
             size: tile.key.cell_size,
             cell,
+            geometry_ready: true,
         },
         descriptors,
         sample,
@@ -784,8 +788,11 @@ fn adjacent_cell(
     let span = tile.key.span();
     let inside_core =
         (0..3).all(|axis| position[axis] >= origin[axis] && position[axis] < origin[axis] + span);
-    if !inside_core && let Some(boundary) = sample(position) {
-        return Some(boundary);
+    if let Some(boundary) = sample(position) {
+        return boundary.geometry_ready.then_some(boundary);
+    }
+    if !inside_core {
+        return None;
     }
     let cell = tile.sample(position)?;
     let size = i32::from(tile.key.cell_size);
@@ -793,6 +800,7 @@ fn adjacent_cell(
         origin: position.map(|coordinate| coordinate.div_euclid(size) * size),
         size: tile.key.cell_size,
         cell,
+        geometry_ready: true,
     })
 }
 

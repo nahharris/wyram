@@ -28,7 +28,7 @@ fn ready_fine_prefetch_is_retained_in_the_distant_band() {
     ready_near(&mut c, 5, 0, 0.0);
     assert_eq!(c.represented_size([5, 0]), 1);
     let index = c.column_index([5, 0]).unwrap();
-    assert_eq!(c.frame(0.0).columns[index][3], 3.0);
+    assert_eq!(c.frame(0.0).columns[index][3].to_bits(), u32::MAX);
     c.set_view([1, 0], 0.1, 1);
     assert_eq!(c.represented_size([5, 0]), 1);
     c.set_view([0, 0], 0.2, 1);
@@ -68,6 +68,137 @@ fn ready_tile_stack(c: &mut LodCoverage, size: u8, x: i32, z: i32, now: f32) {
     for ty in min_tile_y..=max_tile_y {
         c.mark_tile_ready(TileKey::new(size, [tx, ty, tz]).unwrap(), now);
     }
+}
+
+#[test]
+fn movement_keeps_resident_detail_until_the_finer_replacement_is_ready() {
+    let mut c = coverage(4, 16);
+    c.set_view([0, 0], 0.0, 1);
+    ready_tile_stack(&mut c, 4, 9, 0, 0.0);
+    ready_tile_stack(&mut c, 4, 16, 0, 0.0);
+    assert_eq!(c.desired_size([9, 0]), 4);
+    assert_eq!(c.represented_size([9, 0]), 4);
+    assert_eq!(c.represented_size([16, 0]), 4);
+
+    c.set_view([4, 0], 0.1, 1);
+    assert_eq!(c.desired_size([9, 0]), 2);
+    assert_eq!(c.represented_size([9, 0]), 4);
+    assert_eq!(c.represented_size([16, 0]), 4);
+
+    let index = c.column_index([9, 0]).unwrap();
+    let held = c.frame(0.1).columns[index];
+    assert_eq!(held[0], 4.0);
+
+    ready_tile_stack(&mut c, 2, 9, 0, 0.2);
+    let index = c.column_index([9, 0]).unwrap();
+    let swapped = c.frame(0.2).columns[index];
+    assert_eq!(swapped[0], 2.0);
+    assert_eq!(swapped[1], 4.0);
+    assert_eq!(swapped[2], 0.2);
+    assert_eq!(c.represented_size([16, 0]), 4);
+    let (old_weight, new_weight) = complementary_weights(4, 2, 0.3, swapped[2]);
+    assert!((old_weight - 0.5).abs() < 1e-6);
+    assert!((new_weight - 0.5).abs() < 1e-6);
+    assert!((old_weight + new_weight - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn entering_the_near_circle_keeps_ready_far_coverage_until_full_height_is_ready() {
+    let mut c = coverage(4, 16);
+    c.set_view([0, 0], 0.0, 1);
+    ready_tile_stack(&mut c, 2, 5, 0, 0.0);
+    assert_eq!(c.represented_size([5, 0]), 2);
+
+    c.set_view([5, 0], 0.1, 1);
+    assert_eq!(c.desired_size([5, 0]), 1);
+    c.mark_near_ready([5, -12, 0], 0.2);
+    let index = c.column_index([5, 0]).unwrap();
+    assert_eq!(c.represented_size([5, 0]), 2);
+    assert_eq!(c.frame(0.2).columns[index][3].to_bits(), 1);
+
+    ready_near(&mut c, 5, 0, 0.3);
+    let index = c.column_index([5, 0]).unwrap();
+    let swapped = c.frame(0.3).columns[index];
+    assert_eq!(swapped[0], 1.0);
+    assert_eq!(swapped[1], 2.0);
+    assert_eq!(swapped[2], 0.3);
+}
+
+#[test]
+fn a_ready_finer_replacement_waits_for_the_active_transition_to_finish() {
+    let mut c = coverage(4, 16);
+    c.set_view([0, 0], 0.0, 1);
+    ready_tile_stack(&mut c, 4, 9, 0, 0.0);
+    c.set_view([4, 0], 0.1, 1);
+    ready_tile_stack(&mut c, 2, 9, 0, 0.1);
+    assert_eq!(c.represented_size([9, 0]), 2);
+
+    c.set_view([9, 0], 0.15, 1);
+    ready_near(&mut c, 9, 0, 0.15);
+    let index = c.column_index([9, 0]).unwrap();
+    let during = c.frame(0.15).columns[index];
+    assert_eq!(during[0], 2.0);
+    assert_eq!(during[1], 4.0);
+    assert_eq!(during[2], 0.1);
+    assert_eq!(during[3].to_bits(), u32::MAX);
+
+    assert_eq!(c.frame(0.299).columns[index][0], 2.0);
+    let completed = c.frame(0.3).columns[index];
+    assert_eq!(completed[0], 1.0);
+    assert_eq!(completed[1], 2.0);
+    assert_eq!(completed[2], 0.3);
+}
+
+#[test]
+fn reversing_a_deferred_promotion_keeps_the_active_pair_and_fades() {
+    let mut c = coverage(4, 16);
+    c.set_view([0, 0], 0.0, 1);
+    ready_tile_stack(&mut c, 4, 9, 0, 0.0);
+    c.set_view([4, 0], 0.1, 1);
+    ready_tile_stack(&mut c, 2, 9, 0, 0.1);
+    c.set_view([9, 0], 0.15, 1);
+    ready_near(&mut c, 9, 0, 0.15);
+
+    c.forget_near([9, -12, 0], 0.16);
+    c.set_view([2, 0], 0.17, 1);
+    let index = c.column_index([9, 0]).unwrap();
+    let reversed = c.frame(0.4).columns[index];
+    assert_eq!(reversed[0], 2.0);
+    assert_eq!(reversed[1], 4.0);
+    assert_eq!(reversed[2], 0.1);
+    assert_eq!(reversed[3].to_bits(), u32::MAX - 1);
+}
+
+#[test]
+fn near_mask_tracks_partial_vertical_readiness_without_claiming_full_coverage() {
+    let mut c = coverage(4, 16);
+    c.set_view([0, 0], 0.0, 1);
+    c.mark_near_ready([0, -12, 0], 0.1);
+    let index = c.column_index([0, 0]).unwrap();
+    assert_eq!(c.frame(0.1).columns[index][3].to_bits(), 1);
+    assert_eq!(c.represented_size([0, 0]), 0);
+
+    c.mark_near_ready([0, -11, 0], 0.2);
+    assert_eq!(c.frame(0.2).columns[index][3].to_bits(), 3);
+    c.forget_near([0, -12, 0], 0.3);
+    assert_eq!(c.frame(0.3).columns[index][3].to_bits(), 2);
+    assert_eq!(c.represented_size([0, 0]), 0);
+}
+
+#[test]
+fn near_mask_configuration_fits_in_one_word() {
+    let invalid = LodCoverage::new(CoverageConfig {
+        near_radius_chunks: 4,
+        max_cell_size: 16,
+        min_y_chunk: -12,
+        max_y_chunk: 20,
+        columns_per_side: 32,
+        frontier_fade_fraction: 0.2,
+        transition_seconds: 0.2,
+        promotion_buffer_chunks: 2,
+        demotion_buffer_chunks: 2,
+    });
+    assert!(invalid.is_err());
 }
 
 #[test]

@@ -127,8 +127,12 @@ impl CoverageWorker {
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
+                let had_deferred_updates = coverage.has_deferred_updates();
                 let frame = coverage.frame(start.elapsed().as_secs_f32());
-                if changed || (frame.frontier_radius_blocks - last_frontier).abs() > 0.05 {
+                if changed
+                    || had_deferred_updates
+                    || (frame.frontier_radius_blocks - last_frontier).abs() > 0.05
+                {
                     let frontier = frame.frontier_radius_blocks;
                     if sender.try_send(frame.clone()).is_ok() {
                         changed = false;
@@ -202,7 +206,7 @@ impl GpuPart {
 pub struct LodRuntime {
     pub config: LodConfig,
     pub client: LodClient<GpuPart>,
-    pub coverage_frame: Option<CoverageFrame>,
+    pub coverage_frame: Option<Arc<CoverageFrame>>,
     pub center: [i32; 3],
     pub epoch: u64,
     pub start: Instant,
@@ -216,6 +220,7 @@ pub struct LodRuntime {
     remesh_set: HashSet<TileKey>,
     sources: HashMap<TileKey, u64>,
     contexts: HashMap<TileKey, MeshContext>,
+    near_ready: HashSet<[i32; 3]>,
     geometry_current: HashSet<TileKey>,
     held_coverage: HashSet<TileKey>,
     meshing: HashMap<TileKey, usize>,
@@ -225,7 +230,11 @@ pub struct LodRuntime {
     transported: HashSet<(u64, TileKey, u64)>,
 }
 
-type MeshContext = ([i32; 3], Vec<(TileKey, Option<u64>)>);
+struct MeshContext {
+    center: [i32; 3],
+    dependencies: Vec<(TileKey, Option<u64>)>,
+    near_dependencies: Arc<std::sync::Mutex<HashMap<[i32; 3], bool>>>,
+}
 
 impl LodRuntime {
     pub fn new(config: LodConfig, start: Instant) -> Result<Self, String> {
@@ -248,6 +257,7 @@ impl LodRuntime {
             remesh_set: HashSet::new(),
             sources: HashMap::new(),
             contexts: HashMap::new(),
+            near_ready: HashSet::new(),
             geometry_current: HashSet::new(),
             held_coverage: HashSet::new(),
             meshing: HashMap::new(),
@@ -277,6 +287,7 @@ impl LodRuntime {
             self.remesh_set.clear();
             self.sources.clear();
             self.contexts.clear();
+            self.near_ready.clear();
             self.geometry_current.clear();
             self.held_coverage.clear();
             self.needs.clear();
@@ -291,7 +302,10 @@ impl LodRuntime {
         self.plan = keys;
         self.wanted = self.plan.iter().copied().collect();
         self.client.set_plan(epoch, &self.plan);
-        world.set_render_circle([center[0], center[2]], self.config.near_radius as i32);
+        world.set_render_circle(
+            [center[0], center[2]],
+            near_prefetch_radius(self.config.near_radius),
+        );
         self.changes.push(CoverageChange::View {
             center: [center[0], center[2]],
             epoch,
@@ -316,7 +330,11 @@ impl LodRuntime {
             .client
             .residents()
             .map(|r| r.key)
-            .filter(|key| !self.wanted.contains(key) && !retained_tile(*key, center, &self.config))
+            .filter(|key| {
+                !self.wanted.contains(key)
+                    && !retained_tile(*key, center, &self.config)
+                    && !self.tile_pinned(*key)
+            })
             .collect();
         for key in evicted {
             self.client.evict(key);
@@ -357,7 +375,12 @@ impl LodRuntime {
                 let dependents: Vec<_> = self
                     .contexts
                     .iter()
-                    .filter(|(_, (_, deps))| deps.iter().any(|(dep, _)| *dep == key))
+                    .filter(|(_, context)| {
+                        context
+                            .dependencies
+                            .iter()
+                            .any(|(dep, revision)| *dep == key && revision.is_some())
+                    })
                     .map(|(other, _)| *other)
                     .collect();
                 for dependent in dependents {
@@ -368,10 +391,67 @@ impl LodRuntime {
     }
 
     pub fn near_ready(&mut self, key: [i32; 3]) {
-        self.changes.push(CoverageChange::NearReady(key));
+        if self.near_ready.insert(key) {
+            self.changes.push(CoverageChange::NearReady(key));
+            self.queue_near_dependents(key);
+        }
     }
     pub fn forget_near(&mut self, key: [i32; 3]) {
-        self.changes.push(CoverageChange::NearForgotten(key));
+        if self.near_ready.remove(&key) {
+            self.changes.push(CoverageChange::NearForgotten(key));
+            self.queue_near_dependents(key);
+        }
+    }
+
+    pub fn near_replacement_ready(&self, chunk: [i32; 3]) -> bool {
+        let dx = i64::from(chunk[0]) - i64::from(self.center[0]);
+        let dz = i64::from(chunk[2]) - i64::from(self.center[2]);
+        if dx * dx + dz * dz <= i64::from(self.config.near_radius).pow(2) {
+            return false;
+        }
+        let size = requested_size([chunk[0], chunk[2]], self.center, &self.config);
+        if size == 0 {
+            return true;
+        }
+        if size < 2 {
+            return false;
+        }
+        let span_chunks = i32::from(size) * 2;
+        let tile_x = chunk[0].div_euclid(span_chunks);
+        let tile_z = chunk[2].div_euclid(span_chunks);
+        (self.config.min_y.div_euclid(size as i32 * 32)
+            ..=self.config.max_y.div_euclid(size as i32 * 32))
+            .all(|tile_y| {
+                let Ok(key) = TileKey::new(size, [tile_x, tile_y, tile_z]) else {
+                    return false;
+                };
+                self.client
+                    .resident(key)
+                    .is_some_and(|resident| self.sources.get(&key) == Some(&resident.revision))
+            })
+    }
+
+    pub fn near_geometry_pinned(&self, chunk: [i32; 3]) -> bool {
+        let Some(frame) = self.coverage_frame.as_deref() else {
+            return self.near_ready.contains(&chunk)
+                && near_chunk_protected(chunk, self.center, self.config.near_radius);
+        };
+        let protected = near_chunk_protected(chunk, self.center, self.config.near_radius);
+        let column = coverage_column(frame, [chunk[0], chunk[2]]);
+        let near_bit = chunk[1] - self.config.min_y.div_euclid(16);
+        let mask_ready = column.is_some_and(|column| {
+            (0..32).contains(&near_bit) && column[3].to_bits() & (1u32 << near_bit) != 0
+        });
+        let Some(column) = column else {
+            return false;
+        };
+        let current = column[0].round() as u8;
+        let previous = column[1].round() as u8;
+        let old_near_active = previous == 1
+            && previous != current
+            && self.start.elapsed().as_secs_f32() >= column[2]
+            && self.start.elapsed().as_secs_f32() - column[2] < 0.2;
+        (protected && mask_ready) || current == 1 || old_near_active
     }
 
     pub fn update(
@@ -402,15 +482,18 @@ impl LodRuntime {
                 || self.client.reserve_upload(part.ticket).is_err()
             {
                 // Outer retained data can be discarded under pressure; detail never changes.
+                let now = self.start.elapsed().as_secs_f32();
                 let victim = self
                     .client
                     .residents()
                     .filter(|r| {
                         r.key != part.key
                             && !r.parts.is_empty()
-                            && (!self.wanted.contains(&r.key)
-                                || tile_distance(r.key, self.center)
-                                    > tile_distance(part.key, self.center))
+                            && !self.wanted.contains(&r.key)
+                            && !self
+                                .coverage_frame
+                                .as_ref()
+                                .is_some_and(|frame| coverage_pins_tile(r.key, frame, now))
                     })
                     .max_by_key(|r| tile_distance(r.key, self.center))
                     .map(|r| r.key);
@@ -418,13 +501,8 @@ impl LodRuntime {
                     self.client.evict(key);
                     self.changes.push(CoverageChange::TileForgotten(key));
                 }
-                if victim.is_some() {
-                    self.client.defer_part(part.ticket).ok();
-                } else {
-                    self.client
-                        .reject_part(part.ticket, crate::lod_client::LodError::GpuBudgetExceeded)
-                        .ok();
-                }
+                self.client.defer_part(part.ticket).ok();
+                self.pressure_retry = Instant::now() + Duration::from_millis(100);
                 break;
             }
             bytes += part.part.vertices.len() * size_of::<LodVertex>();
@@ -439,25 +517,26 @@ impl LodRuntime {
                     revision,
                 } => {
                     self.finish_mesh(key);
+                    self.queue_stale_dependents(key, revision);
                     if epoch != self.epoch {
                         acks.push((epoch, key, revision, false));
                         continue;
                     }
-                    let current = self
-                        .contexts
-                        .get(&key)
-                        .is_some_and(|(center, dependencies)| {
-                            geometry_context_current(
-                                *center,
-                                self.center,
-                                dependencies,
-                                &self.sources,
-                            )
-                        });
+                    let current = self.contexts.get(&key).is_some_and(|context| {
+                        geometry_context_current(
+                            context.center,
+                            self.center,
+                            &context.dependencies,
+                            &self.sources,
+                        ) && !self.context_near_stale(context)
+                    });
                     if current {
                         self.geometry_current.insert(key);
                     } else {
                         self.geometry_current.remove(&key);
+                        if self.wanted.contains(&key) {
+                            self.queue_remesh(key);
+                        }
                     }
                     self.held_coverage.insert(key);
                     acks.push((epoch, key, revision, true));
@@ -481,6 +560,7 @@ impl LodRuntime {
                 }
                 LodEvent::Completed { .. } => {}
                 LodEvent::Dropped { key, .. } => {
+                    self.queue_unresident_dependents(key);
                     self.coverage_dropped(key);
                 }
             }
@@ -490,13 +570,8 @@ impl LodRuntime {
             .iter()
             .copied()
             .filter(|key| {
-                self.contexts.get(key).is_some_and(|(_, dependencies)| {
-                    coverage_dependencies_ready(
-                        key.cell_size,
-                        dependencies,
-                        &self.geometry_current,
-                        &self.sources,
-                    )
+                self.contexts.get(key).is_some_and(|context| {
+                    open_seam_dependencies_publishable(&context.dependencies)
                 })
             })
             .collect();
@@ -504,17 +579,21 @@ impl LodRuntime {
             self.held_coverage.remove(&key);
             self.changes.push(CoverageChange::TileReady(key));
         }
-        if !near_busy && self.client.running_jobs() < 8 && Instant::now() >= self.pressure_retry {
+        if self.client.running_jobs() < mesh_admission_limit(near_busy)
+            && Instant::now() >= self.pressure_retry
+        {
             let work = self.pending.pop_front().or_else(|| {
-                while let Some(key) = self.remesh.pop_front() {
-                    self.remesh_set.remove(&key);
+                while let Some(&key) = self.remesh.front() {
                     if !self.wanted.contains(&key) {
+                        self.remesh.pop_front();
+                        self.remesh_set.remove(&key);
                         continue;
                     }
                     if self.meshing.get(&key).copied().unwrap_or(0) > 0 {
-                        self.queue_remesh(key);
                         break;
                     }
+                    self.remesh.pop_front();
+                    self.remesh_set.remove(&key);
                     if let Some((revision, payload)) = self.client.cached_tile(key) {
                         return Some((
                             self.epoch,
@@ -538,9 +617,11 @@ impl LodRuntime {
                 let high = bounds.map(|v| v + key.span() + halo - 1);
                 let snapshot = world.lod_near_snapshot(low, high);
                 let near: Arc<BoundarySampler> = Arc::new(move |p| snapshot.lod_boundary_cell(p));
-                let neighbor_keys = required_neighbors(key, self.center, &self.config);
+                let coverage = self.coverage_frame.clone();
+                let neighbor_keys =
+                    mesh_neighbor_keys(key, self.center, &self.config, coverage.as_deref());
                 if neighbor_keys.len() > 64 {
-                    eprintln!("LOD seam neighborhood exceeds the fixed 64-tile bound");
+                    eprintln!("LOD mesh neighborhood exceeds the fixed 64-tile bound");
                     acks.push((epoch, key, revision, false));
                     return self.filter_transport_acks(acks);
                 }
@@ -550,36 +631,128 @@ impl LodRuntime {
                     .expect("bounded neighbor list");
                 let center = self.center;
                 let config = self.config.clone();
+                let mut gpu_ready_revisions = HashMap::new();
+                for dep in &neighbor_keys {
+                    let source_revision = self.sources.get(dep).copied();
+                    let resident_revision = self.client.resident(*dep).map(|r| r.revision);
+                    if let Some(revision) = matching_resident_revision(
+                        source_revision,
+                        resident_revision,
+                        neighbors.iter().any(|(neighbor, _)| neighbor == dep),
+                    ) {
+                        gpu_ready_revisions.insert(*dep, revision);
+                    }
+                }
+                if let Some(resident_revision) = self.client.resident(key).map(|r| r.revision)
+                    && matching_resident_revision(
+                        self.sources.get(&key).copied(),
+                        Some(resident_revision),
+                        true,
+                    ) == Some(revision)
+                {
+                    gpu_ready_revisions.insert(key, revision);
+                }
+                let near_ready = Arc::new(self.near_ready.clone());
+                let coverage_for_sampler = coverage.clone();
+                let dependencies: Vec<_> = neighbor_keys
+                    .iter()
+                    .copied()
+                    .map(|dep| {
+                        let revision = gpu_ready_revisions
+                            .get(&dep)
+                            .copied()
+                            .filter(|_| neighbors.iter().any(|(neighbor, _)| *neighbor == dep));
+                        (dep, revision)
+                    })
+                    .collect();
+                let near_dependencies = Arc::new(std::sync::Mutex::new(HashMap::new()));
+                let recorded_near_dependencies = Arc::clone(&near_dependencies);
                 let factory: Arc<SamplerFactory> = Arc::new(move |tile, neighbors, near| {
                     let own = Arc::new(tile.clone());
                     let neighbors = neighbors.clone();
                     let config = config.clone();
+                    let gpu_ready_revisions = gpu_ready_revisions.clone();
+                    let near_ready = Arc::clone(&near_ready);
+                    let coverage = coverage_for_sampler.clone();
+                    let near_dependencies = Arc::clone(&recorded_near_dependencies);
                     Arc::new(move |p| {
-                        let size = requested_size(
-                            [p[0].div_euclid(16), p[2].div_euclid(16)],
+                        let column = [p[0].div_euclid(16), p[2].div_euclid(16)];
+                        let requested = requested_size(column, center, &config);
+                        let own_origin = own.key.origin().ok()?;
+                        let inside_own_core = (0..3).all(|axis| {
+                            p[axis] >= own_origin[axis]
+                                && p[axis] < own_origin[axis] + own.key.span()
+                        });
+                        let own_key = TileKey::new(
+                            own.key.cell_size,
+                            p.map(|v| v.div_euclid(i32::from(own.key.cell_size) * 32)),
+                        )
+                        .ok()?;
+                        if requested == own.key.cell_size && own_key == own.key && inside_own_core {
+                            let cell = own.sample(p)?;
+                            return Some(BoundaryCell {
+                                origin: p.map(|v| {
+                                    v.div_euclid(i32::from(own.key.cell_size))
+                                        * i32::from(own.key.cell_size)
+                                }),
+                                size: own.key.cell_size,
+                                cell,
+                                geometry_ready: true,
+                            });
+                        }
+                        let size = coverage_selected_size(
+                            coverage.as_deref(),
+                            p,
                             center,
                             &config,
+                            &near_ready,
                         );
+                        let chunk = p.map(|v| v.div_euclid(16));
+                        let wants_near = requested == 1 || size == 1;
+                        let near_sample = if wants_near && size == 1 && near_ready.contains(&chunk)
+                        {
+                            near(p)
+                        } else {
+                            None
+                        };
+                        if wants_near {
+                            near_dependencies
+                                .lock()
+                                .expect("near dependency set poisoned")
+                                .insert(chunk, near_sample.is_some());
+                        }
                         if size == 1 {
-                            return near(p);
+                            return near_sample
+                                .map(|mut cell| {
+                                    cell.geometry_ready = true;
+                                    cell
+                                })
+                                .or_else(|| Some(unready_boundary_cell(p, 1)));
                         }
                         if size == 0 {
-                            return Some(BoundaryCell {
-                                origin: p,
-                                size: 1,
-                                cell: Default::default(),
-                            });
+                            return Some(unready_boundary_cell(p, 1));
                         }
                         let span = i32::from(size) * 32;
                         let neighbor_key =
                             TileKey::new(size, p.map(|v| v.div_euclid(span))).ok()?;
-                        let tile = if size == own.key.cell_size {
+                        let resident_matches = gpu_ready_revisions.get(&neighbor_key).is_some_and(
+                            |resident_revision| {
+                                neighbor_key != own.key || *resident_revision == revision
+                            },
+                        );
+                        if !resident_matches
+                            || (neighbor_key != own.key && !neighbors.contains_key(&neighbor_key))
+                        {
+                            return Some(unready_boundary_cell(p, size));
+                        }
+                        let tile = if neighbor_key == own.key {
                             &own
                         } else {
                             neighbors.get(&neighbor_key)?
                         };
                         let cell = tile.sample(p)?;
                         Some(BoundaryCell {
+                            geometry_ready: true,
                             origin: p.map(|v| v.div_euclid(i32::from(size)) * i32::from(size)),
                             size,
                             cell,
@@ -593,17 +766,6 @@ impl LodRuntime {
                         self.needs.insert(*dep);
                     }
                 }
-                let dependencies = neighbor_keys
-                    .into_iter()
-                    .map(|dep| {
-                        let revision = if neighbors.contains_key(&dep) {
-                            self.sources.get(&dep).copied()
-                        } else {
-                            None
-                        };
-                        (dep, revision)
-                    })
-                    .collect();
                 if let Err(error) = self.client.submit(
                     WireBatch {
                         epoch,
@@ -619,21 +781,16 @@ impl LodRuntime {
                     acks.push((epoch, key, revision, false));
                 } else {
                     *self.meshing.entry(key).or_default() += 1;
-                    self.contexts.insert(key, (self.center, dependencies));
+                    self.contexts.insert(
+                        key,
+                        MeshContext {
+                            center: self.center,
+                            dependencies,
+                            near_dependencies,
+                        },
+                    );
                     if newly_cached {
                         self.sources.insert(key, revision);
-                        let dependents: Vec<_> = self
-                            .contexts
-                            .iter()
-                            .filter(|(other, (_, deps))| {
-                                self.wanted.contains(other)
-                                    && deps.iter().any(|(dep, _)| *dep == key)
-                            })
-                            .map(|(other, _)| *other)
-                            .collect();
-                        for dependent in dependents {
-                            self.queue_remesh(dependent);
-                        }
                     }
                 }
             }
@@ -643,7 +800,9 @@ impl LodRuntime {
             && frame.center_chunk == [self.center[0], self.center[2]]
         {
             queue.write_buffer(mask, 0, bytemuck::cast_slice(&frame.columns));
-            self.coverage_frame = Some(frame);
+            self.coverage_frame = Some(Arc::new(frame));
+            self.reconcile_near_dependents();
+            self.evict_obsolete_unpinned();
         }
         let changes = std::mem::take(&mut self.changes);
         if let Err(changes) = self.coverage.send(changes) {
@@ -705,20 +864,132 @@ impl LodRuntime {
             .filter(|(epoch, key, revision, _)| self.transported.remove(&(*epoch, *key, *revision)))
             .collect()
     }
+
+    fn tile_pinned(&self, key: TileKey) -> bool {
+        self.coverage_frame
+            .as_deref()
+            .is_some_and(|frame| coverage_pins_tile(key, frame, self.start.elapsed().as_secs_f32()))
+    }
+
+    fn evict_obsolete_unpinned(&mut self) {
+        let now = self.start.elapsed().as_secs_f32();
+        let evicted: Vec<_> = self
+            .client
+            .residents()
+            .map(|resident| resident.key)
+            .filter(|key| {
+                !self.wanted.contains(key)
+                    && !retained_tile(*key, self.center, &self.config)
+                    && !self
+                        .coverage_frame
+                        .as_deref()
+                        .is_some_and(|frame| coverage_pins_tile(*key, frame, now))
+            })
+            .collect();
+        for key in evicted {
+            self.client.evict(key);
+            self.sources.remove(&key);
+            self.contexts.remove(&key);
+            self.geometry_current.remove(&key);
+            self.held_coverage.remove(&key);
+            self.changes.push(CoverageChange::TileForgotten(key));
+        }
+    }
+
+    fn queue_stale_dependents(&mut self, key: TileKey, revision: u64) {
+        let dependents: Vec<_> = self
+            .contexts
+            .iter()
+            .filter(|(_, context)| {
+                context
+                    .dependencies
+                    .iter()
+                    .any(|(dependency, seen)| *dependency == key && *seen != Some(revision))
+            })
+            .map(|(dependent, _)| *dependent)
+            .filter(|dependent| self.wanted.contains(dependent))
+            .collect();
+        for dependent in dependents {
+            self.queue_remesh(dependent);
+        }
+    }
+
+    fn queue_unresident_dependents(&mut self, key: TileKey) {
+        let dependents: Vec<_> = self
+            .contexts
+            .iter()
+            .filter(|(_, context)| {
+                context
+                    .dependencies
+                    .iter()
+                    .any(|(dependency, revision)| *dependency == key && revision.is_some())
+            })
+            .map(|(dependent, _)| *dependent)
+            .filter(|dependent| self.wanted.contains(dependent))
+            .collect();
+        for dependent in dependents {
+            self.queue_remesh(dependent);
+        }
+    }
+
+    fn queue_near_dependents(&mut self, chunk: [i32; 3]) {
+        let current = self.near_chunk_sample_ready(chunk);
+        let dependents: Vec<_> = self
+            .contexts
+            .iter()
+            .filter_map(|(&key, context)| {
+                let dependencies = context.near_dependencies.lock().ok()?;
+                (dependencies
+                    .get(&chunk)
+                    .is_some_and(|seen| *seen != current))
+                .then_some(key)
+            })
+            .filter(|key| self.wanted.contains(key))
+            .collect();
+        for dependent in dependents {
+            self.queue_remesh(dependent);
+        }
+    }
+
+    fn near_chunk_sample_ready(&self, chunk: [i32; 3]) -> bool {
+        if !self.near_ready.contains(&chunk) {
+            return false;
+        }
+        let position = chunk.map(|v| v.saturating_mul(16));
+        coverage_selected_size(
+            self.coverage_frame.as_deref(),
+            position,
+            self.center,
+            &self.config,
+            &self.near_ready,
+        ) == 1
+    }
+
+    fn context_near_stale(&self, context: &MeshContext) -> bool {
+        context.near_dependencies.lock().is_ok_and(|dependencies| {
+            dependencies
+                .iter()
+                .any(|(&chunk, &seen)| seen != self.near_chunk_sample_ready(chunk))
+        })
+    }
+
+    fn reconcile_near_dependents(&mut self) {
+        let mut stale = Vec::new();
+        for (&key, context) in &self.contexts {
+            if self.context_near_stale(context) && self.wanted.contains(&key) {
+                stale.push(key);
+            }
+        }
+        for key in stale {
+            self.queue_remesh(key);
+        }
+    }
 }
 
-fn coverage_dependencies_ready(
-    size: u8,
-    dependencies: &[(TileKey, Option<u64>)],
-    geometry_current: &HashSet<TileKey>,
-    sources: &HashMap<TileKey, u64>,
-) -> bool {
-    dependencies.iter().all(|(dep, revision)| {
-        dep.cell_size >= size
-            || (revision.is_some()
-                && sources.get(dep).copied() == *revision
-                && geometry_current.contains(dep))
-    })
+fn open_seam_dependencies_publishable(_dependencies: &[(TileKey, Option<u64>)]) -> bool {
+    // Unready samples produce open faces, so a missing neighbor must not create a
+    // circular wait for the coverage that would make that neighbor visible.
+    true
 }
 
 fn geometry_context_current(
@@ -728,9 +999,176 @@ fn geometry_context_current(
     sources: &HashMap<TileKey, u64>,
 ) -> bool {
     [old_center[0], old_center[2]] == [center[0], center[2]]
-        && dependencies
-            .iter()
-            .all(|(dep, revision)| revision.is_some() && sources.get(dep).copied() == *revision)
+        && dependencies.iter().all(|(dep, revision)| {
+            revision.is_none_or(|revision| sources.get(dep) == Some(&revision))
+        })
+}
+
+fn unready_boundary_cell(origin: [i32; 3], size: u8) -> BoundaryCell {
+    BoundaryCell {
+        origin,
+        size,
+        cell: Default::default(),
+        geometry_ready: false,
+    }
+}
+
+fn near_prefetch_radius(near_radius: u32) -> i32 {
+    near_radius.saturating_add(2).min(i32::MAX as u32) as i32
+}
+
+fn near_chunk_protected(chunk: [i32; 3], center: [i32; 3], radius: u32) -> bool {
+    let dx = i64::from(chunk[0]) - i64::from(center[0]);
+    let dz = i64::from(chunk[2]) - i64::from(center[2]);
+    dx * dx + dz * dz <= i64::from(radius).pow(2)
+}
+
+fn matching_resident_revision(
+    source_revision: Option<u64>,
+    resident_revision: Option<u64>,
+    encoded_available: bool,
+) -> Option<u64> {
+    source_revision.filter(|revision| encoded_available && resident_revision == Some(*revision))
+}
+
+fn mesh_admission_limit(near_busy: bool) -> usize {
+    if near_busy { 1 } else { 8 }
+}
+
+fn coverage_column(frame: &CoverageFrame, column: [i32; 2]) -> Option<&[f32; 4]> {
+    let x = column[0].checked_sub(frame.origin_chunk[0])?;
+    let z = column[1].checked_sub(frame.origin_chunk[1])?;
+    if x < 0 || z < 0 || x >= frame.side as i32 || z >= frame.side as i32 {
+        return None;
+    }
+    frame.columns.get(z as usize * frame.side + x as usize)
+}
+
+fn coverage_current_size(frame: Option<&CoverageFrame>, column: [i32; 2]) -> u8 {
+    frame
+        .and_then(|frame| coverage_column(frame, column))
+        .map_or(0, |entry| entry[0].round().clamp(0.0, 16.0) as u8)
+}
+
+fn coverage_selected_size(
+    frame: Option<&CoverageFrame>,
+    position: [i32; 3],
+    center: [i32; 3],
+    config: &LodConfig,
+    near_ready: &HashSet<[i32; 3]>,
+) -> u8 {
+    let chunk = position.map(|v| v.div_euclid(16));
+    let protected = near_chunk_protected(chunk, center, config.near_radius);
+    if protected && near_ready.contains(&chunk) {
+        let Some(frame) = frame else {
+            return 1;
+        };
+        let min_y_chunk = config.min_y.div_euclid(16);
+        let y = chunk[1] - min_y_chunk;
+        if let Some(column) = coverage_column(frame, [chunk[0], chunk[2]])
+            && (0..32).contains(&y)
+            && (column[3].to_bits() & (1u32 << y)) != 0
+        {
+            return 1;
+        }
+    }
+    coverage_current_size(frame, [chunk[0], chunk[2]])
+}
+
+fn coverage_pins_tile(key: TileKey, frame: &CoverageFrame, now: f32) -> bool {
+    let span_chunks = i32::from(key.cell_size) * 2;
+    let low = [key.position[0] * span_chunks, key.position[2] * span_chunks];
+    let high = [low[0] + span_chunks, low[1] + span_chunks];
+    let frame_high = [
+        frame.origin_chunk[0] + frame.side as i32,
+        frame.origin_chunk[1] + frame.side as i32,
+    ];
+    let start = [
+        low[0].max(frame.origin_chunk[0]),
+        low[1].max(frame.origin_chunk[1]),
+    ];
+    let end = [high[0].min(frame_high[0]), high[1].min(frame_high[1])];
+    for z in start[1]..end[1] {
+        for x in start[0]..end[0] {
+            let Some(column) = coverage_column(frame, [x, z]) else {
+                continue;
+            };
+            let current = column[0].round() as u8;
+            let previous = column[1].round() as u8;
+            let previous_active = previous == key.cell_size
+                && previous != current
+                && now >= column[2]
+                && now - column[2] < 0.2;
+            if (current != 0 && current == key.cell_size) || previous_active {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn mesh_neighbor_keys(
+    key: TileKey,
+    center: [i32; 3],
+    config: &LodConfig,
+    frame: Option<&CoverageFrame>,
+) -> Vec<TileKey> {
+    let span = i32::from(key.cell_size) * 2;
+    let low = [key.position[0] * span, key.position[2] * span];
+    let high = [low[0] + span - 1, low[1] + span - 1];
+    let origin = key.origin().expect("validated tile");
+    let halo = i32::from(key.cell_size);
+    let mut keys: HashSet<_> = required_neighbors(key, center, config)
+        .into_iter()
+        .collect();
+    for x in low[0] - 1..=high[0] + 1 {
+        for z in low[1] - 1..=high[1] + 1 {
+            let touches = [[-1, 0], [1, 0], [0, -1], [0, 1]].into_iter().any(|d| {
+                let p = [x + d[0], z + d[1]];
+                (low[0]..=high[0]).contains(&p[0]) && (low[1]..=high[1]).contains(&p[1])
+            });
+            if !touches {
+                continue;
+            }
+            let published = coverage_current_size(frame, [x, z]);
+            let requested = requested_size([x, z], center, config);
+            for size in [requested, published] {
+                if size < 2 || size > config.max_cell_size {
+                    continue;
+                }
+                let blocks = i32::from(size) * 32;
+                for y in (origin[1] - halo).max(config.min_y).div_euclid(blocks)
+                    ..=(origin[1] + key.span() + halo - 1)
+                        .min(config.max_y)
+                        .div_euclid(blocks)
+                {
+                    if let Ok(neighbor) = TileKey::new(
+                        size,
+                        [
+                            x.div_euclid(i32::from(size) * 2),
+                            y,
+                            z.div_euclid(i32::from(size) * 2),
+                        ],
+                    ) && neighbor != key
+                    {
+                        keys.insert(neighbor);
+                    }
+                }
+            }
+        }
+    }
+    // Same-size vertical neighbors are sampled at the tile's top and bottom halos.
+    for dy in [-1, 1] {
+        if let Ok(neighbor) = TileKey::new(
+            key.cell_size,
+            [key.position[0], key.position[1] + dy, key.position[2]],
+        ) {
+            keys.insert(neighbor);
+        }
+    }
+    let mut keys: Vec<_> = keys.into_iter().collect();
+    keys.sort_by_key(|k| (k.cell_size, k.position));
+    keys
 }
 
 fn required_neighbors(key: TileKey, center: [i32; 3], config: &LodConfig) -> Vec<TileKey> {

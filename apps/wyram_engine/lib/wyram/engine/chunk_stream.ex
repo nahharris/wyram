@@ -34,4 +34,15 @@ defmodule Wyram.Engine.ChunkStream do
       {(x - cx) * (x - cx) + (z - cz) * (z - cz), abs(y - cy), key}
     end)
   end
+
+  def streaming_keys({cx, _, cz} = center, bounds, near_radius, prefetch_radius) do
+    {near, prefetch} =
+      center
+      |> keys(bounds, prefetch_radius)
+      |> Enum.split_with(fn {x, _, z} ->
+        (x - cx) * (x - cx) + (z - cz) * (z - cz) <= near_radius * near_radius
+      end)
+
+    near ++ prefetch
+  end
 end

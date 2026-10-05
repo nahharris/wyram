@@ -258,41 +258,78 @@ fn default_radius_eleven_neighborhood_stays_within_fixed_neighbor_bound() {
 }
 
 #[test]
-fn coarse_coverage_waits_for_finer_seam_geometry_but_fine_coverage_does_not_wait_for_coarse() {
+fn closed_faces_allow_unready_seam_dependencies_to_publish() {
     let fine = TileKey::new(2, [0, 0, 0]).unwrap();
-    let coarse = TileKey::new(4, [0, 0, 0]).unwrap();
-    let dependencies = vec![(fine, Some(3)), (coarse, Some(5))];
-    let sources = HashMap::from([(fine, 3), (coarse, 5)]);
-    let mut current = HashSet::new();
+    let dependencies = vec![(fine, None)];
+    assert!(open_seam_dependencies_publishable(&dependencies));
+}
 
-    assert!(!coverage_dependencies_ready(
-        4,
-        &dependencies,
-        &current,
-        &sources
-    ));
-    assert!(coverage_dependencies_ready(
-        2,
-        &dependencies,
-        &current,
-        &sources
-    ));
+#[test]
+fn encoded_or_stale_neighbor_revisions_are_not_gpu_ready() {
+    assert_eq!(matching_resident_revision(Some(8), None, true), None);
+    assert_eq!(matching_resident_revision(Some(8), Some(7), true), None);
+    assert_eq!(matching_resident_revision(Some(8), Some(8), false), None);
+    assert_eq!(matching_resident_revision(Some(8), Some(8), true), Some(8));
+}
 
-    current.insert(fine);
-    assert!(coverage_dependencies_ready(
-        4,
-        &dependencies,
-        &current,
-        &sources
-    ));
+#[test]
+fn applied_coverage_selects_the_rendered_current_lod_and_per_y_near_mask() {
+    let mut frame = CoverageFrame {
+        epoch: 3,
+        origin_chunk: [-1, -1],
+        center_chunk: [0, 0],
+        side: 3,
+        columns: vec![[4.0, 2.0, 0.0, 0.0]; 9],
+        frontier_radius_blocks: 0.0,
+    };
+    let config = config(1, 4);
+    let chunk = [0, 0, 0];
+    let near = HashSet::from([chunk]);
+    assert_eq!(
+        coverage_selected_size(Some(&frame), [0, 0, 0], [0, 0, 0], &config, &near),
+        4
+    );
 
-    let missing_fine_source = vec![(fine, None), (coarse, Some(5))];
-    assert!(!coverage_dependencies_ready(
-        4,
-        &missing_fine_source,
-        &current,
-        &sources
-    ));
+    let min_y_chunk = config.min_y.div_euclid(16);
+    let y_bit = 0 - min_y_chunk;
+    frame.columns[4][3] = f32::from_bits(1u32 << y_bit);
+    assert_eq!(
+        coverage_selected_size(Some(&frame), [0, 0, 0], [0, 0, 0], &config, &near),
+        1
+    );
+    assert_eq!(
+        coverage_selected_size(Some(&frame), [0, 0, 0], [0, 0, 0], &config, &HashSet::new()),
+        4
+    );
+}
+
+#[test]
+fn applied_coverage_pins_current_and_previous_tiles_only_during_fade() {
+    let key = TileKey::new(4, [1, 0, 0]).unwrap();
+    let mut frame = CoverageFrame {
+        epoch: 3,
+        origin_chunk: [0, 0],
+        center_chunk: [0, 0],
+        side: 16,
+        columns: vec![[2.0, 4.0, 10.0, 0.0]; 256],
+        frontier_radius_blocks: 0.0,
+    };
+
+    assert!(coverage_pins_tile(key, &frame, 10.1));
+    assert!(!coverage_pins_tile(key, &frame, 10.21));
+    for z in 0..8 {
+        for x in 8..16 {
+            frame.columns[z * 16 + x] = [4.0, 2.0, 0.0, 0.0];
+        }
+    }
+    assert!(coverage_pins_tile(key, &frame, 30.0));
+}
+
+#[test]
+fn near_prefetch_and_job_admission_preserve_near_work() {
+    assert_eq!(near_prefetch_radius(11), 13);
+    assert_eq!(mesh_admission_limit(true), 1);
+    assert_eq!(mesh_admission_limit(false), 8);
 }
 
 #[test]
