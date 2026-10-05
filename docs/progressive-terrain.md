@@ -26,6 +26,8 @@ Available parallelism is resolved once from the smaller of the native client's C
 
 Encoded tile caches are capped at 256 MiB. Distant GPU geometry has a separate 256 MiB allowance, including 32 MiB reserved for transparent indices. Transport batches are at most 1 MiB, and meshes split into bounded parts. A tile becomes GPU-ready only after every part is resident, including a valid empty completion. Replacements keep the prior mesh until completion.
 
+Within each bounded opaque part, identical coplanar faces of a single material can share a rectangle. This reduces geometry without changing the sampled cells, face coverage or assigned detail size. Mixed-material and translucent parts retain their individual faces, preserving transparent depth sorting.
+
 The renderer protects GPU-ready nearby chunks and uses a two-chunk transition buffer and a 200 ms complementary fade. Uploaded nearby chunks draw immediately; full-height completion governs distant coverage and the fog frontier rather than delaying nearby drawing. Nearby streaming preserves the accepted distance ordering before admitting prefetch chunks. Distant meshing can admit one job while nearby work remains busy, within the existing budgets.
 
 Requested detail and published coverage are separate: movement retains an existing resident representation until its replacement is complete, then swaps the affected columns. GPU geometry referenced by published coverage or an active fade stays resident under pressure. Neighbor source data can cull a face only when matching geometry is resident; otherwise the boundary remains closed until a targeted remesh. Teleport epochs reset coverage.

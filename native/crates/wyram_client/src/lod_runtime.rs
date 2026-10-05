@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::{Duration, Instant};
 use wgpu::util::DeviceExt;
-use wyram_core::lod::TileKey;
+use wyram_core::lod::{Tile, TileKey};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct LodConfig {
@@ -678,28 +678,6 @@ impl LodRuntime {
                     Arc::new(move |p| {
                         let column = [p[0].div_euclid(16), p[2].div_euclid(16)];
                         let requested = requested_size(column, center, &config);
-                        let own_origin = own.key.origin().ok()?;
-                        let inside_own_core = (0..3).all(|axis| {
-                            p[axis] >= own_origin[axis]
-                                && p[axis] < own_origin[axis] + own.key.span()
-                        });
-                        let own_key = TileKey::new(
-                            own.key.cell_size,
-                            p.map(|v| v.div_euclid(i32::from(own.key.cell_size) * 32)),
-                        )
-                        .ok()?;
-                        if requested == own.key.cell_size && own_key == own.key && inside_own_core {
-                            let cell = own.sample(p)?;
-                            return Some(BoundaryCell {
-                                origin: p.map(|v| {
-                                    v.div_euclid(i32::from(own.key.cell_size))
-                                        * i32::from(own.key.cell_size)
-                                }),
-                                size: own.key.cell_size,
-                                cell,
-                                geometry_ready: true,
-                            });
-                        }
                         let size = coverage_selected_size(
                             coverage.as_deref(),
                             p,
@@ -707,6 +685,9 @@ impl LodRuntime {
                             &config,
                             &near_ready,
                         );
+                        if let Some(boundary) = own_core_sample(&own, p, requested, size) {
+                            return Some(boundary);
+                        }
                         let chunk = p.map(|v| v.div_euclid(16));
                         let wants_near = requested == 1 || size == 1;
                         let near_sample = if wants_near && size == 1 && near_ready.contains(&chunk)
@@ -1013,6 +994,38 @@ fn unready_boundary_cell(origin: [i32; 3], size: u8) -> BoundaryCell {
     }
 }
 
+fn own_core_sample(
+    tile: &Tile,
+    position: [i32; 3],
+    requested_size: u8,
+    selected_size: u8,
+) -> Option<BoundaryCell> {
+    let origin = tile.key.origin().ok()?;
+    let inside_core = (0..3).all(|axis| {
+        position[axis] >= origin[axis] && position[axis] < origin[axis] + tile.key.span()
+    });
+    let own_key = TileKey::new(
+        tile.key.cell_size,
+        position.map(|value| value.div_euclid(i32::from(tile.key.cell_size) * 32)),
+    )
+    .ok()?;
+    if requested_size != tile.key.cell_size
+        || own_key != tile.key
+        || !inside_core
+        || (selected_size != 0 && selected_size < tile.key.cell_size)
+    {
+        return None;
+    }
+    Some(BoundaryCell {
+        origin: position.map(|value| {
+            value.div_euclid(i32::from(tile.key.cell_size)) * i32::from(tile.key.cell_size)
+        }),
+        size: tile.key.cell_size,
+        cell: tile.sample(position)?,
+        geometry_ready: true,
+    })
+}
+
 fn near_prefetch_radius(near_radius: u32) -> i32 {
     near_radius.saturating_add(2).min(i32::MAX as u32) as i32
 }
@@ -1286,6 +1299,8 @@ mod integration_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wyram_core::lod::Cell;
+
     #[test]
     fn config_and_camera_match_the_negotiated_fixed_bounds() {
         assert_eq!(size_of::<CameraUniform>(), 128);
@@ -1310,5 +1325,126 @@ mod tests {
         assert!(config.validate());
         config.meshing_workers = 9;
         assert!(!config.validate());
+    }
+
+    #[test]
+    fn hidden_prefetched_coarse_cell_does_not_cull_visible_coarse_face() {
+        let config = LodConfig {
+            protocol: 1,
+            enabled: true,
+            generation_workers: 1,
+            meshing_workers: 1,
+            parallelism: 1,
+            worker_budget: 2,
+            near_radius: 4,
+            max_cell_size: 2,
+            min_y: -192,
+            max_y: 319,
+        };
+        let center = [0, 0, 0];
+        let mut frame = CoverageFrame {
+            epoch: 1,
+            origin_chunk: [0, 0],
+            center_chunk: [0, 0],
+            side: 8,
+            columns: vec![[0.0; 4]; 64],
+            frontier_radius_blocks: 0.0,
+        };
+        let y_bit = -config.min_y.div_euclid(16);
+        frame.columns[6] = [1.0, 1.0, 0.0, f32::from_bits(1u32 << y_bit)];
+        frame.columns[7] = [2.0, 2.0, 0.0, 0.0];
+        let near_ready = HashSet::from([[6, 0, 0]]);
+        let tile = Tile::empty(TileKey::new(2, [1, 0, 0]).unwrap()).unwrap();
+        let mut tile = tile;
+        {
+            let mut set_cell = |local: [usize; 3]| {
+                let [x, y, z] = local.map(|coordinate| coordinate + 1);
+                tile.cells[(y * 34 + z) * 34 + x] = Cell {
+                    material: 1,
+                    solid_height: 2,
+                    ..Cell::default()
+                };
+            };
+            set_cell([23, 0, 0]); // World cell [110, 0, 0], hidden by selected size 1.
+            set_cell([24, 0, 0]); // World cell [112, 0, 0], visible at selected size 2.
+        }
+
+        let sample = |position: [i32; 3]| {
+            let column = [position[0].div_euclid(16), position[2].div_euclid(16)];
+            let requested = requested_size(column, center, &config);
+            let selected =
+                coverage_selected_size(Some(&frame), position, center, &config, &near_ready);
+            if let Some(boundary) = own_core_sample(&tile, position, requested, selected) {
+                return Some(boundary);
+            }
+            if selected == 1 && near_ready.contains(&position.map(|v| v.div_euclid(16))) {
+                return Some(BoundaryCell {
+                    origin: position,
+                    size: 1,
+                    cell: Cell::default(),
+                    geometry_ready: true,
+                });
+            }
+            if selected == 0 {
+                return Some(unready_boundary_cell(position, 1));
+            }
+            let cell = tile.sample(position)?;
+            Some(BoundaryCell {
+                origin: position.map(|v| v.div_euclid(2) * 2),
+                size: selected,
+                cell,
+                geometry_ready: true,
+            })
+        };
+        let mut parts = Vec::new();
+        let completion = crate::lod_mesh::build_parts(
+            &tile,
+            &HashMap::new(),
+            &HashMap::from([(1, crate::world::RenderDescriptor::default())]),
+            sample,
+            |part| {
+                parts.push(part);
+                true
+            },
+        );
+        assert!(!completion.cancelled);
+        let vertices: Vec<_> = parts.into_iter().flat_map(|part| part.vertices).collect();
+        let west_face_area: f32 = vertices
+            .as_chunks::<6>()
+            .0
+            .iter()
+            .filter(|quad| {
+                if !quad.iter().all(|vertex| vertex.position[0] == 112.0) {
+                    return false;
+                }
+                let a = std::array::from_fn::<_, 3, _>(|axis| {
+                    quad[1].position[axis] - quad[0].position[axis]
+                });
+                let b = std::array::from_fn::<_, 3, _>(|axis| {
+                    quad[2].position[axis] - quad[0].position[axis]
+                });
+                a[1] * b[2] - a[2] * b[1] < 0.0
+            })
+            .map(|quad| {
+                let low_y = quad
+                    .iter()
+                    .map(|v| v.position[1])
+                    .fold(f32::INFINITY, f32::min);
+                let high_y = quad
+                    .iter()
+                    .map(|v| v.position[1])
+                    .fold(f32::NEG_INFINITY, f32::max);
+                let low_z = quad
+                    .iter()
+                    .map(|v| v.position[2])
+                    .fold(f32::INFINITY, f32::min);
+                let high_z = quad
+                    .iter()
+                    .map(|v| v.position[2])
+                    .fold(f32::NEG_INFINITY, f32::max);
+                (high_y - low_y) * (high_z - low_z)
+            })
+            .sum();
+        assert_eq!(west_face_area, 4.0);
     }
 }

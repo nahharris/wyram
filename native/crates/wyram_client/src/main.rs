@@ -1457,7 +1457,8 @@ impl ApplicationHandler<UserEvent> for Game {
                                 continue;
                             };
                             if !*started
-                                && (!lod.near_geometry_pinned(key) || lod.near_replacement_ready(key))
+                                && (!lod.near_geometry_pinned(key)
+                                    || lod.near_replacement_ready(key))
                             {
                                 lod.forget_near(key);
                                 *started = true;

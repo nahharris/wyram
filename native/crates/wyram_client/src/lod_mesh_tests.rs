@@ -1,7 +1,10 @@
 use super::*;
 use crate::world::RenderDescriptor;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use wyram_core::lod::{Cell, Tile, TileKey};
+
+type FaceRectangleKey = (usize, u32, [u32; 3], u32, u32);
+type FaceRectangles = BTreeMap<FaceRectangleKey, Vec<[f32; 4]>>;
 
 #[test]
 fn lod_vertex_layout_keeps_near_vertex_format_separate() {
@@ -103,6 +106,172 @@ fn quad_area(vertices: &[LodVertex], axis: usize, plane: f32) -> f32 {
             (high[tangents[0]] - low[tangents[0]]) * (high[tangents[1]] - low[tangents[1]])
         })
         .sum()
+}
+
+fn raw_vertices(
+    tile: &Tile,
+    colors: &HashMap<u16, [u8; 3]>,
+    descriptors: &HashMap<u16, RenderDescriptor>,
+    sample: &impl Fn([i32; 3]) -> Option<BoundaryCell>,
+) -> Vec<LodVertex> {
+    let origin = tile.key.origin().unwrap();
+    let size = i32::from(tile.key.cell_size);
+    let mut vertices = Vec::new();
+    for y in 0..32 {
+        for z in 0..32 {
+            for x in 0..32 {
+                let cell = tile.cells[core_index(x, y, z)];
+                let cell_origin = [
+                    origin[0] + x as i32 * size,
+                    origin[1] + y as i32 * size,
+                    origin[2] + z as i32 * size,
+                ];
+                vertices.extend(build_cell(
+                    tile,
+                    cell_origin,
+                    cell,
+                    colors,
+                    descriptors,
+                    sample,
+                ));
+            }
+        }
+    }
+    vertices
+}
+
+fn built_vertices(
+    tile: &Tile,
+    colors: &HashMap<u16, [u8; 3]>,
+    descriptors: &HashMap<u16, RenderDescriptor>,
+    sample: impl Fn([i32; 3]) -> Option<BoundaryCell>,
+) -> Vec<LodVertex> {
+    let mut parts = Vec::new();
+    build_parts(tile, colors, descriptors, sample, |part| {
+        parts.push(part);
+        true
+    });
+    parts.into_iter().flat_map(|part| part.vertices).collect()
+}
+
+fn oriented_face_rectangles(vertices: &[LodVertex]) -> FaceRectangles {
+    let mut rectangles = BTreeMap::new();
+    let (quads, remainder) = vertices.as_chunks::<6>();
+    assert!(remainder.is_empty());
+    for quad in quads {
+        let axis = (0..3)
+            .find(|&axis| {
+                quad.iter()
+                    .all(|vertex| vertex.position[axis] == quad[0].position[axis])
+            })
+            .unwrap();
+        let edge_a = std::array::from_fn::<_, 3, _>(|i| quad[1].position[i] - quad[0].position[i]);
+        let edge_b = std::array::from_fn::<_, 3, _>(|i| quad[2].position[i] - quad[0].position[i]);
+        let normal = edge_a[(axis + 1) % 3] * edge_b[(axis + 2) % 3]
+            - edge_a[(axis + 2) % 3] * edge_b[(axis + 1) % 3];
+        let face = axis * 2 + usize::from(normal < 0.0);
+        let u = (axis + 1) % 3;
+        let v = (axis + 2) % 3;
+        let low_u = quad
+            .iter()
+            .map(|vertex| vertex.position[u])
+            .fold(f32::INFINITY, f32::min);
+        let high_u = quad
+            .iter()
+            .map(|vertex| vertex.position[u])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let low_v = quad
+            .iter()
+            .map(|vertex| vertex.position[v])
+            .fold(f32::INFINITY, f32::min);
+        let high_v = quad
+            .iter()
+            .map(|vertex| vertex.position[v])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let style = (
+            face,
+            quad[0].position[axis].to_bits(),
+            quad[0].color.map(f32::to_bits),
+            quad[0].opacity.to_bits(),
+            quad[0].lod_size.to_bits(),
+        );
+        rectangles
+            .entry(style)
+            .or_insert_with(Vec::new)
+            .push([low_u, high_u, low_v, high_v]);
+    }
+    rectangles
+}
+
+fn assert_same_oriented_face_coverage(actual: &[LodVertex], expected: &[LodVertex]) {
+    let actual = oriented_face_rectangles(actual);
+    let expected = oriented_face_rectangles(expected);
+    assert_eq!(
+        actual.keys().collect::<Vec<_>>(),
+        expected.keys().collect::<Vec<_>>()
+    );
+    for key in actual.keys() {
+        let actual_rects = &actual[key];
+        let expected_rects = &expected[key];
+        let mut u_edges: Vec<_> = actual_rects
+            .iter()
+            .chain(expected_rects)
+            .flat_map(|rect| [rect[0], rect[1]])
+            .collect();
+        let mut v_edges: Vec<_> = actual_rects
+            .iter()
+            .chain(expected_rects)
+            .flat_map(|rect| [rect[2], rect[3]])
+            .collect();
+        u_edges.sort_by(f32::total_cmp);
+        v_edges.sort_by(f32::total_cmp);
+        u_edges.dedup_by(|a, b| a.to_bits() == b.to_bits());
+        v_edges.dedup_by(|a, b| a.to_bits() == b.to_bits());
+        for u in u_edges.windows(2) {
+            for v in v_edges.windows(2) {
+                let u_mid = (u[0] + u[1]) * 0.5;
+                let v_mid = (v[0] + v[1]) * 0.5;
+                let count = |rects: &[[f32; 4]]| {
+                    rects
+                        .iter()
+                        .filter(|rect| {
+                            u_mid >= rect[0]
+                                && u_mid < rect[1]
+                                && v_mid >= rect[2]
+                                && v_mid < rect[3]
+                        })
+                        .count()
+                };
+                assert_eq!(
+                    count(actual_rects),
+                    count(expected_rects),
+                    "face coverage differs for {key:?} in patch {:?} x {:?}",
+                    u,
+                    v
+                );
+            }
+        }
+    }
+}
+
+fn assert_compaction_parity(
+    tile: &Tile,
+    colors: &HashMap<u16, [u8; 3]>,
+    descriptors: &HashMap<u16, RenderDescriptor>,
+    sample: impl Fn([i32; 3]) -> Option<BoundaryCell>,
+) {
+    let reference = raw_vertices(tile, colors, descriptors, &sample);
+    let compacted = built_vertices(tile, colors, descriptors, sample);
+    assert_eq!(compacted.len() % 6, 0, "compaction emitted a partial face");
+    assert_same_oriented_face_coverage(&compacted, &reference);
+    assert!(
+        compacted
+            .iter()
+            .all(|vertex| vertex.color.iter().all(|value| value.is_finite())
+                && vertex.opacity.is_finite()
+                && vertex.lod_size.is_finite()),
+        "compaction emitted non-finite vertex attributes"
+    );
 }
 
 #[test]
@@ -523,6 +692,150 @@ fn pathological_checkerboard_streams_only_bounded_parts() {
             .all(|(index, part)| part.index as usize == index)
     );
     assert!(!completion.cancelled);
+}
+
+#[test]
+fn full_solid_tile_compacts_closing_walls_by_at_least_sixteen_times() {
+    let mut tile = new_tile(2, [0, 0, 0]);
+    for y in 0..32 {
+        for z in 0..32 {
+            for x in 0..32 {
+                set_cell(&mut tile, [x, y, z], solid(2, 1, 2));
+            }
+        }
+    }
+    let colors = HashMap::from([(1, [120, 80, 40])]);
+    let descriptors = HashMap::from([(1, RenderDescriptor::default())]);
+    let reference = raw_vertices(&tile, &colors, &descriptors, &|_| None);
+    let mut parts = Vec::new();
+    let completion = build_parts(
+        &tile,
+        &colors,
+        &descriptors,
+        |_| None,
+        |part| {
+            assert!(part.vertices.len() * size_of::<LodVertex>() <= MAX_PART_BYTES);
+            parts.push(part);
+            true
+        },
+    );
+    let compacted: Vec<_> = parts
+        .iter()
+        .flat_map(|part| part.vertices.iter().copied())
+        .collect();
+
+    assert_eq!(reference.len(), 6 * 32 * 32 * 6);
+    assert!(compacted.len() * 16 <= reference.len());
+    assert_same_oriented_face_coverage(&compacted, &reference);
+    assert_eq!(completion.parts as usize, parts.len());
+    assert_eq!(
+        parts
+            .iter()
+            .map(|part| part.index as usize)
+            .collect::<Vec<_>>(),
+        (0..parts.len()).collect::<Vec<_>>()
+    );
+    assert_eq!(completion.bytes, compacted.len() * size_of::<LodVertex>());
+}
+
+#[test]
+fn compaction_preserves_water_negative_checkerboard_seam_and_mixed_faces() {
+    let colors = HashMap::from([(1, [20, 90, 150]), (2, [20, 90, 150])]);
+    let solid_descriptors = HashMap::from([
+        (1, RenderDescriptor::default()),
+        (2, RenderDescriptor::default()),
+    ]);
+
+    let mut negative_solid = new_tile(2, [-1, -1, -1]);
+    for y in 0..3 {
+        for z in 0..3 {
+            for x in 0..3 {
+                set_cell(&mut negative_solid, [x, y, z], solid(2, 1, 2));
+            }
+        }
+    }
+    assert_compaction_parity(&negative_solid, &colors, &solid_descriptors, |_| None);
+
+    let mut water = new_tile(2, [-1, 0, -1]);
+    let liquid = Cell {
+        liquid: 1,
+        liquid_height: 2,
+        ..Cell::default()
+    };
+    for z in 0..4 {
+        for x in 0..4 {
+            set_cell(&mut water, [x, 0, z], liquid);
+        }
+    }
+    let liquid_descriptors = HashMap::from([(
+        1,
+        RenderDescriptor {
+            liquid: 1,
+            height: 0.5,
+            opacity: 128,
+            ..Default::default()
+        },
+    )]);
+    assert_compaction_parity(&water, &colors, &liquid_descriptors, |_| None);
+    assert_eq!(
+        built_vertices(&water, &colors, &liquid_descriptors, |_| None),
+        raw_vertices(&water, &colors, &liquid_descriptors, &|_| None),
+        "transparent quads retain their individual positions for depth sorting"
+    );
+
+    let mut checkerboard = new_tile(2, [-1, 0, -1]);
+    for y in 0..8 {
+        for z in 0..8 {
+            for x in 0..8 {
+                if (x + y + z) % 2 == 0 {
+                    set_cell(&mut checkerboard, [x, y, z], solid(2, 1, 2));
+                }
+            }
+        }
+    }
+    assert_compaction_parity(&checkerboard, &colors, &solid_descriptors, |_| None);
+
+    let mut seam = new_tile(4, [0, 0, 0]);
+    set_cell(&mut seam, [31, 0, 0], solid(4, 1, 4));
+    let seam_sample = |world: [i32; 3]| {
+        (world[0] >= 128).then_some(BoundaryCell {
+            origin: [128, world[1].div_euclid(2) * 2, world[2].div_euclid(2) * 2],
+            size: 2,
+            cell: solid(2, 1, 2),
+            geometry_ready: true,
+        })
+    };
+    assert_compaction_parity(&seam, &colors, &solid_descriptors, seam_sample);
+
+    let mut mixed = new_tile(2, [0, 0, 0]);
+    set_cell(&mut mixed, [0, 0, 0], solid(2, 1, 2));
+    set_cell(&mut mixed, [1, 0, 0], solid(2, 2, 2));
+    let mixed_reference = raw_vertices(&mixed, &colors, &solid_descriptors, &|_| None);
+    let mixed_actual = built_vertices(&mixed, &colors, &solid_descriptors, |_| None);
+    assert_eq!(
+        mixed_actual, mixed_reference,
+        "mixed material parts are left unmerged"
+    );
+}
+
+#[test]
+fn malformed_rectangle_keeps_the_original_triangles() {
+    let mut vertices = Vec::new();
+    push_quad(2, [0.0; 3], [2.0; 3], [0.5; 3], 1.0, 2.0, &mut vertices);
+    push_quad(
+        2,
+        [2.0, 0.0, 0.0],
+        [4.0, 2.0, 2.0],
+        [0.5; 3],
+        1.0,
+        2.0,
+        &mut vertices,
+    );
+    vertices[4] = vertices[3];
+    vertices[5] = vertices[3];
+    let original = vertices.clone();
+    compact_quads(&mut vertices);
+    assert_eq!(vertices, original);
 }
 
 #[test]

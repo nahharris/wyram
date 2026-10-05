@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bytemuck::{Pod, Zeroable};
 use wyram_core::lod::{Cell, TILE_CELLS, Tile};
@@ -26,6 +26,22 @@ struct FaceStyle {
     color: [f32; 3],
     opacity: f32,
     lod_size: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct QuadKey {
+    face_index: usize,
+    plane: u32,
+    color: [u32; 3],
+    opacity: u32,
+    lod_size: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct QuadRect {
+    key: QuadKey,
+    low: [f32; 3],
+    high: [f32; 3],
 }
 
 #[cfg(test)]
@@ -152,6 +168,7 @@ pub fn build_parts(
     let size = i32::from(tile.key.cell_size);
     let mut completion = MeshCompletion::default();
     let mut part_vertices = Vec::new();
+    let mut part_materials = HashSet::new();
     let mut part_cells = 0;
 
     for group_y in (0..TILE_CELLS).step_by(8) {
@@ -179,6 +196,7 @@ pub fn build_parts(
                                         > MAX_PART_BYTES)
                                 && !flush_part(
                                     &mut part_vertices,
+                                    &mut part_materials,
                                     &mut part_cells,
                                     &mut completion,
                                     &mut emit,
@@ -199,6 +217,7 @@ pub fn build_parts(
                                             > MAX_PART_BYTES
                                         && !flush_part(
                                             &mut part_vertices,
+                                            &mut part_materials,
                                             &mut part_cells,
                                             &mut completion,
                                             &mut emit,
@@ -207,8 +226,10 @@ pub fn build_parts(
                                         return completion;
                                     }
                                     part_vertices.extend_from_slice(face_vertices);
+                                    add_cell_materials(cell, &mut part_materials);
                                     if !flush_part(
                                         &mut part_vertices,
+                                        &mut part_materials,
                                         &mut part_cells,
                                         &mut completion,
                                         &mut emit,
@@ -219,6 +240,7 @@ pub fn build_parts(
                             } else {
                                 part_vertices.extend_from_slice(&cell_vertices);
                                 if !cell_vertices.is_empty() {
+                                    add_cell_materials(cell, &mut part_materials);
                                     part_cells += 1;
                                 }
                             }
@@ -227,6 +249,7 @@ pub fn build_parts(
                 }
                 if !flush_part(
                     &mut part_vertices,
+                    &mut part_materials,
                     &mut part_cells,
                     &mut completion,
                     &mut emit,
@@ -241,17 +264,23 @@ pub fn build_parts(
 
 fn flush_part(
     vertices: &mut Vec<LodVertex>,
+    materials: &mut HashSet<u16>,
     source_cells: &mut usize,
     completion: &mut MeshCompletion,
     emit: &mut impl FnMut(MeshPart) -> bool,
 ) -> bool {
     if vertices.is_empty() {
+        materials.clear();
         *source_cells = 0;
         return true;
     }
+    let mut compacted = std::mem::take(vertices);
+    if materials.len() == 1 && compacted.iter().all(|vertex| vertex.opacity == 1.0) {
+        compact_quads(&mut compacted);
+    }
     let part = MeshPart {
         index: completion.parts,
-        vertices: std::mem::take(vertices),
+        vertices: compacted,
     };
     let part_bytes = part.vertices.len() * size_of::<LodVertex>();
     if !emit(part) {
@@ -263,8 +292,177 @@ fn flush_part(
         .checked_add(1)
         .expect("LOD tile part count fits u16");
     completion.bytes += part_bytes;
+    materials.clear();
     *source_cells = 0;
     true
+}
+
+fn add_cell_materials(cell: Cell, materials: &mut HashSet<u16>) {
+    if cell.material != 0 && cell.solid_height != 0 {
+        materials.insert(cell.material);
+        if cell.top_material != 0 {
+            materials.insert(cell.top_material);
+        }
+    }
+    if cell.liquid != 0 && cell.liquid_height != 0 {
+        materials.insert(cell.liquid);
+    }
+}
+
+fn compact_quads(vertices: &mut Vec<LodVertex>) {
+    if vertices.len() < 12
+        || !vertices.len().is_multiple_of(6)
+        || vertices.iter().any(|vertex| vertex.opacity < 1.0)
+    {
+        return;
+    }
+    let (quads, remainder) = vertices.as_chunks::<6>();
+    if !remainder.is_empty() {
+        return;
+    }
+    let Some(mut rects): Option<Vec<_>> = quads.iter().map(|quad| quad_rect(quad)).collect() else {
+        return;
+    };
+    if rects.len() != vertices.len() / 6 {
+        return;
+    }
+    if rects.len() < 2 {
+        return;
+    }
+    loop {
+        let mut changed = false;
+        for dimension in [0, 1] {
+            changed |= merge_rectangles(&mut rects, dimension);
+        }
+        if !changed {
+            break;
+        }
+    }
+    vertices.clear();
+    vertices.reserve(rects.len() * 6);
+    for rect in rects {
+        let color = rect.key.color.map(f32::from_bits);
+        push_quad(
+            rect.key.face_index,
+            rect.low,
+            rect.high,
+            color,
+            f32::from_bits(rect.key.opacity),
+            f32::from_bits(rect.key.lod_size),
+            vertices,
+        );
+    }
+}
+
+fn quad_rect(vertices: &[LodVertex]) -> Option<QuadRect> {
+    if vertices.len() != 6 {
+        return None;
+    }
+    let axis = (0..3).find(|&axis| {
+        vertices
+            .iter()
+            .all(|vertex| vertex.position[axis].to_bits() == vertices[0].position[axis].to_bits())
+    })?;
+    let edge_a =
+        std::array::from_fn::<_, 3, _>(|i| vertices[1].position[i] - vertices[0].position[i]);
+    let edge_b =
+        std::array::from_fn::<_, 3, _>(|i| vertices[2].position[i] - vertices[0].position[i]);
+    let cross = [
+        edge_a[1] * edge_b[2] - edge_a[2] * edge_b[1],
+        edge_a[2] * edge_b[0] - edge_a[0] * edge_b[2],
+        edge_a[0] * edge_b[1] - edge_a[1] * edge_b[0],
+    ];
+    let face_index = axis * 2 + usize::from(cross[axis] < 0.0);
+    let low = std::array::from_fn(|i| {
+        vertices
+            .iter()
+            .map(|vertex| vertex.position[i])
+            .fold(f32::INFINITY, f32::min)
+    });
+    let high = std::array::from_fn(|i| {
+        vertices
+            .iter()
+            .map(|vertex| vertex.position[i])
+            .fold(f32::NEG_INFINITY, f32::max)
+    });
+    let key = QuadKey {
+        face_index,
+        plane: vertices[0].position[axis].to_bits(),
+        color: vertices[0].color.map(f32::to_bits),
+        opacity: vertices[0].opacity.to_bits(),
+        lod_size: vertices[0].lod_size.to_bits(),
+    };
+    if vertices.iter().any(|vertex| {
+        vertex.color.map(f32::to_bits) != key.color
+            || vertex.opacity.to_bits() != key.opacity
+            || vertex.lod_size.to_bits() != key.lod_size
+    }) || high[(axis + 1) % 3] <= low[(axis + 1) % 3]
+        || high[(axis + 2) % 3] <= low[(axis + 2) % 3]
+    {
+        return None;
+    }
+    let corners = FACES[face_index].1;
+    if vertices.iter().zip(QUAD_INDICES).any(|(vertex, index)| {
+        (0..3).any(|axis| {
+            let expected = if corners[index][axis] == 0.0 {
+                low[axis]
+            } else {
+                high[axis]
+            };
+            vertex.position[axis].to_bits() != expected.to_bits()
+        })
+    }) {
+        return None;
+    }
+    Some(QuadRect { key, low, high })
+}
+
+fn merge_rectangles(rects: &mut Vec<QuadRect>, dimension: usize) -> bool {
+    let group_key = |rect: &QuadRect| {
+        let axis = rect.key.face_index / 2;
+        let u = (axis + 1) % 3;
+        let v = (axis + 2) % 3;
+        let fixed = if dimension == 0 { v } else { u };
+        (
+            rect.key,
+            rect.low[fixed].to_bits(),
+            rect.high[fixed].to_bits(),
+        )
+    };
+    rects.sort_by(|a, b| {
+        let axis = a.key.face_index / 2;
+        let u = (axis + 1) % 3;
+        let v = (axis + 2) % 3;
+        let (fixed, moving) = if dimension == 0 { (v, u) } else { (u, v) };
+        a.key
+            .cmp(&b.key)
+            .then_with(|| a.low[fixed].total_cmp(&b.low[fixed]))
+            .then_with(|| a.high[fixed].total_cmp(&b.high[fixed]))
+            .then_with(|| a.low[moving].total_cmp(&b.low[moving]))
+            .then_with(|| a.high[moving].total_cmp(&b.high[moving]))
+    });
+    let mut merged = Vec::with_capacity(rects.len());
+    let mut changed = false;
+    for rect in rects.drain(..) {
+        if let Some(last) = merged.last_mut()
+            && group_key(last) == group_key(&rect)
+        {
+            let axis = rect.key.face_index / 2;
+            let moving = if dimension == 0 {
+                (axis + 1) % 3
+            } else {
+                (axis + 2) % 3
+            };
+            if last.high[moving].to_bits() == rect.low[moving].to_bits() {
+                last.high[moving] = rect.high[moving];
+                changed = true;
+                continue;
+            }
+        }
+        merged.push(rect);
+    }
+    *rects = merged;
+    changed
 }
 
 fn build_cell(
