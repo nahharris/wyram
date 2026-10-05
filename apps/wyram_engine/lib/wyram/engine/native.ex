@@ -34,6 +34,13 @@ defmodule Wyram.Engine.Native do
   def generator_spawn(_resource), do: :erlang.nif_error(:nif_not_loaded)
   def surface_heights(_resource, _positions), do: :erlang.nif_error(:nif_not_loaded)
 
+  @spec import_visual_chunks([{{integer(), integer(), integer()}, binary()}]) ::
+          {:ok, [binary()]} | {:error, String.t()}
+  def import_visual_chunks(_chunks), do: :erlang.nif_error(:nif_not_loaded)
+
+  @spec reduce_visual_tiles([[binary()]]) :: {:ok, [binary()]} | {:error, String.t()}
+  def reduce_visual_tiles(_batches), do: :erlang.nif_error(:nif_not_loaded)
+
   def read_blocks(_data, _positions), do: :erlang.nif_error(:nif_not_loaded)
   def compare_write_blocks(_data, _edits), do: :erlang.nif_error(:nif_not_loaded)
   def liquid_positions(_data, _ids), do: :erlang.nif_error(:nif_not_loaded)
